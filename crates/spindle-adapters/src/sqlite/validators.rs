@@ -78,6 +78,8 @@ impl SceneValidator for CanonicalFactConsistencyValidator {
                     fact_id: fact.fact_id.clone(),
                     subject_id: fact.subject_id.clone(),
                     subject_names: fact.subject_names.clone(),
+                    first_person_subject: scene.pov_character_id.as_deref()
+                        == fact.subject_id.as_deref(),
                     key: fact.key.clone(),
                     value: fact.value.clone(),
                 };

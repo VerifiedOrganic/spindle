@@ -6577,7 +6577,7 @@ mod claim_validation_lanes {
                 chapter_number: 2,
                 chapter_id: None,
                 scene_order: 1,
-                full_text: "She nodded at the map as if nothing had happened.".into(),
+                full_text: "I nodded at the map as if nothing had happened.".into(),
                 summary: "Sela acts after death.".into(),
                 content_rating: ContentRating::General,
                 tone: None,

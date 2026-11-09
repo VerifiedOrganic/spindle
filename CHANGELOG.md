@@ -27,6 +27,13 @@ workflow profiles for new sessions.
 - Configurable embedding providers and dimensions are tracked by index
   generation, so changing the embedding route no longer silently mixes vector
   spaces.
+- Continuity detectors resolve full names, forenames, surnames, cast aliases and
+  a declared single POV's first-person narration without guessing across
+  ambiguous names. Knowledge paraphrase matching uses two strong stemmed
+  content tokens; dead-character checks read character state and canonical
+  `life_status` and recognize irregular/third-person finite verbs; attribute
+  checks cover numeric heights, sight/vision, handedness, colour, scars and
+  build.
 
 **Drafting packets, critic, and revision (off by default)**
 

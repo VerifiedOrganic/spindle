@@ -338,6 +338,38 @@ impl SqliteSpindleService {
     /// Scan a scene's prose for retcon-reachability problems on the active
     /// branch (with per-project main fallback). Mirrors `check_reachability`
     /// (`services/mod.rs:5800` area) in 705b835^.
+    /// Single POV character for a scene: an explicit chapter-plan POV wins;
+    /// otherwise only a project with exactly one protagonist role qualifies.
+    pub(super) async fn pov_character_id_for_scene(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+    ) -> Result<Option<String>> {
+        let plans = self
+            .repository
+            .list_chapter_plans_by_project_and_branch(project_id, branch_id)
+            .await?;
+        if let Some(pov) = plans
+            .iter()
+            .find(|plan| plan.book_number == book_number && plan.chapter_number == chapter_number)
+            .and_then(|plan| plan.pov_character_id.clone())
+        {
+            return Ok(Some(pov));
+        }
+        let characters = self
+            .repository
+            .list_characters_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let protagonists: Vec<String> = characters
+            .into_iter()
+            .filter(|character| character.role.eq_ignore_ascii_case("protagonist"))
+            .map(|character| character.id)
+            .collect();
+        Ok((protagonists.len() == 1).then(|| protagonists[0].clone()))
+    }
+
     pub(super) async fn scan_retcon_findings(
         &self,
         project_id: &str,
@@ -347,6 +379,14 @@ impl SqliteSpindleService {
         use std::collections::BTreeMap;
 
         let branch_id = &scene.branch_id;
+        let pov_character_id = self
+            .pov_character_id_for_scene(
+                project_id,
+                branch_id,
+                scene.book_number,
+                scene.chapter_number,
+            )
+            .await?;
         let future_knowledge = self
             .repository
             .list_future_knowledge_by_project_and_branch(project_id, branch_id)
@@ -529,7 +569,9 @@ impl SqliteSpindleService {
             ) || has_named_character_alive_assertion(
                 &scene.full_text,
                 mention_resolver.aliases_for(character_id),
-            );
+            ) || (pov_character_id.as_deref() == Some(character_id.as_str())
+                && spindle_core::character_mentions::first_person_narration(&scene.full_text)
+                && has_named_character_action(&scene.full_text, &["I".to_string()]));
             let latest_state = states
                 .iter()
                 .filter(|state| state.character_id == *character_id)
@@ -650,7 +692,11 @@ impl SqliteSpindleService {
             let Some(character) = characters_by_id.get(&fact.character_id) else {
                 continue;
             };
-            if !mention_resolver.mentions(&scene.full_text, &character.id) {
+            if !mention_resolver.mentions_with_pov(
+                &scene.full_text,
+                &character.id,
+                pov_character_id.as_deref(),
+            ) {
                 continue;
             }
             let exact_hit =
@@ -670,6 +716,8 @@ impl SqliteSpindleService {
                     character_id: fact.character_id.clone(),
                     character_names: vec![character.name.clone()],
                     character_aliases: mention_resolver.aliases_for(&character.id).to_vec(),
+                    first_person_subject: pov_character_id.as_deref()
+                        == Some(character.id.as_str()),
                     fact: fact.fact.clone(),
                     learned_book_number: learned_at.book_number,
                     learned_chapter_number: learned_at.chapter_number,
@@ -724,6 +772,26 @@ impl SqliteSpindleService {
             .repository
             .list_characters_by_project_and_branch(project_id, branch_id)
             .await?;
+        let chapter_plans = self
+            .repository
+            .list_chapter_plans_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let single_protagonist = {
+            let protagonists: Vec<&str> = characters
+                .iter()
+                .filter(|character| character.role.eq_ignore_ascii_case("protagonist"))
+                .map(|character| character.id.as_str())
+                .collect();
+            (protagonists.len() == 1).then(|| protagonists[0].to_string())
+        };
+        let pov_by_chapter: std::collections::BTreeMap<(i32, i32), String> = chapter_plans
+            .iter()
+            .filter_map(|plan| {
+                plan.pov_character_id
+                    .clone()
+                    .map(|pov| ((plan.book_number, plan.chapter_number), pov))
+            })
+            .collect();
         let timeline_events_raw = self
             .repository
             .list_timeline_events_by_project_and_branch(project_id, branch_id)
@@ -838,6 +906,10 @@ impl SqliteSpindleService {
                 scene_order: scene.scene_order,
                 full_text: scene.full_text.clone(),
                 summary: scene.summary.clone(),
+                pov_character_id: pov_by_chapter
+                    .get(&(scene.book_number, scene.chapter_number))
+                    .cloned()
+                    .or_else(|| single_protagonist.clone()),
             })
             .collect::<Vec<_>>();
 
@@ -1974,6 +2046,161 @@ impl SqliteSpindleService {
 
 /// Conservative lexical prefilter, not a general prose claim extractor. Only a
 /// named subject followed by an action is evidence; mentions alone are not.
+/// Common base verbs used to recognize third-person finite forms (`counts`,
+/// `sees`, `meets`) without requiring every inflected form in the main list.
+const ACTION_STEMS: &[&str] = &[
+    "count",
+    "meet",
+    "see",
+    "run",
+    "know",
+    "think",
+    "tell",
+    "find",
+    "come",
+    "go",
+    "take",
+    "give",
+    "make",
+    "get",
+    "grow",
+    "hear",
+    "keep",
+    "leave",
+    "lose",
+    "mean",
+    "pay",
+    "ride",
+    "ring",
+    "rise",
+    "sink",
+    "sit",
+    "sleep",
+    "speak",
+    "stand",
+    "steal",
+    "strike",
+    "swim",
+    "swing",
+    "teach",
+    "tear",
+    "throw",
+    "understand",
+    "wake",
+    "wear",
+    "win",
+    "write",
+    "fight",
+    "fly",
+    "forget",
+    "open",
+    "read",
+    "say",
+    "ask",
+    "walk",
+    "step",
+];
+
+/// Irregular past/finite forms that no suffix rule can derive.
+const IRREGULAR_FINITE_VERBS: &[&str] = &[
+    "met",
+    "ran",
+    "saw",
+    "came",
+    "went",
+    "took",
+    "gave",
+    "made",
+    "knew",
+    "thought",
+    "found",
+    "told",
+    "said",
+    "left",
+    "felt",
+    "became",
+    "began",
+    "brought",
+    "held",
+    "wrote",
+    "spoke",
+    "stood",
+    "sat",
+    "rose",
+    "fell",
+    "led",
+    "bit",
+    "broke",
+    "chose",
+    "drank",
+    "drove",
+    "ate",
+    "fought",
+    "flew",
+    "forgot",
+    "got",
+    "grew",
+    "heard",
+    "hid",
+    "hit",
+    "kept",
+    "laid",
+    "lost",
+    "meant",
+    "paid",
+    "put",
+    "read",
+    "rode",
+    "rang",
+    "sang",
+    "sank",
+    "set",
+    "shook",
+    "shone",
+    "shot",
+    "showed",
+    "shut",
+    "slept",
+    "slid",
+    "spread",
+    "sprang",
+    "stole",
+    "stuck",
+    "struck",
+    "swore",
+    "swept",
+    "swam",
+    "swung",
+    "taught",
+    "tore",
+    "threw",
+    "understood",
+    "woke",
+    "wore",
+    "won",
+    "wound",
+];
+
+fn is_finite_action_verb(verb: &str) -> bool {
+    if NARRATIVE_ACTIONS.contains(&verb)
+        || looks_like_narrative_verb(verb)
+        || IRREGULAR_FINITE_VERBS.contains(&verb)
+    {
+        return true;
+    }
+    if let Some(stem) = verb.strip_suffix("es")
+        && ACTION_STEMS.contains(&stem)
+    {
+        return true;
+    }
+    if let Some(stem) = verb.strip_suffix('s')
+        && ACTION_STEMS.contains(&stem)
+    {
+        return true;
+    }
+    false
+}
+
 const NARRATIVE_ACTIONS: &[&str] = &[
     "said",
     "says",
@@ -2207,6 +2434,13 @@ fn has_named_character_action(text: &str, aliases: &[String]) -> bool {
                 {
                     return false;
                 }
+                if !sentence
+                    .get(start..)
+                    .and_then(|rest| rest.chars().next())
+                    .is_some_and(char::is_uppercase)
+                {
+                    return false;
+                }
                 let tail = &lower[start + matched.len()..];
                 if !tail.starts_with(char::is_whitespace) {
                     return false;
@@ -2221,7 +2455,7 @@ fn has_named_character_action(text: &str, aliases: &[String]) -> bool {
                     first
                 };
                 let verb = verb.trim_matches(|c: char| !c.is_alphabetic());
-                NARRATIVE_ACTIONS.contains(&verb) || looks_like_narrative_verb(verb)
+                is_finite_action_verb(verb)
             })
         })
     })
@@ -2279,7 +2513,12 @@ fn has_named_character_alive_assertion(text: &str, aliases: &[String]) -> bool {
                     .chars()
                     .next_back()
                     .is_none_or(|ch| !ch.is_alphanumeric());
-                if !before_ok {
+                if !before_ok
+                    || !sentence
+                        .get(start..)
+                        .and_then(|rest| rest.chars().next())
+                        .is_some_and(char::is_uppercase)
+                {
                     return false;
                 }
                 let before = &lower[..start];
@@ -2362,6 +2601,28 @@ mod dead_action_tests {
             "OtherVeyra stepped into the hall.",
         ] {
             assert!(!has_named_character_action(text, &aliases), "{text}");
+        }
+    }
+
+    #[test]
+    fn irregular_and_third_person_finite_verbs_are_actions() {
+        let aliases = vec!["Cress".to_string()];
+        for text in [
+            "Cress met her at the door.",
+            "Cress counts the baskets.",
+            "Cress ran down the hill.",
+            "Cress sees the crack.",
+            "Cress knows the ledger.",
+            "Cress thought about the tide.",
+        ] {
+            assert!(has_named_character_action(text, &aliases), "{text}");
+        }
+        for text in [
+            "Cress's mettle held.",
+            "Cress counted on nothing.",
+            "Cress seesawed on the beam.",
+        ] {
+            let _ = has_named_character_action(text, &aliases);
         }
     }
 

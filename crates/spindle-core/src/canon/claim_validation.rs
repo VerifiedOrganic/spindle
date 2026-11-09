@@ -76,6 +76,10 @@ pub struct AttributeValidationFactV1 {
     pub fact_id: String,
     pub subject_id: Option<String>,
     pub subject_names: Vec<String>,
+    /// True when the caller established that this fact's subject is the
+    /// scene's single POV character and the scene is first-person narration.
+    #[serde(default)]
+    pub first_person_subject: bool,
     pub key: String,
     pub value: String,
 }
@@ -90,6 +94,9 @@ pub struct KnowledgeValidationFactV1 {
     /// nicknames). Empty means use `character_names` only.
     #[serde(default)]
     pub character_aliases: Vec<String>,
+    /// True when the caller established first-person POV for this character.
+    #[serde(default)]
+    pub first_person_subject: bool,
     pub fact: String,
     pub learned_book_number: i32,
     pub learned_chapter_number: i32,
@@ -288,6 +295,10 @@ const LEAK_VERBS: &[&str] = &[
     "says",
     "told",
     "tells",
+    "tell",
+    "repeat",
+    "repeats",
+    "repeated",
     "warned",
     "warns",
     "remarked",
@@ -299,7 +310,6 @@ const LEAK_VERBS: &[&str] = &[
     "logged",
     "logs",
     "recorded",
-    "records",
     "reported",
     "reports",
     "revealed",
@@ -361,6 +371,15 @@ fn stem(word: &str) -> String {
         && (lower.ends_with("ies") || lower.ends_with("ses") || lower.ends_with("xes"))
     {
         return lower[..lower.len() - 2].to_string();
+    }
+    if lower.len() > 5 && lower.ends_with("ing") {
+        return lower[..lower.len() - 3].to_string();
+    }
+    if lower.len() > 4 && lower.ends_with("ed") {
+        return lower[..lower.len() - 2].to_string();
+    }
+    if lower.len() > 5 && lower.ends_with("ery") {
+        return lower[..lower.len() - 3].to_string();
     }
     if lower.len() > 3 && lower.ends_with('s') && !lower.ends_with("ss") {
         return lower[..lower.len() - 1].to_string();
@@ -447,6 +466,13 @@ fn communication_is_negated(sentence_lower: &str, verb_index: usize, verb: &str)
     );
     let suffix = &sentence_lower[verb_index + verb.len()..suffix_end];
     NEGATED_VERB_SUFFIXES.iter().any(|cue| suffix.contains(cue))
+}
+
+fn contains_stemmed_word(haystack: &str, stemmed_needle: &str) -> bool {
+    haystack
+        .split(|ch: char| !ch.is_alphanumeric() && ch != '\'' && ch != '-')
+        .filter(|token| !token.is_empty())
+        .any(|token| stem(token) == stemmed_needle)
 }
 
 fn contains_word(haystack: &str, needle: &str) -> bool {
@@ -593,6 +619,7 @@ enum AttributeFamily {
     Height,
     Scar,
     Build,
+    Sight,
 }
 
 fn attribute_families(key: &str) -> Vec<AttributeFamily> {
@@ -630,6 +657,9 @@ fn attribute_families(key: &str) -> Vec<AttributeFamily> {
     if has("build") || has("physique") || has("frame") || (has("body") && has("type")) {
         families.push(AttributeFamily::Build);
     }
+    if has("sight") || has("vision") || has("eyesight") || has("blind") {
+        families.push(AttributeFamily::Sight);
+    }
     families
 }
 
@@ -655,6 +685,13 @@ fn family_heads(family: AttributeFamily) -> &'static [&'static str] {
             "stoop",
             "bend",
             "crouch",
+            "feet",
+            "foot",
+            "cm",
+            "centimeter",
+            "centimetre",
+            "meter",
+            "metre",
         ],
         AttributeFamily::Scar => &[
             "scar", "scars", "scarred", "scarring", "skin", "face", "cheek", "jaw",
@@ -662,6 +699,10 @@ fn family_heads(family: AttributeFamily) -> &'static [&'static str] {
         AttributeFamily::Build => &[
             "build", "frame", "physique", "body", "broad", "slender", "wiry", "muscular", "stocky",
             "heavyset", "thin",
+        ],
+        AttributeFamily::Sight => &[
+            "sight", "vision", "eyesight", "eye", "eyes", "blind", "sighted", "see", "sees", "saw",
+            "look", "looks",
         ],
     }
 }
@@ -720,7 +761,9 @@ pub fn detect_attribute_prose_contradiction(
         let subject_present = fact
             .subject_names
             .iter()
-            .any(|name| contains_phrase(sentence, name));
+            .any(|name| contains_phrase(sentence, name))
+            || (fact.first_person_subject
+                && crate::character_mentions::first_person_narration(sentence));
         let pronoun_subject = !subject_present
             && subject_mentioned_earlier
             && families.contains(&AttributeFamily::Height)
@@ -876,6 +919,17 @@ fn family_contradiction(
                 .then(|| (canonical_side.to_string(), prose_side.to_string()))
         }
         AttributeFamily::Height => {
+            if let (Some(canonical_inches), Some(prose_inches)) =
+                (parse_height_inches(canonical), parse_height_inches(prose))
+            {
+                if (canonical_inches - prose_inches).abs() > 1.0 {
+                    return Some((
+                        format!("{canonical_inches:.0} in"),
+                        format!("{prose_inches:.0} in"),
+                    ));
+                }
+                return None;
+            }
             let canonical_height = height_side(canonical)?;
             let prose_height = height_side(prose)?;
             (canonical_height != prose_height)
@@ -909,6 +963,12 @@ fn family_contradiction(
             (canonical_build != prose_build)
                 .then(|| (canonical_build.to_string(), prose_build.to_string()))
         }
+        AttributeFamily::Sight => {
+            let canonical_sight = sight_state(canonical)?;
+            let prose_sight = sight_state(prose)?;
+            (canonical_sight != prose_sight)
+                .then(|| (canonical_sight.to_string(), prose_sight.to_string()))
+        }
     }
 }
 
@@ -916,13 +976,35 @@ fn handedness_side(text: &str) -> Option<&'static str> {
     if contains_word(text, "ambidextrous") {
         return Some("ambidextrous");
     }
-    let mentions_hand = ["hand", "handed", "writes", "writing", "grip", "dominant"]
+    // Prefer an explicit handedness phrase; then a side directly attached to
+    // "hand". This avoids treating an unrelated "right" elsewhere in the same
+    // sentence (e.g. "left-handed ... right") as ambiguity.
+    for (side, phrases) in [
+        ("left", ["left-handed", "left handed"]),
+        ("right", ["right-handed", "right handed"]),
+    ] {
+        if phrases.iter().any(|phrase| contains_phrase(text, phrase)) {
+            return Some(side);
+        }
+    }
+    let mentions_hand = ["hand", "hands", "writes", "writing", "grip", "dominant"]
         .iter()
         .any(|word| contains_inflected_word(text, word));
+    if mentions_hand {
+        let left_hand = ["left hand", "left-hand", "left hands"]
+            .iter()
+            .any(|phrase| contains_phrase(text, phrase));
+        let right_hand = ["right hand", "right-hand", "right hands"]
+            .iter()
+            .any(|phrase| contains_phrase(text, phrase));
+        match (left_hand, right_hand) {
+            (true, false) => return Some("left"),
+            (false, true) => return Some("right"),
+            _ => {}
+        }
+    }
     let left = contains_inflected_word(text, "left");
     let right = contains_inflected_word(text, "right");
-    // Canonical values are often the bare side ("left"/"right") rather than
-    // "left-handed"; accept that exact shape before requiring a hand word.
     if contains_word(text, "left") && !mentions_hand {
         return Some("left");
     }
@@ -1074,6 +1156,113 @@ fn build_side(text: &str) -> Option<&'static str> {
     }
 }
 
+fn number_word(token: &str) -> Option<f64> {
+    Some(match token {
+        "zero" => 0.0,
+        "one" => 1.0,
+        "two" => 2.0,
+        "three" => 3.0,
+        "four" => 4.0,
+        "five" => 5.0,
+        "six" => 6.0,
+        "seven" => 7.0,
+        "eight" => 8.0,
+        "nine" => 9.0,
+        "ten" => 10.0,
+        "eleven" => 11.0,
+        "twelve" => 12.0,
+        "thirteen" => 13.0,
+        "fourteen" => 14.0,
+        "fifteen" => 15.0,
+        "sixteen" => 16.0,
+        "seventeen" => 17.0,
+        "eighteen" => 18.0,
+        "nineteen" => 19.0,
+        "twenty" => 20.0,
+        "thirty" => 30.0,
+        "forty" => 40.0,
+        "fifty" => 50.0,
+        "sixty" => 60.0,
+        "seventy" => 70.0,
+        "eighty" => 80.0,
+        "ninety" => 90.0,
+        "hundred" => 100.0,
+        _ => return None,
+    })
+}
+
+fn normalize_height_number_words(text: &str) -> String {
+    text.split_whitespace()
+        .map(|token| {
+            let cleaned = token.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '.');
+            number_word(&cleaned.to_ascii_lowercase())
+                .map(|number| number.to_string())
+                .unwrap_or_else(|| token.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_height_inches(text: &str) -> Option<f64> {
+    let normalized = normalize_height_number_words(&text.to_ascii_lowercase());
+    let cm = regex::Regex::new(r"(\d+(?:\.\d+)?)\s*(?:cm|centimet(?:er|re)s?)")
+        .ok()?
+        .captures(&normalized);
+    if let Some(captures) = cm
+        && let Some(value) = captures.get(1).and_then(|m| m.as_str().parse::<f64>().ok())
+    {
+        return Some(value / 2.54);
+    }
+    let meters = regex::Regex::new(r"(\d+(?:\.\d+)?)\s*(?:m|meters?|metres?)\b")
+        .ok()?
+        .captures(&normalized);
+    if let Some(captures) = meters
+        && let Some(value) = captures.get(1).and_then(|m| m.as_str().parse::<f64>().ok())
+    {
+        return Some(value * 39.370_078_740_157_48);
+    }
+    let feet = regex::Regex::new(
+        r#"(\d+(?:\.\d+)?)\s*(?:'|ft|feet|foot)\s*(?:(\d+(?:\.\d+)?)\s*(?:"|in|inch|inches)?)?"#,
+    )
+    .ok()?
+    .captures(&normalized)?;
+    let feet_value = feet.get(1)?.as_str().parse::<f64>().ok()?;
+    let inches_value = feet
+        .get(2)
+        .and_then(|m| m.as_str().parse::<f64>().ok())
+        .unwrap_or(0.0);
+    Some(feet_value * 12.0 + inches_value)
+}
+
+fn sight_state(text: &str) -> Option<&'static str> {
+    if ["partially sighted", "partial sight", "low vision"]
+        .iter()
+        .any(|phrase| contains_phrase(text, phrase))
+    {
+        return Some("partially sighted");
+    }
+    if [
+        "blind",
+        "no sight",
+        "cannot see",
+        "can't see",
+        "could not see",
+        "couldn't see",
+    ]
+    .iter()
+    .any(|phrase| contains_phrase(text, phrase))
+    {
+        return Some("blind");
+    }
+    if ["sighted", "can see", "could see", "saw", "sees", "see"]
+        .iter()
+        .any(|phrase| contains_phrase(text, phrase))
+    {
+        return Some("sighted");
+    }
+    None
+}
+
 fn visible_terms(haystack: &str, terms: &[&str]) -> Vec<String> {
     terms
         .iter()
@@ -1130,10 +1319,12 @@ pub fn detect_knowledge_paraphrase_leak(
         } else {
             &fact.character_aliases
         };
-        if !mention_aliases
+        let mentioned = mention_aliases
             .iter()
             .any(|name| contains_phrase(sentence, name))
-        {
+            || (fact.first_person_subject
+                && crate::character_mentions::first_person_narration(sentence));
+        if !mentioned {
             continue;
         }
         let leak_verb_present = LEAK_VERBS.iter().any(|verb| {
@@ -1146,10 +1337,12 @@ pub fn detect_knowledge_paraphrase_leak(
         }
         let matched: Vec<String> = fact_tokens
             .iter()
-            .filter(|token| contains_word(&lower, token))
+            .filter(|token| contains_stemmed_word(&lower, token))
             .cloned()
             .collect();
-        if matched.len() < 3 {
+        // Two strong content tokens are enough; a single generic overlap is
+        // not. At least one token must carry substantive length/specificity.
+        if matched.len() < 2 || !matched.iter().any(|token| token.len() >= 5) {
             continue;
         }
         let quote = context_quote(scene.text, range);
