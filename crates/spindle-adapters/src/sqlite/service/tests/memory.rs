@@ -230,6 +230,119 @@ async fn scene_edit_marks_scene_and_ancestors_stale_and_rebuild_clears() {
 }
 
 #[tokio::test]
+async fn story_so_far_keeps_completed_previous_book_when_cursor_is_later_book() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, _scene_id, _) = project_with_scene(&svc, "Multi Book Memory").await;
+    // Book 1 chapter 1 has an existing summary; add a book 2 scene at ch 3.
+    let _ = svc
+        .create_chapter(spindle_core::models::CreateChapterInput {
+            project_id: project.project_id.clone(),
+            book_id: None,
+            book_number: Some(2),
+            chapter_number: Some(3),
+            title: None,
+        })
+        .await;
+    svc.save_scene_draft(spindle_core::models::SaveSceneDraftInput {
+        project_id: project.project_id.clone(),
+        book_number: 2,
+        chapter_number: 3,
+        chapter_id: None,
+        scene_order: 1,
+        full_text: "Book two detail.".into(),
+        summary: "BOOK TWO MEMORY".into(),
+        content_rating: spindle_core::models::ContentRating::General,
+        tone: None,
+        generation_id: None,
+        source_path: None,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    svc.rebuild_layered_memory_for_project(&project.project_id)
+        .await
+        .unwrap();
+    let branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let story = svc
+        .story_so_far(&project.project_id, &branch.id, 2, 3, 1)
+        .await
+        .unwrap();
+    assert!(
+        story.contains("opening scene") || story.contains("opening"),
+        "completed previous book must survive chapter-only selection: {story}"
+    );
+    assert!(!story.contains("BOOK TWO MEMORY"));
+}
+
+#[tokio::test]
+async fn commit_scene_edit_invalidates_layered_memory() {
+    use spindle_core::models::{
+        CommitSceneContinuityPackage, CommitSceneInput, ContentRating, SceneAuthorship,
+    };
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene_id, _) = project_with_scene(&svc, "Layered Commit").await;
+    svc.rebuild_layered_memory_for_project(&project.project_id)
+        .await
+        .unwrap();
+    let branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    svc.commit_scene(CommitSceneInput {
+        project_id: project.project_id.clone(),
+        branch_id: None,
+        preparation_id: None,
+        context_revision_token: None,
+        dependency_tokens: None,
+        scene_id: Some(scene_id),
+        book_number: None,
+        chapter_number: None,
+        scene_order: None,
+        expected_scene_version: None,
+        full_text: "The atomic commit path rewrote this scene.".into(),
+        summary: "atomic commit revision".into(),
+        content_rating: ContentRating::General,
+        location_id: None,
+        tone: None,
+        authorship: SceneAuthorship::Human,
+        generation_receipt: None,
+        continuity: CommitSceneContinuityPackage::default(),
+        beat_annotations: Vec::new(),
+        chapter_summary: None,
+        run_id: None,
+        expected_phase: None,
+        dry_run: false,
+        idempotency_key: None,
+    })
+    .await
+    .unwrap();
+    let stale = svc
+        .repository()
+        .list_layered_memory(&project.project_id, &branch.id)
+        .await
+        .unwrap();
+    assert!(stale.iter().any(|summary| {
+        summary.layer == MemoryLayerV1::Scene
+            && matches!(summary.status, MemorySummaryStatusV1::Stale { .. })
+    }));
+    assert!(stale.iter().any(|summary| {
+        summary.layer == MemoryLayerV1::Book
+            && matches!(summary.status, MemorySummaryStatusV1::Stale { .. })
+    }));
+    assert!(
+        svc.repository()
+            .has_pending_memory_recompute_jobs(&project.project_id, &branch.id)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn secret_summary_is_excluded_by_visibility_policy() {
     use spindle_core::models::{RegisterCanonicalFactInput, SecrecyScope};
     let (_tmp, svc) = fresh_service_local().await;
@@ -273,8 +386,8 @@ async fn secret_summary_is_excluded_by_visibility_policy() {
         chapter_number: 1,
         chapter_id: None,
         scene_order: 1,
-        full_text: "Veyra copied obsidiancrown into her notebook.".into(),
-        summary: "Veyra copied the passphrase.".into(),
+        full_text: "Veyra wrote quietly in her notebook.".into(),
+        summary: "Veyra copied obsidiancrown into her notebook.".into(),
         content_rating: spindle_core::models::ContentRating::General,
         tone: None,
         generation_id: None,
@@ -313,6 +426,109 @@ async fn secret_summary_is_excluded_by_visibility_policy() {
         .await
         .unwrap();
     assert!(selection.secret_filtered_count >= 1);
+}
+
+#[tokio::test]
+async fn secret_only_in_chapter_and_book_summary_text_is_labeled() {
+    use spindle_core::models::{RegisterCanonicalFactInput, SaveSummaryInput, SecrecyScope};
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, seed_scene_id, _) = project_with_scene(&svc, "Summary Secrets").await;
+    let holder = create_character_named(&svc, &project.project_id, "Veyra").await;
+    let fact = svc
+        .register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project.project_id.clone(),
+            scene_id: Some(seed_scene_id),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: Some("secret_identity".into()),
+            key: Some("passphrase".into()),
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(holder.clone()),
+            predicate: Some("passphrase".into()),
+            value_kind: Some("text".into()),
+            value_text: Some("obsidiancrown".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: Some(SecrecyScope {
+                holder_ids: vec![holder],
+                concealment_note: None,
+            }),
+        })
+        .await
+        .unwrap();
+    svc.save_summary(SaveSummaryInput {
+        project_id: project.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        entity_type: None,
+        entity_id: None,
+        summary: "The passphrase obsidiancrown appears only in this chapter summary.".into(),
+        key_events: Vec::new(),
+        character_changes: Vec::new(),
+        relationship_shifts: Vec::new(),
+        arc_advances: Vec::new(),
+        promise_events: Vec::new(),
+    })
+    .await
+    .unwrap();
+    svc.rebuild_layered_memory_for_project(&project.project_id)
+        .await
+        .unwrap();
+    let branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let summaries = svc
+        .repository()
+        .list_layered_memory(&project.project_id, &branch.id)
+        .await
+        .unwrap();
+    for layer in [MemoryLayerV1::Chapter, MemoryLayerV1::Book] {
+        assert!(
+            summaries.iter().any(|summary| {
+                summary.layer == layer && summary.secret_fact_ids.contains(&fact.canonical_fact_id)
+            }),
+            "{layer:?} summary text must label the secret: {summaries:?}"
+        );
+    }
+    let mut hidden = std::collections::BTreeSet::new();
+    hidden.insert(fact.canonical_fact_id.clone());
+    let selection = svc
+        .layered_memory_selection(
+            &project.project_id,
+            &branch.id,
+            &spindle_core::models::StoryPlacement {
+                book_number: 1,
+                chapter_number: 2,
+                scene_order: Some(1),
+                note: None,
+            },
+            &MemoryVisibilityPolicyV1 {
+                reader_visible_only: false,
+                allowed_secret_fact_ids: std::collections::BTreeSet::new(),
+                hidden_secret_fact_ids: hidden,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        selection
+            .items
+            .iter()
+            .all(|summary| !summary.secret_fact_ids.contains(&fact.canonical_fact_id)),
+        "hidden summary text must never be selected: {:?}",
+        selection.items
+    );
 }
 
 #[tokio::test]

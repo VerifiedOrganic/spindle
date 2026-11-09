@@ -19,6 +19,150 @@ pub struct MemoryRecomputeJobRow {
     pub attempts: i64,
 }
 
+fn load_layered_memory_in_conn(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    branch_id: &str,
+) -> Result<Vec<MemorySummaryV1>> {
+    let mut stmt = conn.prepare(
+        "SELECT data FROM memory_summary \
+         WHERE project_id = ?1 AND branch_id = ?2 \
+         ORDER BY book_number, chapter_number, scene_order, id",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![project_id, branch_id], |row| {
+        row.get::<_, String>(0)
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(serde_json::from_str(&row?)?);
+    }
+    Ok(out)
+}
+
+fn load_layered_memory_dependencies_in_conn(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    branch_id: &str,
+) -> Result<Vec<MemoryDependencyEdgeV1>> {
+    let mut stmt = conn.prepare(
+        "SELECT d.summary_id, d.depends_on_summary_id, d.source_kind \
+         FROM memory_summary_dependency d \
+         JOIN memory_summary s ON s.id = d.summary_id \
+         WHERE s.project_id = ?1 AND s.branch_id = ?2 \
+         ORDER BY d.summary_id, d.depends_on_summary_id",
+    )?;
+    rows_to_dependency_edges(&mut stmt, project_id, branch_id)
+}
+
+fn rows_to_dependency_edges(
+    stmt: &mut rusqlite::Statement<'_>,
+    project_id: &str,
+    branch_id: &str,
+) -> Result<Vec<MemoryDependencyEdgeV1>> {
+    let rows = stmt.query_map(rusqlite::params![project_id, branch_id], |row| {
+        Ok(MemoryDependencyEdgeV1 {
+            summary_id: row.get(0)?,
+            depends_on_summary_id: row.get(1)?,
+            source_kind: row.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+pub(crate) fn invalidate_layered_memory_in_conn(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    branch_id: &str,
+    plan: &MemoryInvalidationPlanV1,
+    now: i64,
+) -> Result<()> {
+    if plan.stale_summary_ids.is_empty() {
+        return Ok(());
+    }
+    for summary_id in &plan.stale_summary_ids {
+        let data: Option<String> = conn
+            .query_row(
+                "SELECT data FROM memory_summary WHERE id = ?1",
+                [summary_id],
+                |row| row.get(0),
+            )
+            .optional_inner()?;
+        if let Some(data) = data {
+            let mut summary: MemorySummaryV1 = serde_json::from_str(&data)?;
+            summary.status = MemorySummaryStatusV1::Stale {
+                reason: plan
+                    .jobs
+                    .iter()
+                    .find(|job| &job.summary_id == summary_id)
+                    .map(|job| job.reason.clone())
+                    .unwrap_or_else(|| "source invalidation".into()),
+            };
+            summary.updated_at_micros = now;
+            conn.execute(
+                "UPDATE memory_summary SET status = 'stale', updated_at = ?2, data = ?3 \
+                 WHERE id = ?1",
+                rusqlite::params![summary_id, now, serde_json::to_string(&summary)?],
+            )?;
+        }
+    }
+    for job in &plan.jobs {
+        conn.execute(
+            "INSERT INTO memory_recompute_job (
+                id, project_id, branch_id, summary_id, reason, dedup_key,
+                status, attempts, last_error, next_attempt, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, NULL, ?7, ?7, ?7)
+             ON CONFLICT(dedup_key) DO UPDATE SET
+                status = 'pending',
+                reason = excluded.reason,
+                next_attempt = excluded.next_attempt,
+                updated_at = excluded.updated_at,
+                last_error = NULL",
+            rusqlite::params![
+                mint_id_local("memory_job"),
+                project_id,
+                branch_id,
+                &job.summary_id,
+                &job.reason,
+                &job.dedup_key,
+                now,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Shared scene-write boundary helper: mark the scene summary and every
+/// transitive ancestor stale in the caller's transaction.
+pub(crate) fn invalidate_layered_memory_for_scene_in_conn(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    branch_id: &str,
+    scene_id: &str,
+    reason: &str,
+) -> Result<()> {
+    let summaries = load_layered_memory_in_conn(conn, project_id, branch_id)?;
+    if summaries.is_empty() {
+        return Ok(());
+    }
+    let edges = load_layered_memory_dependencies_in_conn(conn, project_id, branch_id)?;
+    let roots: Vec<String> = summaries
+        .iter()
+        .filter(|summary| {
+            summary.layer == MemoryLayerV1::Scene
+                && summary.scope_key == format!("scene:{scene_id}")
+        })
+        .map(|summary| summary.summary_id.clone())
+        .collect();
+    let plan = plan_memory_invalidation(&roots, &summaries, &edges, reason);
+    invalidate_layered_memory_in_conn(
+        conn,
+        project_id,
+        branch_id,
+        &plan,
+        timestamp_to_micros(chrono::Utc::now()),
+    )
+}
+
 impl Repository {
     /// Replace the branch's layered summaries and dependency DAG in one
     /// transaction. Deterministic summary ids keep edges stable across rebuilds.
@@ -203,57 +347,7 @@ impl Repository {
         let plan = plan.clone();
         let now = timestamp_to_micros(chrono::Utc::now());
         self.with_transaction(move |tx| {
-            for summary_id in &plan.stale_summary_ids {
-                let data: Option<String> = tx
-                    .tx
-                    .query_row(
-                        "SELECT data FROM memory_summary WHERE id = ?1",
-                        [summary_id],
-                        |row| row.get(0),
-                    )
-                    .optional_inner()?;
-                if let Some(data) = data {
-                    let mut summary: MemorySummaryV1 = serde_json::from_str(&data)?;
-                    summary.status = MemorySummaryStatusV1::Stale {
-                        reason: plan
-                            .jobs
-                            .iter()
-                            .find(|job| &job.summary_id == summary_id)
-                            .map(|job| job.reason.clone())
-                            .unwrap_or_else(|| "source invalidation".into()),
-                    };
-                    summary.updated_at_micros = now;
-                    tx.tx.execute(
-                        "UPDATE memory_summary SET status = 'stale', updated_at = ?2, data = ?3 \
-                         WHERE id = ?1",
-                        rusqlite::params![summary_id, now, serde_json::to_string(&summary)?],
-                    )?;
-                }
-            }
-            for job in &plan.jobs {
-                tx.tx.execute(
-                    "INSERT INTO memory_recompute_job (
-                        id, project_id, branch_id, summary_id, reason, dedup_key,
-                        status, attempts, last_error, next_attempt, created_at, updated_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, NULL, ?7, ?7, ?7)
-                     ON CONFLICT(dedup_key) DO UPDATE SET
-                        status = 'pending',
-                        reason = excluded.reason,
-                        next_attempt = excluded.next_attempt,
-                        updated_at = excluded.updated_at,
-                        last_error = NULL",
-                    rusqlite::params![
-                        mint_id_local("memory_job"),
-                        &project_id,
-                        &branch_id,
-                        &job.summary_id,
-                        &job.reason,
-                        &job.dedup_key,
-                        now,
-                    ],
-                )?;
-            }
-            Ok(())
+            invalidate_layered_memory_in_conn(&tx.tx, &project_id, &branch_id, &plan, now)
         })
         .await
     }

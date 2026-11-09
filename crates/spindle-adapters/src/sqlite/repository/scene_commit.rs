@@ -203,6 +203,13 @@ impl CanonTransaction<'_> {
                      WHERE branch_id = ?2 AND scene_id = ?3",
                     rusqlite::params![now, branch_id, &existing.id],
                 )?;
+                super::memory::invalidate_layered_memory_for_scene_in_conn(
+                    self.raw_tx(),
+                    project_id,
+                    branch_id,
+                    &existing.id,
+                    "scene_edit",
+                )?;
             }
             Ok((self.get_scene_in_tx(&existing.id)?, false))
         } else {
@@ -233,6 +240,13 @@ impl CanonTransaction<'_> {
                     &input.location_id,
                     now,
                 ],
+            )?;
+            super::memory::invalidate_layered_memory_for_scene_in_conn(
+                self.raw_tx(),
+                project_id,
+                branch_id,
+                &scene_id,
+                "scene_create",
             )?;
             Ok((self.get_scene_in_tx(&scene_id)?, true))
         }

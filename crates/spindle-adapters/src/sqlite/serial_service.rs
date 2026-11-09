@@ -586,18 +586,21 @@ impl SqliteSpindleService {
             .repository()
             .list_layered_memory(project_id, branch_id)
             .await?;
-        if summaries.is_empty() {
+        // This consumer renders chapter-level STORY SO FAR entries. Filter to
+        // chapter candidates before selection so a completed earlier book is
+        // not selected as a Book parent and then discarded with its children.
+        let chapters: Vec<_> = summaries
+            .into_iter()
+            .filter(|summary| summary.layer == MemoryLayerV1::Chapter)
+            .collect();
+        if chapters.is_empty() {
             return Ok(None);
         }
         let cursor = MemoryPositionV1::new(book_number, chapter_number, scene_order);
         let selection =
-            select_layered_memory(&summaries, &cursor, &MemoryVisibilityPolicyV1::default());
+            select_layered_memory(&chapters, &cursor, &MemoryVisibilityPolicyV1::default());
         let mut books: BTreeMap<i32, Vec<(i32, String)>> = BTreeMap::new();
-        for summary in selection
-            .items
-            .into_iter()
-            .filter(|summary| summary.layer == MemoryLayerV1::Chapter)
-        {
+        for summary in selection.items.into_iter() {
             books
                 .entry(summary.coverage.start.book_number)
                 .or_default()

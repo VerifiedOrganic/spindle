@@ -48,6 +48,21 @@ fn contains_name(text_lower: &str, name: &str) -> bool {
     !name.is_empty() && text_lower.contains(&name)
 }
 
+fn secret_fact_ids_in_text(
+    text: &str,
+    secret_facts: &[&crate::sqlite::records::CanonicalFact],
+) -> Vec<String> {
+    let lower = text.to_lowercase();
+    secret_facts
+        .iter()
+        .filter(|fact| {
+            let value = crate::format::canonical_fact_value(fact);
+            !value.trim().is_empty() && lower.contains(&value.to_lowercase())
+        })
+        .map(|fact| fact.id.clone())
+        .collect()
+}
+
 fn open_thread_ids_at(
     project_id: &str,
     branch_id: &str,
@@ -164,14 +179,6 @@ impl SqliteSpindleService {
                 })
                 .map(|character| character.id.clone())
                 .collect();
-            let secret_fact_ids: Vec<String> = secret_facts
-                .iter()
-                .filter(|fact| {
-                    let value = crate::format::canonical_fact_value(fact);
-                    !value.trim().is_empty() && scene_lower.contains(&value.to_lowercase())
-                })
-                .map(|fact| fact.id.clone())
-                .collect();
             let index = crate::format::story_index(
                 scene.book_number,
                 scene.chapter_number,
@@ -190,6 +197,9 @@ impl SqliteSpindleService {
             } else {
                 scene.summary.clone()
             };
+            // Label secrets from the exact text that is stored in the summary,
+            // not only from the full prose.
+            let secret_fact_ids = secret_fact_ids_in_text(&text, &secret_facts);
             let scope_key = format!("scene:{}", scene.id);
             let summary_id =
                 deterministic_summary_id(&project_id, &branch_id, MemoryLayerV1::Scene, &scope_key);
@@ -253,7 +263,10 @@ impl SqliteSpindleService {
                 });
             let mut entity_ids = BTreeSet::new();
             let mut thread_ids = BTreeSet::new();
-            let mut secret_fact_ids = BTreeSet::new();
+            let mut secret_fact_ids: BTreeSet<String> =
+                secret_fact_ids_in_text(&chapter_text, &secret_facts)
+                    .into_iter()
+                    .collect();
             let mut source_hashes = BTreeSet::new();
             for scene_id in scene_ids {
                 if let Some(scene) = summaries
@@ -351,7 +364,10 @@ impl SqliteSpindleService {
             );
             let mut entity_ids = BTreeSet::new();
             let mut thread_ids = BTreeSet::new();
-            let mut secret_fact_ids = BTreeSet::new();
+            let mut secret_fact_ids: BTreeSet<String> =
+                secret_fact_ids_in_text(&text, &secret_facts)
+                    .into_iter()
+                    .collect();
             let mut source_hashes = BTreeSet::new();
             for chapter_id in chapter_ids {
                 if let Some(chapter) = summaries
@@ -420,7 +436,10 @@ impl SqliteSpindleService {
                 });
             let mut entity_ids = BTreeSet::new();
             let mut thread_ids = BTreeSet::new();
-            let mut secret_fact_ids = BTreeSet::new();
+            let mut secret_fact_ids: BTreeSet<String> =
+                secret_fact_ids_in_text(&text, &secret_facts)
+                    .into_iter()
+                    .collect();
             let mut source_hashes = BTreeSet::new();
             if let Some(arc) = summaries
                 .iter()
