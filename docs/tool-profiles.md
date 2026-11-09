@@ -30,7 +30,7 @@ generated profiles are opt-in:
 | planning | Plot architect | 33 | 25,883 | 49,437 |
 | new-book | New-book entry: planning sessions, human gates and handoff | 14 | 20,204 | 26,534 |
 | research | Researcher | 15 | 7,584 | 20,051 |
-| style | Editor core + style reference | 42 | 34,159 | 94,206 |
+| style | Editor core + style reference | 43 | 34,159 | 94,206 |
 | release | Editor + bible librarian + canon steward | 62 | 45,475 | 90,729 |
 | setup | New-book setup reference | 9 | 4,180 | 9,074 |
 
