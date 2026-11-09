@@ -24,6 +24,7 @@ from continuity_recall import (
     CONTRADICTION_TYPES,
     McpClient,
     PlantedContradiction,
+    issue_matches_contradiction,
     score_manuscript,
 )
 
@@ -381,7 +382,7 @@ def _seed_setup(client: McpClient, spec: dict[str, Any], project_id: str) -> See
                 "summary": summary,
                 "role": role,
                 "realm": None,
-                "aliases": [],
+                "aliases": [name.split()[0]],
                 "voice_profile": {
                     "tone": spec["voice"],
                     "vocabulary": ["tide", "ledger", "bell"],
@@ -572,17 +573,45 @@ def _chapter_text(spec: dict[str, Any], chapter_number: int, plant: bool) -> str
     return text
 
 
+def _required_cast(spec: dict[str, Any], chapter_number: int) -> set[str]:
+    required: set[str] = set()
+    for character_key, _predicate, _value, chapter, _phrase in spec["attributes"]:
+        if chapter == chapter_number:
+            required.add(character_key)
+    for character_key, _death_chapter, act_chapter, _phrase in spec["deaths"]:
+        if act_chapter == chapter_number:
+            required.add(character_key)
+    for _key, knower_key, _fact, _learned, leak_chapter, _phrase in spec["knowledge"]:
+        if leak_chapter == chapter_number:
+            required.add(knower_key)
+    for _key, _holder, leaker, _text, leak_chapter, _phrase in spec["secrets"]:
+        if leak_chapter == chapter_number:
+            required.add(leaker)
+    return required
+
+
 def _cast_for_chapter(
     spec: dict[str, Any], chapter_number: int, text: str, plant: bool
 ) -> list[str]:
-    keys = []
+    death_acts = {
+        character_key: act_chapter
+        for character_key, _death_chapter, act_chapter, _phrase in spec["deaths"]
+    }
+    keys: list[str] = []
     for key, name, _role, _summary in spec["characters"]:
-        if name in text:
+        if key in death_acts:
+            # Dead characters are cast only when they act in the planted copy;
+            # clean-copy letters, dreams and mentions must not smuggle them in.
+            if plant and death_acts[key] == chapter_number:
+                keys.append(key)
+            continue
+        first_name = name.split()[0]
+        if name in text or first_name in text:
             keys.append(key)
     if plant:
-        for character_key, _death_chapter, act_chapter, _phrase in spec["deaths"]:
-            if act_chapter == chapter_number and character_key not in keys:
-                keys.append(character_key)
+        for key in sorted(_required_cast(spec, chapter_number)):
+            if key not in keys:
+                keys.append(key)
     return keys
 
 
@@ -646,6 +675,9 @@ def seed_held_out_manuscript(
             },
         )
         cast = _cast_for_chapter(spec, chapter_number, text, plant_contradictions)
+        if plant_contradictions:
+            missing = _required_cast(spec, chapter_number) - set(cast)
+            assert not missing, (spec["id"], chapter_number, missing)
         _tool(
             client,
             "commit_scene_changes",
@@ -730,7 +762,7 @@ def seed_held_out_manuscript(
                     chapter_number=chapter,
                     description=f"{predicate} established as {value}",
                     expected_check_types=EXPECTED_CHECK_TYPES["character_attribute"],
-                    match_tokens=(ids.characters[character_key],),
+                    match_tokens=(chapter_scenes[chapter],),
                 )
             )
         for character_key, death_chapter, act_chapter, _phrase in spec["deaths"]:
@@ -742,7 +774,7 @@ def seed_held_out_manuscript(
                     chapter_number=act_chapter,
                     description=f"{character_key} died in chapter {death_chapter} but acts in chapter {act_chapter}",
                     expected_check_types=EXPECTED_CHECK_TYPES["dead_character_acting"],
-                    match_tokens=(ids.characters[character_key],),
+                    match_tokens=(chapter_scenes[act_chapter],),
                 )
             )
         for chapter, _phrase in spec["timeline"]:
@@ -766,7 +798,7 @@ def seed_held_out_manuscript(
                     chapter_number=leak_chapter,
                     description=f"knowledge learned in chapter {learned_chapter} is used in chapter {leak_chapter}",
                     expected_check_types=EXPECTED_CHECK_TYPES["knowledge_leak_before_learned"],
-                    match_tokens=(ids.characters[knower_key],),
+                    match_tokens=(chapter_scenes[leak_chapter],),
                 )
             )
         for chapter, _phrase in spec["rule_uses"]:
@@ -802,10 +834,7 @@ def seed_held_out_manuscript(
                     chapter_number=leak_chapter,
                     description=f"secret held by {holder_key} is disclosed by {leaker_key}",
                     expected_check_types=EXPECTED_CHECK_TYPES["secret_leak"],
-                    match_tokens=(
-                        ids.secret_fact_ids[key],
-                        ids.characters[leaker_key],
-                    ),
+                    match_tokens=(chapter_scenes[leak_chapter],),
                 )
             )
 
@@ -930,6 +959,35 @@ def held_out_self_test() -> None:
                 by_chapter[(kind, chapter)] = by_chapter.get((kind, chapter), 0) + 1
         assert all(count == 1 for count in by_chapter.values()), spec["id"]
         assert spec["controls"], spec["id"]
+    # Representative issue shapes: Phase-4 findings carry the planted scene id
+    # in entity_ids and often no chapter marker in the message. The matcher must
+    # accept those shapes and reject a different scene.
+    shape_cases = [
+        ("character_attribute", "canonical_fact_prose_drift"),
+        ("dead_character_acting", "retcon"),
+        ("knowledge_leak_before_learned", "knowledge_timing"),
+        ("secret_leak", "secret_leak"),
+    ]
+    for contradiction_type, check_type in shape_cases:
+        scene_id = "scene:held-out-shape"
+        item = PlantedContradiction(
+            contradiction_id=f"shape.{contradiction_type}",
+            contradiction_type=contradiction_type,
+            variant="shape_test",
+            chapter_number=4,
+            description="shape test",
+            expected_check_types=(check_type,),
+            match_tokens=(scene_id,),
+        )
+        issue = {
+            "check_type": check_type,
+            "entity_ids": [scene_id],
+            "message": "representative held-out finding without a chapter marker",
+        }
+        assert issue_matches_contradiction(issue, item), (contradiction_type, issue)
+        wrong_scene = dict(issue, entity_ids=["scene:other"])
+        assert not issue_matches_contradiction(wrong_scene, item), contradiction_type
+
     print("continuity held-out corpus self-test: ok")
     print(
         "  manuscripts="
