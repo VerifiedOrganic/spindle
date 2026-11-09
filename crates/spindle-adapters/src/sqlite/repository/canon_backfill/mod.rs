@@ -689,6 +689,56 @@ impl BranchLegacyRows {
     }
 }
 
+/// Mark explicitly mirrored live-write rows as mapped without re-running their
+/// claims. The exact legacy snapshot is loaded from the same source of truth the
+/// backfill uses, so a later backfill rerun is idempotent rather than
+/// duplicating the dual-write events.
+pub(crate) fn mark_legacy_rows_mapped_in_conn(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    branch_id: &str,
+    keys: &[(String, String)],
+    now_micros: i64,
+) -> Result<()> {
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let legacy = BranchLegacyRows::load(conn, project_id, branch_id)?;
+    let snapshots = legacy.current_snapshots_by_key()?;
+    for (source_table, legacy_primary_key) in keys {
+        let Some(raw_snapshot) = snapshots.get(&(source_table.clone(), legacy_primary_key.clone()))
+        else {
+            continue;
+        };
+        conn.execute(
+            "INSERT INTO canon_source_map (
+                project_id, branch_id, source_table, legacy_primary_key,
+                migration_version, status, provenance, claim_ids, event_ids,
+                decision_id, quarantine_reason, raw_snapshot, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'mapped', 'manual_author', '[]', '[]',
+                NULL, NULL, ?6, ?7, ?7)
+             ON CONFLICT(project_id, source_table, legacy_primary_key, migration_version)
+             DO UPDATE SET
+                branch_id = excluded.branch_id,
+                status = 'mapped',
+                provenance = 'manual_author',
+                quarantine_reason = NULL,
+                raw_snapshot = excluded.raw_snapshot,
+                updated_at = excluded.updated_at",
+            rusqlite::params![
+                project_id,
+                branch_id,
+                source_table,
+                legacy_primary_key,
+                CANON_BACKFILL_MIGRATION_VERSION_V1,
+                raw_snapshot,
+                now_micros,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn reconcile_branch_source_maps_in_tx(
     tx: &rusqlite::Connection,
     project_id: &str,

@@ -782,7 +782,7 @@ impl CanonEventPayloadV1 {
 }
 
 /// Stored claim record in `canon_claim`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CanonClaimRecordV1 {
     pub claim_record_id: String,

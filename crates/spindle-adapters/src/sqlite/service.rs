@@ -442,6 +442,7 @@ mod branch_snapshots;
 mod branches;
 mod canon_events;
 mod canon_mining;
+mod canon_policy;
 mod canon_ratification;
 mod consistency;
 mod context;

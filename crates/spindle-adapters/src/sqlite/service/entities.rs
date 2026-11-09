@@ -1,4 +1,6 @@
 use super::*;
+use crate::sqlite::repository::legacy_claim;
+use spindle_core::canon::*;
 
 impl SqliteSpindleService {
     // =========================================================================
@@ -116,6 +118,18 @@ impl SqliteSpindleService {
         }
         let progression_delta = serde_json::to_value(&input.changes)?;
         let changes = input.changes;
+        let mirror_statuses = changes.status.clone();
+        let mirror_emotional_state = changes.emotional_state.clone();
+        let mirror_revision_id = format!(
+            "legacy:character_state:{}:{}:{}:{}:{}",
+            scene.id, character.id, scene.book_number, scene.chapter_number, scene.scene_order
+        );
+        let mirror_placement = StoryPlacement {
+            book_number: scene.book_number,
+            chapter_number: scene.chapter_number,
+            scene_order: Some(scene.scene_order),
+            note: None,
+        };
 
         let state_id = self
             .repository
@@ -173,9 +187,9 @@ impl SqliteSpindleService {
                     patch: merged,
                 })?;
 
-                tx.append_progression_event(AppendProgressionEventParams {
+                let progression = tx.append_progression_event(AppendProgressionEventParams {
                     project_id: character.project_id.clone(),
-                    branch_id: target_branch_id,
+                    branch_id: target_branch_id.clone(),
                     subject_table: "character".to_string(),
                     subject_id: character.id.clone(),
                     overlay_id: None,
@@ -190,6 +204,84 @@ impl SqliteSpindleService {
                     }),
                     created_at: chrono::Utc::now(),
                 })?;
+
+                let mut mirror_claims = Vec::new();
+                if let Some(statuses) = &mirror_statuses {
+                    for status in statuses {
+                        let assertion = match status.trim().to_ascii_lowercase().as_str() {
+                            "dead" | "deceased" | "status:deceased" => ClaimAssertion::LifeStatus {
+                                status: LifeStatus::Dead,
+                            },
+                            "alive" | "status:alive" => ClaimAssertion::LifeStatus {
+                                status: LifeStatus::Alive,
+                            },
+                            _ => ClaimAssertion::Attribute {
+                                operation: AttributeOperation::Add,
+                                key: "status".into(),
+                                value: ClaimScalar::Text {
+                                    value: status.clone(),
+                                },
+                                nature: AttributeNature::Unknown,
+                            },
+                        };
+                        let index = mirror_claims.len();
+                        mirror_claims.push(legacy_claim(
+                            &character.project_id,
+                            &target_branch_id,
+                            &mirror_revision_id,
+                            Some(&scene.id),
+                            &mirror_placement,
+                            ClaimEntity::Resolved {
+                                id: character.id.clone(),
+                            },
+                            assertion,
+                            Some(0),
+                            index,
+                        ));
+                    }
+                }
+                for (key, value) in &mirror_emotional_state {
+                    let text = match value {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    };
+                    let index = mirror_claims.len();
+                    mirror_claims.push(legacy_claim(
+                        &character.project_id,
+                        &target_branch_id,
+                        &mirror_revision_id,
+                        Some(&scene.id),
+                        &mirror_placement,
+                        ClaimEntity::Resolved {
+                            id: character.id.clone(),
+                        },
+                        ClaimAssertion::Attribute {
+                            operation: AttributeOperation::Set,
+                            key: format!("emotional.{key}"),
+                            value: ClaimScalar::Text { value: text },
+                            nature: AttributeNature::Evolving,
+                        },
+                        Some(0),
+                        index,
+                    ));
+                }
+                let mirrored = tx.mirror_canon_claims(
+                    &character.project_id,
+                    &target_branch_id,
+                    &mirror_revision_id,
+                    Some(&scene.id),
+                    mirror_claims,
+                )?;
+                if mirrored.is_some() {
+                    tx.mark_canon_source_rows_mapped(
+                        &character.project_id,
+                        &target_branch_id,
+                        vec![
+                            ("character_state".to_string(), state.id.clone()),
+                            ("progression_event".to_string(), progression.id.clone()),
+                        ],
+                    )?;
+                }
 
                 Ok(state.id)
             })

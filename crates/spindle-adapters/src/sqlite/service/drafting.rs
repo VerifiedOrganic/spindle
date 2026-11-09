@@ -506,6 +506,30 @@ impl SqliteSpindleService {
                 .await;
         }
 
+        // Cutover evidence metadata: preserve the accepted revision bytes/hash
+        // so evidence-bound claims can be verified later. Best-effort and only
+        // active during dual-write/shadow-read/canon-read.
+        if !created || !scene.full_text.trim().is_empty() {
+            let revision_id = format!(
+                "scene-revision:{}:{}",
+                scene.id,
+                spindle_core::canon::exact_text_sha256(&scene.full_text)
+            );
+            if let Err(error) = self
+                .repository
+                .record_canon_scene_revision(
+                    &save_input.project_id,
+                    &branch_id,
+                    &scene.id,
+                    &revision_id,
+                    &scene.full_text,
+                )
+                .await
+            {
+                tracing::warn!(error = %error, "canon scene revision source map failed");
+            }
+        }
+
         // Record the knowledge_learned package (design §2.3 path 2). Each entry
         // is written through the SAME service path record_knowledge uses, stamped
         // with THIS scene's placement so the reveal cursor is the scene's own

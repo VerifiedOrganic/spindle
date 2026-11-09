@@ -1,6 +1,6 @@
 # ADR 0005: independent evidence-bound canon claims
 
-Status: proposed implementation, shadow contracts + append-only event store/reducers (canon-memory PRs B–C).
+Status: proposed implementation, shadow contracts + append-only event store/reducers + calibrated policy and per-project cutover (canon-memory PRs B–E).
 
 ## Decision
 
@@ -64,6 +64,21 @@ store (`V0051`) and pure deterministic reducers (`spindle_core::canon::events`,
 `spindle_core::canon::reducer`), while legacy backfill, compatibility shadow
 reads, author ratification cutover and policy calibration remain later PRs.
 Deaths, secret disclosures and promise payoffs never auto-ratify in v1.
+
+PR E adds the pure, versioned `spindle_core::canon::policy` evaluator and its
+SQLite audit/revocation/cutover plumbing. Auto-ratification requires verified
+UTF-8 evidence against the accepted revision, resolved entities, no error-level
+ratified contradiction, direct present narration, package agreement (or an
+explicit operator write) and a class/model/prompt calibration gate. The hard v1
+safety list always stages provisional for an author decision. Decision rows
+record policy version, confidence inputs, precondition summary, idempotency key
+and projection watermark; stale compare-and-append fails safely; revocation
+appends withdrawals and invalidates dependents instead of deleting history.
+Migration V0053 gates per-project `legacy -> dual_write -> shadow_read ->
+canon_read` transitions on compatibility parity/quarantine readiness while
+keeping rollback reversible. Legacy-unverified rows participate in compatibility
+reads but are warning/info-only until corroborated. Extraction still makes no
+default authoring cutover and no MCP tool is added by this policy layer.
 
 The versioned meanings above are a protocol boundary. Unknown predicates are
 rejected, not preserved as arbitrary JSON; changing a predicate's meaning needs

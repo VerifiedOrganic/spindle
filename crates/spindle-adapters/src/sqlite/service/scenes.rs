@@ -1,4 +1,6 @@
 use super::*;
+use crate::sqlite::repository::legacy_claim;
+use spindle_core::canon::*;
 
 impl SqliteSpindleService {
     // Outline setters are deferred — they return spindle_core's BookOutline /
@@ -1605,10 +1607,77 @@ impl SqliteSpindleService {
         };
         let secrecy = input.secrecy.clone();
         let supersedes_fact_id = input.supersedes_fact_id.clone();
+        let mirror_subject_id = params
+            .subject_id
+            .clone()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| format!("project:{}", params.project_id));
+        let mirror_predicate = params.predicate.clone();
+        let mirror_scene_id = params.scene_id.clone();
+        let mirror_placement = StoryPlacement {
+            book_number: params.book_number,
+            chapter_number: params.chapter_number,
+            scene_order: None,
+            note: None,
+        };
+        let mirror_revision_id = format!(
+            "legacy:canonical_fact:{}:{}:{}",
+            params.branch_id, mirror_subject_id, mirror_predicate
+        );
+        let mirror_nature = match params.scope.as_str() {
+            "invariant" => AttributeNature::Invariant,
+            "evolving" => AttributeNature::Evolving,
+            "conditional" => AttributeNature::Conditional,
+            _ => AttributeNature::Unknown,
+        };
+        let mirror_value =
+            if let Some(number) = params.value_number.filter(|value| value.is_finite()) {
+                Some(ClaimScalar::Decimal {
+                    value: number.to_string(),
+                    unit: params.unit.clone(),
+                })
+            } else if let Some(serde_json::Value::Bool(value)) = &params.value_json {
+                Some(ClaimScalar::Boolean { value: *value })
+            } else {
+                params
+                    .value_text
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| ClaimScalar::Text { value })
+            };
         let (canonical_fact_id, superseded_fact_id) = self
             .repository
             .with_transaction(move |tx| {
                 let fact = tx.create_canonical_fact(params)?;
+                let mut mirrored_fact = false;
+                if let Some(value) = mirror_value {
+                    let claim = legacy_claim(
+                        &fact.project_id,
+                        &fact.branch_id,
+                        &mirror_revision_id,
+                        mirror_scene_id.as_deref(),
+                        &mirror_placement,
+                        ClaimEntity::Resolved {
+                            id: mirror_subject_id,
+                        },
+                        ClaimAssertion::Attribute {
+                            operation: AttributeOperation::Set,
+                            key: mirror_predicate,
+                            value,
+                            nature: mirror_nature,
+                        },
+                        Some(0),
+                        0,
+                    );
+                    let mirrored = tx.mirror_canon_claims(
+                        &fact.project_id,
+                        &fact.branch_id,
+                        &mirror_revision_id,
+                        mirror_scene_id.as_deref(),
+                        vec![claim],
+                    )?;
+                    mirrored_fact = mirrored.is_some();
+                }
                 if let Some(secrecy) = secrecy.as_ref() {
                     let fact_text = crate::format::canonical_fact_hard_constraint(&fact).statement;
                     let normalized_fact = spindle_core::models::normalize_name(&fact_text);
@@ -1631,6 +1700,13 @@ impl SqliteSpindleService {
                     }
                     None => None,
                 };
+                if mirrored_fact {
+                    let mut keys = vec![("canonical_fact".to_string(), fact.id.clone())];
+                    if let Some(old) = &superseded_fact_id {
+                        keys.push(("canonical_fact".to_string(), old.clone()));
+                    }
+                    tx.mark_canon_source_rows_mapped(&fact.project_id, &fact.branch_id, keys)?;
+                }
                 tx.resolve_validator_findings_for_validator(
                     &fact.project_id,
                     &fact.branch_id,

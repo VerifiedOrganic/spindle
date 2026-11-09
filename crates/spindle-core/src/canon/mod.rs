@@ -21,9 +21,11 @@ macro_rules! vocabulary {
 }
 mod backfill;
 mod events;
+mod policy;
 mod reducer;
 pub use backfill::*;
 pub use events::*;
+pub use policy::*;
 pub use reducer::*;
 vocabulary!(ClaimFamily {
     LifeAction,
@@ -295,7 +297,7 @@ pub struct ClaimBindingV1 {
     pub model_call_id: Option<String>,
     pub prompt_version: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ClaimV1 {
     pub binding: ClaimBindingV1,
     pub source: ClaimSource,

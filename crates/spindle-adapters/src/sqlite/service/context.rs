@@ -2833,8 +2833,7 @@ impl SqliteSpindleService {
         let subject = Subject::new(SubjectTable::Character, character.id.clone())
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         let snapshot = self
-            .repository
-            .assemble_subject_snapshot(&input.project_id, &branch.id, &subject, &placement)
+            .canon_routed_subject_snapshot(&input.project_id, &branch.id, &subject, &placement)
             .await?;
 
         Ok(CharacterSnapshotOutput {
@@ -2903,9 +2902,60 @@ impl SqliteSpindleService {
                 note: None,
             });
 
-        self.repository
-            .assemble_subject_snapshot(&input.project_id, &branch.id, &subject, &placement)
+        self.canon_routed_subject_snapshot(&input.project_id, &branch.id, &subject, &placement)
             .await
+    }
+
+    /// Route snapshot reads through the cutover mode: legacy remains the default,
+    /// shadow-read compares parity but still returns the legacy read, and
+    /// canon-read uses the append-only projections.
+    async fn canon_routed_subject_snapshot(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        subject: &spindle_core::subject::Subject,
+        placement: &spindle_core::models::StoryPlacement,
+    ) -> Result<spindle_core::subject_snapshot::SubjectSnapshot> {
+        use spindle_core::canon::CanonCutoverModeV1;
+        match self.repository.canon_cutover_mode(project_id).await? {
+            CanonCutoverModeV1::CanonRead => {
+                self.repository
+                    .get_canon_projected_subject_snapshot(
+                        project_id,
+                        branch_id,
+                        subject,
+                        Some(placement),
+                    )
+                    .await
+            }
+            CanonCutoverModeV1::ShadowRead => {
+                let legacy = self
+                    .repository
+                    .assemble_subject_snapshot(project_id, branch_id, subject, placement)
+                    .await?;
+                if let Ok(report) = self
+                    .repository
+                    .compare_canon_compatibility_shadow_reads(
+                        project_id,
+                        branch_id,
+                        Some(placement.clone()),
+                    )
+                    .await
+                    && !report.parity_clean
+                {
+                    tracing::warn!(
+                        difference_count = report.differences.len(),
+                        "canon shadow-read parity differs; legacy read retained"
+                    );
+                }
+                Ok(legacy)
+            }
+            _ => {
+                self.repository
+                    .assemble_subject_snapshot(project_id, branch_id, subject, placement)
+                    .await
+            }
+        }
     }
 
     /// Assemble a bounded, read-only scene preparation packet composing writer cursor

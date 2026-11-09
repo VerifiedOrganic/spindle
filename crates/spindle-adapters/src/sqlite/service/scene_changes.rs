@@ -1,4 +1,6 @@
 use super::*;
+use crate::sqlite::repository::legacy_claim;
+use spindle_core::canon::*;
 
 impl SqliteSpindleService {
     /// Commit a bundle of scene-aligned canon mutations (character states,
@@ -198,6 +200,15 @@ impl SqliteSpindleService {
             .with_transaction(move |tx| {
                 // Use the branch already checked by the continuity gate.
                 let target_branch_id = tx_scene.branch_id.clone();
+                let mirror_revision_id = format!("legacy:commit_scene_changes:{}", tx_scene.id);
+                let mirror_placement = StoryPlacement {
+                    book_number: tx_scene.book_number,
+                    chapter_number: tx_scene.chapter_number,
+                    scene_order: Some(tx_scene.scene_order),
+                    note: None,
+                };
+                let mut mirror_claims: Vec<spindle_core::canon::ClaimV1> = Vec::new();
+                let mut mirror_source_keys: Vec<(String, String)> = Vec::new();
                 let mut character_states = Vec::with_capacity(tx_character_states.len());
                 for entry in tx_character_states {
                     let character = tx.get_character(&entry.character_id)?;
@@ -208,6 +219,9 @@ impl SqliteSpindleService {
                             tx_project_id
                         );
                     }
+                    let mirror_statuses = entry.changes.status.clone();
+                    let mirror_emotional_state = entry.changes.emotional_state.clone();
+                    let mirror_character_id = character.id.clone();
                     let latest_state = tx.resolve_character_state_for_branch(
                         &target_branch_id,
                         &character.id,
@@ -261,23 +275,91 @@ impl SqliteSpindleService {
                         scene_order: tx_scene.scene_order,
                         patch: merged,
                     })?;
-                    tx.append_progression_event(AppendProgressionEventParams {
-                        project_id: tx_project_id.clone(),
-                        branch_id: target_branch_id.clone(),
-                        subject_table: "character".to_string(),
-                        subject_id: character.id.clone(),
-                        overlay_id: None,
-                        kind: "character_state_commit".to_string(),
-                        delta_json: progression_delta,
-                        source_scene_id: Some(tx_scene.id.clone()),
-                        placement: Some(StoryPlacement {
-                            book_number: tx_scene.book_number,
-                            chapter_number: tx_scene.chapter_number,
-                            scene_order: Some(tx_scene.scene_order),
-                            note: None,
-                        }),
-                        created_at: chrono::Utc::now(),
-                    })?;
+                    let progression =
+                        tx.append_progression_event(AppendProgressionEventParams {
+                            project_id: tx_project_id.clone(),
+                            branch_id: target_branch_id.clone(),
+                            subject_table: "character".to_string(),
+                            subject_id: character.id.clone(),
+                            overlay_id: None,
+                            kind: "character_state_commit".to_string(),
+                            delta_json: progression_delta,
+                            source_scene_id: Some(tx_scene.id.clone()),
+                            placement: Some(StoryPlacement {
+                                book_number: tx_scene.book_number,
+                                chapter_number: tx_scene.chapter_number,
+                                scene_order: Some(tx_scene.scene_order),
+                                note: None,
+                            }),
+                            created_at: chrono::Utc::now(),
+                        })?;
+                    let mirror_claim_count_before = mirror_claims.len();
+                    if let Some(statuses) = &mirror_statuses {
+                        for status in statuses {
+                            let assertion = match status.trim().to_ascii_lowercase().as_str() {
+                                "dead" | "deceased" | "status:deceased" => {
+                                    ClaimAssertion::LifeStatus {
+                                        status: LifeStatus::Dead,
+                                    }
+                                }
+                                "alive" | "status:alive" => ClaimAssertion::LifeStatus {
+                                    status: LifeStatus::Alive,
+                                },
+                                _ => ClaimAssertion::Attribute {
+                                    operation: AttributeOperation::Add,
+                                    key: "status".into(),
+                                    value: ClaimScalar::Text {
+                                        value: status.clone(),
+                                    },
+                                    nature: AttributeNature::Unknown,
+                                },
+                            };
+                            let index = mirror_claims.len();
+                            mirror_claims.push(legacy_claim(
+                                &tx_project_id,
+                                &target_branch_id,
+                                &mirror_revision_id,
+                                Some(&tx_scene.id),
+                                &mirror_placement,
+                                ClaimEntity::Resolved {
+                                    id: mirror_character_id.clone(),
+                                },
+                                assertion,
+                                Some(0),
+                                index,
+                            ));
+                        }
+                    }
+                    for (key, value) in &mirror_emotional_state {
+                        let text = match value {
+                            serde_json::Value::String(text) => text.clone(),
+                            other => other.to_string(),
+                        };
+                        let index = mirror_claims.len();
+                        mirror_claims.push(legacy_claim(
+                            &tx_project_id,
+                            &target_branch_id,
+                            &mirror_revision_id,
+                            Some(&tx_scene.id),
+                            &mirror_placement,
+                            ClaimEntity::Resolved {
+                                id: mirror_character_id.clone(),
+                            },
+                            ClaimAssertion::Attribute {
+                                operation: AttributeOperation::Set,
+                                key: format!("emotional.{key}"),
+                                value: ClaimScalar::Text { value: text },
+                                nature: AttributeNature::Evolving,
+                            },
+                            Some(0),
+                            index,
+                        ));
+                    }
+                    if mirror_claims.len() > mirror_claim_count_before {
+                        mirror_source_keys.push(("character_state".to_string(), state.id.clone()));
+                        mirror_source_keys
+                            .push(("progression_event".to_string(), progression.id.clone()));
+                    }
                     character_states.push(CommitSceneCharacterStateResult {
                         character_id: entry.character_id,
                         state_id: Some(state.id),
@@ -321,6 +403,35 @@ impl SqliteSpindleService {
                         Some(CanonicalFactScope::Conditional) => "conditional",
                     }
                     .to_string();
+                    let mirror_subject_id = entry
+                        .subject_id
+                        .clone()
+                        .filter(|id| !id.trim().is_empty())
+                        .unwrap_or_else(|| format!("project:{tx_project_id}"));
+                    let mirror_predicate = predicate.clone();
+                    let mirror_scalar = if let Some(number) =
+                        entry.value_number.filter(|value| value.is_finite())
+                    {
+                        Some(ClaimScalar::Decimal {
+                            value: number.to_string(),
+                            unit: entry.value_unit.clone(),
+                        })
+                    } else if let Some(serde_json::Value::Bool(value)) = &entry.value_json {
+                        Some(ClaimScalar::Boolean { value: *value })
+                    } else {
+                        entry
+                            .value_text
+                            .clone()
+                            .or_else(|| entry.value.clone())
+                            .filter(|value| !value.trim().is_empty())
+                            .map(|value| ClaimScalar::Text { value })
+                    };
+                    let mirror_nature = match entry.scope {
+                        Some(CanonicalFactScope::Invariant) => AttributeNature::Invariant,
+                        Some(CanonicalFactScope::Evolving) => AttributeNature::Evolving,
+                        Some(CanonicalFactScope::Conditional) => AttributeNature::Conditional,
+                        None => AttributeNature::Unknown,
+                    };
                     let fact = tx.create_canonical_fact(
                         crate::sqlite::repository::CreateCanonicalFactParams {
                             project_id: tx_project_id.clone(),
@@ -352,6 +463,31 @@ impl SqliteSpindleService {
                         }
                         None => None,
                     };
+                    let mirror_fact_added = mirror_scalar.is_some();
+                    if let Some(value) = mirror_scalar {
+                        let index = mirror_claims.len();
+                        mirror_claims.push(legacy_claim(
+                            &tx_project_id,
+                            &target_branch_id,
+                            &mirror_revision_id,
+                            Some(&tx_scene.id),
+                            &mirror_placement,
+                            ClaimEntity::Resolved {
+                                id: mirror_subject_id,
+                            },
+                            ClaimAssertion::Attribute {
+                                operation: AttributeOperation::Set,
+                                key: mirror_predicate,
+                                value,
+                                nature: mirror_nature,
+                            },
+                            Some(0),
+                            index,
+                        ));
+                    }
+                    if mirror_fact_added {
+                        mirror_source_keys.push(("canonical_fact".to_string(), fact.id.clone()));
+                    }
                     canonical_facts.push(CommitSceneCanonicalFactResult {
                         fact_type,
                         key,
@@ -396,6 +532,41 @@ impl SqliteSpindleService {
                         &rel_input,
                         "continuity_package",
                     )?;
+                    let index = mirror_claims.len();
+                    mirror_claims.push(legacy_claim(
+                        &tx_project_id,
+                        &target_branch_id,
+                        &format!(
+                            "{mirror_revision_id}:relationship:{}:{}",
+                            entry.character_a_id, entry.character_b_id
+                        ),
+                        Some(&tx_scene.id),
+                        &mirror_placement,
+                        ClaimEntity::Resolved {
+                            id: entry.character_a_id.clone(),
+                        },
+                        ClaimAssertion::Relationship {
+                            operation: RelationshipOperation::Delta,
+                            other: ClaimEntity::Resolved {
+                                id: entry.character_b_id.clone(),
+                            },
+                            trust: entry.trust_delta,
+                            tension: entry.tension_delta,
+                        },
+                        Some(0),
+                        index,
+                    ));
+                    mirror_source_keys.push((
+                        "relates_to".to_string(),
+                        format!("{}|{}|{}", rel.branch_id, rel.in_id, rel.out_id),
+                    ));
+                    mirror_source_keys.push((
+                        "relationship_scene_delta".to_string(),
+                        format!(
+                            "{}|{}|{}|{}|{}",
+                            rel.branch_id, rel.in_id, rel.out_id, tx_scene.id, "continuity_package"
+                        ),
+                    ));
                     relationship_updates.push(CommitSceneRelationshipResult {
                         character_a_id: entry.character_a_id,
                         character_b_id: entry.character_b_id,
@@ -425,6 +596,21 @@ impl SqliteSpindleService {
                     tx.resolve_validator_findings_for_scenes(
                         &target_branch_id,
                         std::slice::from_ref(&tx_scene.id),
+                    )?;
+                }
+
+                let mirrored = tx.mirror_canon_claims(
+                    &tx_project_id,
+                    &target_branch_id,
+                    &mirror_revision_id,
+                    Some(&tx_scene.id),
+                    mirror_claims,
+                )?;
+                if mirrored.is_some() {
+                    tx.mark_canon_source_rows_mapped(
+                        &tx_project_id,
+                        &target_branch_id,
+                        mirror_source_keys,
                     )?;
                 }
 
