@@ -233,6 +233,9 @@ removal plan.
 
 ### Fixed
 
+- Test fixtures now drop their temporary SQLite directories instead of calling
+  `TempDir::keep()`, preventing multi-gigabyte temp-dir accumulation across
+  workspace test runs.
 - `reader_contract` is no longer immutable. It was set once at `create_project`
   and could never be changed — `update_entity` rejected `reader_contract`,
   `promise`, `style_notes`, and `boundaries` as "not in the update allowlist"
