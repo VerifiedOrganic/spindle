@@ -1,6 +1,6 @@
 use super::*;
 use serde_json::json;
-use spindle_core::models::{CommitSceneOutput, PrepareSceneOutput};
+use spindle_core::models::{CommitSceneInput, CommitSceneOutput, PrepareSceneOutput};
 
 async fn invoke_json(router: &ToolRouter, name: &str, args: Value) -> Value {
     let map = args.as_object().cloned().unwrap_or_default();
@@ -592,4 +592,77 @@ async fn commit_scene_advances_the_authoring_run_phase_only_on_success() {
             .contains("requires book"),
         "book mismatch must name the run book"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn commit_scene_replay_reconciles_a_pending_run_scene() {
+    let router = router().await;
+    let project = invoke_json(
+        &router,
+        "create_project",
+        json!({
+            "name": "Replay Reconcile Novel",
+            "project_type": "novel",
+            "genre": "fantasy",
+            "reader_contract": { "promise": "p", "style_notes": [], "boundaries": [] }
+        }),
+    )
+    .await;
+    let project_id = project["project_id"].as_str().unwrap().to_string();
+    let run_id = install_run(&router, &project_id, "pending").await;
+
+    let payload = json!({
+        "project_id": project_id,
+        "run_id": run_id,
+        "expected_phase": "pending",
+        "idempotency_key": "replay-reconcile",
+        "book_number": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "full_text": "The replay path still reconciles the run.",
+        "summary": "replay reconciliation",
+        "content_rating": "general"
+    });
+
+    // Commit through the service only: the scene and receipt persist, but the
+    // harness phase advancement (a later write) never runs.
+    let input: CommitSceneInput = serde_json::from_value(payload.clone()).unwrap();
+    let committed = router.service.commit_scene(input).await.unwrap();
+    let (_, _, scenes, _) = router
+        .service
+        .repository()
+        .get_authoring_run(&run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(scenes[0].phase, "pending");
+
+    // A retry now returns the stored receipt AND repairs the pending run scene.
+    let replay_val = invoke_json(&router, "commit_scene", payload.clone()).await;
+    let replay: CommitSceneOutput = serde_json::from_value(replay_val).unwrap();
+    assert!(replay.idempotent_replay);
+    assert_eq!(replay.operation_id, committed.operation_id);
+    let (_, _, scenes, _) = router
+        .service
+        .repository()
+        .get_authoring_run(&run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(scenes[0].phase, "beats_annotated");
+    assert_eq!(
+        scenes[0].scene_id.as_deref(),
+        Some(replay.scene_id.as_str())
+    );
+
+    // A further replay must not regress an already-advanced run.
+    invoke_json(&router, "commit_scene", payload).await;
+    let (_, _, scenes, _) = router
+        .service
+        .repository()
+        .get_authoring_run(&run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(scenes[0].phase, "beats_annotated");
 }

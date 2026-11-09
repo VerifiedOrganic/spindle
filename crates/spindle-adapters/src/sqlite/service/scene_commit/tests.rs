@@ -532,6 +532,55 @@ async fn commit_scene_version_advances_on_each_revision_and_matches_prepare() {
 }
 
 #[tokio::test]
+async fn commit_scene_concurrent_creates_with_expected_zero_only_one_wins() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let project = project(&svc, "commit-concurrent").await;
+
+    let mut first = base_commit(&project.project_id, "The first create attempt landed.");
+    first.expected_scene_version = Some(0);
+    let mut second = base_commit(&project.project_id, "The second create attempt must lose.");
+    second.expected_scene_version = Some(0);
+
+    let (first_result, second_result) =
+        tokio::join!(svc.commit_scene(first), svc.commit_scene(second));
+    let successes = [first_result.is_ok(), second_result.is_ok()]
+        .into_iter()
+        .filter(|ok| *ok)
+        .count();
+    assert_eq!(
+        successes,
+        1,
+        "exactly one racing create with expected version 0 may win: {:?} / {:?}",
+        first_result.as_ref().err().map(|error| error.to_string()),
+        second_result.as_ref().err().map(|error| error.to_string())
+    );
+    let error = if first_result.is_err() {
+        first_result.unwrap_err()
+    } else {
+        second_result.unwrap_err()
+    };
+    assert!(
+        error.to_string().contains("stale expected_scene_version"),
+        "{error:#}"
+    );
+    let branch_id = svc
+        .repository
+        .active_branch_id_public(&project.project_id)
+        .await
+        .unwrap();
+    let scene = svc
+        .repository
+        .find_scene_by_natural_key(&project.project_id, &branch_id, 1, 1, 1)
+        .await
+        .unwrap()
+        .expect("the winning create persisted one scene");
+    assert!(
+        scene.full_text == "The first create attempt landed."
+            || scene.full_text == "The second create attempt must lose."
+    );
+}
+
+#[tokio::test]
 async fn commit_scene_retcon_scan_uses_proposed_revision_text() {
     let (_tmp, svc) = fresh_service_local().await;
     let project = project(&svc, "commit-retcon").await;

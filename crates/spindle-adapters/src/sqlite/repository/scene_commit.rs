@@ -15,7 +15,7 @@ impl CanonTransaction<'_> {
             .ok_or_else(|| anyhow!("scene not found"))
     }
 
-    fn find_scene_by_natural_key_in_tx(
+    pub fn find_scene_by_natural_key_in_tx(
         &self,
         project_id: &str,
         branch_id: &str,

@@ -877,7 +877,6 @@ impl SqliteSpindleService {
         let receipt_claim_owned = receipt_claim.clone();
         let draft_origin_owned = draft_origin.clone();
         let expected_version = input.expected_scene_version;
-        let existing_id = existing_scene.as_ref().map(|scene| scene.id.clone());
         let existing_writer = self
             .repository
             .get_writer_position(&project_id, &branch_id)
@@ -895,11 +894,20 @@ impl SqliteSpindleService {
         let output = self
             .repository
             .with_transaction(move |tx| {
-                // Re-check the optimistic scene version inside the writer
-                // transaction so two racing commits cannot both land.
-                if let (Some(scene_id), Some(expected)) = (existing_id.as_deref(), expected_version)
-                {
-                    let actual = tx.current_scene_version_in_tx(scene_id)?;
+                // Re-resolve the natural key INSIDE the writer transaction so
+                // two racing creates with expected_scene_version=0 cannot both
+                // land: the first creates the scene, the second sees version 1.
+                if let Some(expected) = expected_version {
+                    let actual = match tx.find_scene_by_natural_key_in_tx(
+                        &project_id,
+                        &branch_id,
+                        book_number,
+                        chapter_number,
+                        scene_order,
+                    )? {
+                        Some(scene) => tx.current_scene_version_in_tx(&scene.id)?,
+                        None => 0,
+                    };
                     if actual != expected {
                         anyhow::bail!(
                             "stale expected_scene_version: caller expected {expected}, current is {actual}"

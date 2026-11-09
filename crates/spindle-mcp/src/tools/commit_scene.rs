@@ -22,6 +22,13 @@ impl ToolRouter {
         // A lost-response retry must reach its stored receipt before any live
         // phase assertion: the first success already advanced the run phase.
         if let Some(replay) = self.service.commit_scene_replay(&input).await? {
+            // The receipt commits with the scene, but the harness update is a
+            // later write. Reconcile it on replay so a crash between the two
+            // cannot strand a pending run scene; an already-advanced run is
+            // left untouched.
+            if let Some(run_id) = run_id.as_deref() {
+                self.reconcile_commit_scene_run(run_id, &replay).await?;
+            }
             return Ok(replay);
         }
 
@@ -38,7 +45,7 @@ impl ToolRouter {
             && output.blocking_count == 0
             && let Some(run_id) = run_id.as_deref()
         {
-            self.advance_commit_scene_run(run_id, &output).await?;
+            self.reconcile_commit_scene_run(run_id, &output).await?;
         }
         Ok(output)
     }
@@ -145,7 +152,7 @@ impl ToolRouter {
         Ok(())
     }
 
-    async fn advance_commit_scene_run(
+    async fn reconcile_commit_scene_run(
         &self,
         run_id: &str,
         output: &CommitSceneOutput,
@@ -155,6 +162,10 @@ impl ToolRouter {
             .get_authoring_run(run_id)
             .await?
             .with_context(|| format!("authoring run {run_id} not found"))?;
+        // A completed, paused, or cancelled run is not reactivated by a replay.
+        if matches!(run.status.as_str(), "completed" | "paused" | "cancelled") {
+            return Ok(());
+        }
         if output.branch_id != run.active_branch_id {
             anyhow::bail!(
                 "committed scene branch {} does not match authoring run {run_id}'s branch {}",
@@ -171,17 +182,21 @@ impl ToolRouter {
                 authoring_scene_indices(&state, cursor.chapter_number, cursor.scene_order)
         {
             let scene = &mut state.chapters[chapter_index].scenes[scene_index];
-            scene.phase = ScenePhase::BeatsAnnotated;
+            if scene.phase != ScenePhase::BeatsAnnotated {
+                scene.phase = ScenePhase::BeatsAnnotated;
+                scene.blocked_reason = None;
+            }
             scene.scene_id = Some(output.scene_id.clone());
-            scene.blocked_reason = None;
             found = true;
         }
         if !found {
             for chapter in &mut state.chapters {
                 for scene in &mut chapter.scenes {
                     if scene.scene_id.as_deref() == Some(output.scene_id.as_str()) {
-                        scene.phase = ScenePhase::BeatsAnnotated;
-                        scene.blocked_reason = None;
+                        if scene.phase != ScenePhase::BeatsAnnotated {
+                            scene.phase = ScenePhase::BeatsAnnotated;
+                            scene.blocked_reason = None;
+                        }
                         found = true;
                     }
                 }
