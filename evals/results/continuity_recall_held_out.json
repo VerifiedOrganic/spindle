@@ -1,0 +1,838 @@
+{
+  "benchmark": "continuity_recall_held_out",
+  "version": 1,
+  "tier": "deterministic",
+  "held_out": true,
+  "manuscript_count": 2,
+  "chapters_per_manuscript": [
+    16,
+    16
+  ],
+  "elapsed_seconds": 12.559,
+  "summary": {
+    "total_planted": 56,
+    "total_detected": 24,
+    "overall_recall": 0.4286,
+    "control_false_positive_count": 0,
+    "control_false_positives_by_check_type": {},
+    "per_type_recall": {
+      "character_attribute": {
+        "planted": 8,
+        "detected": 0,
+        "recall": 0.0
+      },
+      "dead_character_acting": {
+        "planted": 8,
+        "detected": 0,
+        "recall": 0.0
+      },
+      "timeline_chronology_rewind": {
+        "planted": 8,
+        "detected": 8,
+        "recall": 1.0
+      },
+      "knowledge_leak_before_learned": {
+        "planted": 8,
+        "detected": 0,
+        "recall": 0.0
+      },
+      "world_rule_cost_violation": {
+        "planted": 8,
+        "detected": 8,
+        "recall": 1.0
+      },
+      "quantity_affordability": {
+        "planted": 8,
+        "detected": 8,
+        "recall": 1.0
+      },
+      "secret_leak": {
+        "planted": 8,
+        "detected": 0,
+        "recall": 0.0
+      }
+    }
+  },
+  "manuscripts": [
+    {
+      "manuscript_id": "cartographers_wake",
+      "chapters": 16,
+      "planted_total": 28,
+      "detected_total": 12,
+      "recall": 0.4286,
+      "control_false_positive_count": 0,
+      "control_false_positives_by_check_type": {},
+      "control_issues": [],
+      "planted_issue_count": 12,
+      "per_type": {
+        "character_attribute": {
+          "planted": 4,
+          "detected": 0,
+          "recall": 0.0
+        },
+        "dead_character_acting": {
+          "planted": 4,
+          "detected": 0,
+          "recall": 0.0
+        },
+        "timeline_chronology_rewind": {
+          "planted": 4,
+          "detected": 4,
+          "recall": 1.0
+        },
+        "knowledge_leak_before_learned": {
+          "planted": 4,
+          "detected": 0,
+          "recall": 0.0
+        },
+        "world_rule_cost_violation": {
+          "planted": 4,
+          "detected": 4,
+          "recall": 1.0
+        },
+        "quantity_affordability": {
+          "planted": 4,
+          "detected": 4,
+          "recall": 1.0
+        },
+        "secret_leak": {
+          "planted": 4,
+          "detected": 0,
+          "recall": 0.0
+        }
+      },
+      "contradictions": [
+        {
+          "contradiction_id": "cartographers_wake.attribute.miro",
+          "contradiction_type": "character_attribute",
+          "variant": "natural_prose",
+          "chapter_number": 1,
+          "description": "handedness established as left",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.attribute.sela",
+          "contradiction_type": "character_attribute",
+          "variant": "natural_prose",
+          "chapter_number": 4,
+          "description": "eye_color established as grey",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.attribute.brann",
+          "contradiction_type": "character_attribute",
+          "variant": "natural_prose",
+          "chapter_number": 8,
+          "description": "height established as tall",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.attribute.orla",
+          "contradiction_type": "character_attribute",
+          "variant": "natural_prose",
+          "chapter_number": 11,
+          "description": "scar_location established as left cheek",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.dead.oren",
+          "contradiction_type": "dead_character_acting",
+          "variant": "present_action",
+          "chapter_number": 3,
+          "description": "oren died in chapter 1 but acts in chapter 3",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.dead.lira",
+          "contradiction_type": "dead_character_acting",
+          "variant": "present_action",
+          "chapter_number": 6,
+          "description": "lira died in chapter 2 but acts in chapter 6",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.dead.piet",
+          "contradiction_type": "dead_character_acting",
+          "variant": "present_action",
+          "chapter_number": 10,
+          "description": "piet died in chapter 5 but acts in chapter 10",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.dead.sera",
+          "contradiction_type": "dead_character_acting",
+          "variant": "present_action",
+          "chapter_number": 13,
+          "description": "sera died in chapter 7 but acts in chapter 13",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.timeline.4",
+          "contradiction_type": "timeline_chronology_rewind",
+          "variant": "clock_rewind",
+          "chapter_number": 4,
+          "description": "scene clock moves backwards",
+          "detected": true,
+          "matched_check_types": [
+            "chronology"
+          ],
+          "matched_messages": [
+            "scene is set earlier in story time (day 102) than the previous scene on thread 'main' but is not marked as a flashback"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.timeline.7",
+          "contradiction_type": "timeline_chronology_rewind",
+          "variant": "clock_rewind",
+          "chapter_number": 7,
+          "description": "scene clock moves backwards",
+          "detected": true,
+          "matched_check_types": [
+            "chronology"
+          ],
+          "matched_messages": [
+            "scene is set earlier in story time (day 111) than the previous scene on thread 'main' but is not marked as a flashback"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.timeline.11",
+          "contradiction_type": "timeline_chronology_rewind",
+          "variant": "clock_rewind",
+          "chapter_number": 11,
+          "description": "scene clock moves backwards",
+          "detected": true,
+          "matched_check_types": [
+            "chronology"
+          ],
+          "matched_messages": [
+            "scene is set earlier in story time (day 123) than the previous scene on thread 'main' but is not marked as a flashback"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.timeline.14",
+          "contradiction_type": "timeline_chronology_rewind",
+          "variant": "clock_rewind",
+          "chapter_number": 14,
+          "description": "scene clock moves backwards",
+          "detected": true,
+          "matched_check_types": [
+            "chronology"
+          ],
+          "matched_messages": [
+            "scene is set earlier in story time (day 132) than the previous scene on thread 'main' but is not marked as a flashback"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.knowledge.cistern",
+          "contradiction_type": "knowledge_leak_before_learned",
+          "variant": "used_before_learned",
+          "chapter_number": 2,
+          "description": "knowledge learned in chapter 8 is used in chapter 2",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.knowledge.cipher",
+          "contradiction_type": "knowledge_leak_before_learned",
+          "variant": "used_before_learned",
+          "chapter_number": 6,
+          "description": "knowledge learned in chapter 10 is used in chapter 6",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.knowledge.north_channel",
+          "contradiction_type": "knowledge_leak_before_learned",
+          "variant": "used_before_learned",
+          "chapter_number": 9,
+          "description": "knowledge learned in chapter 12 is used in chapter 9",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.knowledge.charter_seal",
+          "contradiction_type": "knowledge_leak_before_learned",
+          "variant": "used_before_learned",
+          "chapter_number": 13,
+          "description": "knowledge learned in chapter 14 is used in chapter 13",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.rule.1",
+          "contradiction_type": "world_rule_cost_violation",
+          "variant": "cost_omitted",
+          "chapter_number": 1,
+          "description": "tide or ink rule used without its stated cost",
+          "detected": true,
+          "matched_check_types": [
+            "world_rule_semantic_drift"
+          ],
+          "matched_messages": [
+            "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 366..377)"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.rule.5",
+          "contradiction_type": "world_rule_cost_violation",
+          "variant": "cost_omitted",
+          "chapter_number": 5,
+          "description": "tide or ink rule used without its stated cost",
+          "detected": true,
+          "matched_check_types": [
+            "world_rule_semantic_drift"
+          ],
+          "matched_messages": [
+            "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 226..237)"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.rule.8",
+          "contradiction_type": "world_rule_cost_violation",
+          "variant": "cost_omitted",
+          "chapter_number": 8,
+          "description": "tide or ink rule used without its stated cost",
+          "detected": true,
+          "matched_check_types": [
+            "world_rule_semantic_drift"
+          ],
+          "matched_messages": [
+            "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 263..274)"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.rule.12",
+          "contradiction_type": "world_rule_cost_violation",
+          "variant": "cost_omitted",
+          "chapter_number": 12,
+          "description": "tide or ink rule used without its stated cost",
+          "detected": true,
+          "matched_check_types": [
+            "world_rule_semantic_drift"
+          ],
+          "matched_messages": [
+            "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 240..251)"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.quantity.miro",
+          "contradiction_type": "quantity_affordability",
+          "variant": "band_jump_and_overspend",
+          "chapter_number": 2,
+          "description": "quantity state drops two bands without a change reason",
+          "detected": true,
+          "matched_check_types": [
+            "quantity_drift"
+          ],
+          "matched_messages": [
+            "silver for 'character:01M70C67087T8PVXP8G4C0H6KV' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670A8W8VPSVVQMEMHZRM' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670CSAJQM1S62W44VKJW' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670ES6Q12RFCGBFWZPS5' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.quantity.sela",
+          "contradiction_type": "quantity_affordability",
+          "variant": "band_jump_and_overspend",
+          "chapter_number": 5,
+          "description": "quantity state drops two bands without a change reason",
+          "detected": true,
+          "matched_check_types": [
+            "quantity_drift"
+          ],
+          "matched_messages": [
+            "silver for 'character:01M70C67087T8PVXP8G4C0H6KV' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670A8W8VPSVVQMEMHZRM' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670CSAJQM1S62W44VKJW' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670ES6Q12RFCGBFWZPS5' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.quantity.brann",
+          "contradiction_type": "quantity_affordability",
+          "variant": "band_jump_and_overspend",
+          "chapter_number": 9,
+          "description": "quantity state drops two bands without a change reason",
+          "detected": true,
+          "matched_check_types": [
+            "quantity_drift"
+          ],
+          "matched_messages": [
+            "silver for 'character:01M70C67087T8PVXP8G4C0H6KV' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670A8W8VPSVVQMEMHZRM' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670CSAJQM1S62W44VKJW' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670ES6Q12RFCGBFWZPS5' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.quantity.orla",
+          "contradiction_type": "quantity_affordability",
+          "variant": "band_jump_and_overspend",
+          "chapter_number": 12,
+          "description": "quantity state drops two bands without a change reason",
+          "detected": true,
+          "matched_check_types": [
+            "quantity_drift"
+          ],
+          "matched_messages": [
+            "silver for 'character:01M70C67087T8PVXP8G4C0H6KV' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670A8W8VPSVVQMEMHZRM' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670CSAJQM1S62W44VKJW' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C670ES6Q12RFCGBFWZPS5' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason"
+          ]
+        },
+        {
+          "contradiction_id": "cartographers_wake.secret.heir",
+          "contradiction_type": "secret_leak",
+          "variant": "non_holder_dialogue",
+          "chapter_number": 3,
+          "description": "secret held by miro is disclosed by toma",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.secret.north_sale",
+          "contradiction_type": "secret_leak",
+          "variant": "non_holder_dialogue",
+          "chapter_number": 7,
+          "description": "secret held by sela is disclosed by nessa",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.secret.survey_forgery",
+          "contradiction_type": "secret_leak",
+          "variant": "non_holder_dialogue",
+          "chapter_number": 10,
+          "description": "secret held by brann is disclosed by toma",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "cartographers_wake.secret.burned_charter",
+          "contradiction_type": "secret_leak",
+          "variant": "non_holder_dialogue",
+          "chapter_number": 14,
+          "description": "secret held by orla is disclosed by nessa",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        }
+      ]
+    },
+    {
+      "manuscript_id": "saltwater_hymnal",
+      "chapters": 16,
+      "planted_total": 28,
+      "detected_total": 12,
+      "recall": 0.4286,
+      "control_false_positive_count": 0,
+      "control_false_positives_by_check_type": {},
+      "control_issues": [],
+      "planted_issue_count": 12,
+      "per_type": {
+        "character_attribute": {
+          "planted": 4,
+          "detected": 0,
+          "recall": 0.0
+        },
+        "dead_character_acting": {
+          "planted": 4,
+          "detected": 0,
+          "recall": 0.0
+        },
+        "timeline_chronology_rewind": {
+          "planted": 4,
+          "detected": 4,
+          "recall": 1.0
+        },
+        "knowledge_leak_before_learned": {
+          "planted": 4,
+          "detected": 0,
+          "recall": 0.0
+        },
+        "world_rule_cost_violation": {
+          "planted": 4,
+          "detected": 4,
+          "recall": 1.0
+        },
+        "quantity_affordability": {
+          "planted": 4,
+          "detected": 4,
+          "recall": 1.0
+        },
+        "secret_leak": {
+          "planted": 4,
+          "detected": 0,
+          "recall": 0.0
+        }
+      },
+      "contradictions": [
+        {
+          "contradiction_id": "saltwater_hymnal.attribute.anwen",
+          "contradiction_type": "character_attribute",
+          "variant": "natural_prose",
+          "chapter_number": 1,
+          "description": "handedness established as left",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.attribute.cade",
+          "contradiction_type": "character_attribute",
+          "variant": "natural_prose",
+          "chapter_number": 4,
+          "description": "eye_color established as grey",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.attribute.mor",
+          "contradiction_type": "character_attribute",
+          "variant": "natural_prose",
+          "chapter_number": 8,
+          "description": "height established as tall",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.attribute.rhys",
+          "contradiction_type": "character_attribute",
+          "variant": "natural_prose",
+          "chapter_number": 11,
+          "description": "scar_location established as left cheek",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.dead.ianto",
+          "contradiction_type": "dead_character_acting",
+          "variant": "present_action",
+          "chapter_number": 3,
+          "description": "ianto died in chapter 1 but acts in chapter 3",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.dead.wynn",
+          "contradiction_type": "dead_character_acting",
+          "variant": "present_action",
+          "chapter_number": 6,
+          "description": "wynn died in chapter 2 but acts in chapter 6",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.dead.eira",
+          "contradiction_type": "dead_character_acting",
+          "variant": "present_action",
+          "chapter_number": 10,
+          "description": "eira died in chapter 5 but acts in chapter 10",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.dead.gethin",
+          "contradiction_type": "dead_character_acting",
+          "variant": "present_action",
+          "chapter_number": 13,
+          "description": "gethin died in chapter 7 but acts in chapter 13",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.timeline.4",
+          "contradiction_type": "timeline_chronology_rewind",
+          "variant": "clock_rewind",
+          "chapter_number": 4,
+          "description": "scene clock moves backwards",
+          "detected": true,
+          "matched_check_types": [
+            "chronology"
+          ],
+          "matched_messages": [
+            "scene is set earlier in story time (day 102) than the previous scene on thread 'main' but is not marked as a flashback"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.timeline.7",
+          "contradiction_type": "timeline_chronology_rewind",
+          "variant": "clock_rewind",
+          "chapter_number": 7,
+          "description": "scene clock moves backwards",
+          "detected": true,
+          "matched_check_types": [
+            "chronology"
+          ],
+          "matched_messages": [
+            "scene is set earlier in story time (day 111) than the previous scene on thread 'main' but is not marked as a flashback"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.timeline.11",
+          "contradiction_type": "timeline_chronology_rewind",
+          "variant": "clock_rewind",
+          "chapter_number": 11,
+          "description": "scene clock moves backwards",
+          "detected": true,
+          "matched_check_types": [
+            "chronology"
+          ],
+          "matched_messages": [
+            "scene is set earlier in story time (day 123) than the previous scene on thread 'main' but is not marked as a flashback"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.timeline.14",
+          "contradiction_type": "timeline_chronology_rewind",
+          "variant": "clock_rewind",
+          "chapter_number": 14,
+          "description": "scene clock moves backwards",
+          "detected": true,
+          "matched_check_types": [
+            "chronology"
+          ],
+          "matched_messages": [
+            "scene is set earlier in story time (day 132) than the previous scene on thread 'main' but is not marked as a flashback"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.knowledge.tide_gate",
+          "contradiction_type": "knowledge_leak_before_learned",
+          "variant": "used_before_learned",
+          "chapter_number": 2,
+          "description": "knowledge learned in chapter 8 is used in chapter 2",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.knowledge.drowned_hymn",
+          "contradiction_type": "knowledge_leak_before_learned",
+          "variant": "used_before_learned",
+          "chapter_number": 6,
+          "description": "knowledge learned in chapter 10 is used in chapter 6",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.knowledge.bell_passage",
+          "contradiction_type": "knowledge_leak_before_learned",
+          "variant": "used_before_learned",
+          "chapter_number": 9,
+          "description": "knowledge learned in chapter 12 is used in chapter 9",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.knowledge.left_saw",
+          "contradiction_type": "knowledge_leak_before_learned",
+          "variant": "used_before_learned",
+          "chapter_number": 13,
+          "description": "knowledge learned in chapter 14 is used in chapter 13",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.rule.1",
+          "contradiction_type": "world_rule_cost_violation",
+          "variant": "cost_omitted",
+          "chapter_number": 1,
+          "description": "tide or ink rule used without its stated cost",
+          "detected": true,
+          "matched_check_types": [
+            "world_rule_semantic_drift"
+          ],
+          "matched_messages": [
+            "scene references world rule 'Tide-song' (no violation context detected) (bytes 340..349)"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.rule.5",
+          "contradiction_type": "world_rule_cost_violation",
+          "variant": "cost_omitted",
+          "chapter_number": 5,
+          "description": "tide or ink rule used without its stated cost",
+          "detected": true,
+          "matched_check_types": [
+            "world_rule_semantic_drift"
+          ],
+          "matched_messages": [
+            "scene references world rule 'Tide-song' (no violation context detected) (bytes 197..206)"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.rule.8",
+          "contradiction_type": "world_rule_cost_violation",
+          "variant": "cost_omitted",
+          "chapter_number": 8,
+          "description": "tide or ink rule used without its stated cost",
+          "detected": true,
+          "matched_check_types": [
+            "world_rule_semantic_drift"
+          ],
+          "matched_messages": [
+            "scene references world rule 'Tide-song' (no violation context detected) (bytes 248..257)"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.rule.12",
+          "contradiction_type": "world_rule_cost_violation",
+          "variant": "cost_omitted",
+          "chapter_number": 12,
+          "description": "tide or ink rule used without its stated cost",
+          "detected": true,
+          "matched_check_types": [
+            "world_rule_semantic_drift"
+          ],
+          "matched_messages": [
+            "scene references world rule 'Tide-song' (no violation context detected) (bytes 248..257)"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.quantity.anwen",
+          "contradiction_type": "quantity_affordability",
+          "variant": "band_jump_and_overspend",
+          "chapter_number": 2,
+          "description": "quantity state drops two bands without a change reason",
+          "detected": true,
+          "matched_check_types": [
+            "quantity_drift"
+          ],
+          "matched_messages": [
+            "silver for 'character:01M70C6CT8139Y994PZ5Y0P6GD' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTBYD1PQGXT746Q0KAK' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTC2BBRYY1QFEZBT170' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTE8NE9Q440BZ64DS58' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.quantity.cade",
+          "contradiction_type": "quantity_affordability",
+          "variant": "band_jump_and_overspend",
+          "chapter_number": 5,
+          "description": "quantity state drops two bands without a change reason",
+          "detected": true,
+          "matched_check_types": [
+            "quantity_drift"
+          ],
+          "matched_messages": [
+            "silver for 'character:01M70C6CT8139Y994PZ5Y0P6GD' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTBYD1PQGXT746Q0KAK' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTC2BBRYY1QFEZBT170' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTE8NE9Q440BZ64DS58' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.quantity.mor",
+          "contradiction_type": "quantity_affordability",
+          "variant": "band_jump_and_overspend",
+          "chapter_number": 9,
+          "description": "quantity state drops two bands without a change reason",
+          "detected": true,
+          "matched_check_types": [
+            "quantity_drift"
+          ],
+          "matched_messages": [
+            "silver for 'character:01M70C6CT8139Y994PZ5Y0P6GD' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTBYD1PQGXT746Q0KAK' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTC2BBRYY1QFEZBT170' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTE8NE9Q440BZ64DS58' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.quantity.rhys",
+          "contradiction_type": "quantity_affordability",
+          "variant": "band_jump_and_overspend",
+          "chapter_number": 12,
+          "description": "quantity state drops two bands without a change reason",
+          "detected": true,
+          "matched_check_types": [
+            "quantity_drift"
+          ],
+          "matched_messages": [
+            "silver for 'character:01M70C6CT8139Y994PZ5Y0P6GD' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTBYD1PQGXT746Q0KAK' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTC2BBRYY1QFEZBT170' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+            "silver for 'character:01M70C6CTE8NE9Q440BZ64DS58' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason"
+          ]
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.secret.ship_bell",
+          "contradiction_type": "secret_leak",
+          "variant": "non_holder_dialogue",
+          "chapter_number": 3,
+          "description": "secret held by anwen is disclosed by briar",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.secret.missing_boat",
+          "contradiction_type": "secret_leak",
+          "variant": "non_holder_dialogue",
+          "chapter_number": 7,
+          "description": "secret held by cade is disclosed by nell",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.secret.sawed_keel",
+          "contradiction_type": "secret_leak",
+          "variant": "non_holder_dialogue",
+          "chapter_number": 10,
+          "description": "secret held by mor is disclosed by briar",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        },
+        {
+          "contradiction_id": "saltwater_hymnal.secret.buried_mother",
+          "contradiction_type": "secret_leak",
+          "variant": "non_holder_dialogue",
+          "chapter_number": 14,
+          "description": "secret held by rhys is disclosed by nell",
+          "detected": false,
+          "matched_check_types": [],
+          "matched_messages": []
+        }
+      ]
+    }
+  ]
+}
