@@ -1,0 +1,231 @@
+{
+  "schema_version": "shared_verdict_fixtures_v1",
+  "description": "Shared Python/Rust test vectors for pairwise judge schema validation, preference normalization, dialogue N/A coercion, deblinding, and swapped-order double-judge acceptance resolution.",
+  "rubric_dimensions": [
+    "scene_purpose_fulfilled",
+    "tension_turn",
+    "pov_discipline",
+    "voice_distinctiveness",
+    "dialogue",
+    "prose_freshness",
+    "continuity_with_brief"
+  ],
+  "preference_normalization_cases": [
+    {"raw": "passage_1", "expected": "passage_1"},
+    {"raw": "PASSAGE 1", "expected": "passage_1"},
+    {"raw": "passage-1", "expected": "passage_1"},
+    {"raw": "passage1", "expected": "passage_1"},
+    {"raw": "1", "expected": "passage_1"},
+    {"raw": "first", "expected": "passage_1"},
+    {"raw": "passage_2", "expected": "passage_2"},
+    {"raw": "PASSAGE 2", "expected": "passage_2"},
+    {"raw": "passage-2", "expected": "passage_2"},
+    {"raw": "passage2", "expected": "passage_2"},
+    {"raw": "2", "expected": "passage_2"},
+    {"raw": "second", "expected": "passage_2"},
+    {"raw": "tie", "expected": "tie"},
+    {"raw": "TIE", "expected": "tie"},
+    {"raw": "draw", "expected": "tie"},
+    {"raw": "equal", "expected": "tie"},
+    {"raw": "neither", "expected": "tie"},
+    {"raw": "both", "expected": "tie"},
+    {"raw": "candidate", "expected": null},
+    {"raw": "baseline", "expected": null},
+    {"raw": "incumbent", "expected": null},
+    {"raw": "passage_3", "expected": null},
+    {"raw": "", "expected": null}
+  ],
+  "single_pass_validation_cases": [
+    {
+      "id": "valid_passage_2_win_with_dialogue_na",
+      "passage_1_arm": "baseline",
+      "passage_2_arm": "candidate",
+      "payload": {
+        "rubric": {
+          "scene_purpose_fulfilled": {"score": 4, "rationale": "Passage 2 lands the turn with concrete action."},
+          "tension_turn": {"score": 5, "rationale": "Passage 2 sharpens the reversal beat."},
+          "pov_discipline": {"score": 4, "rationale": "Both hold close POV."},
+          "voice_distinctiveness": {"score": 4, "rationale": "Passage 2 keeps the wry cadence."},
+          "dialogue": {"score": "N/A", "rationale": "Silent solo scene with no spoken lines."},
+          "prose_freshness": {"score": 4, "rationale": "Passage 2 removes the stock contrast hinge."},
+          "continuity_with_brief": {"score": 5, "rationale": "All facts and locks preserved."}
+        },
+        "overall_preference": "PASSAGE 2",
+        "deciding_factor": "Passage 2 resolves the stalled physical beat without losing voice.",
+        "strengths_passage_1": ["Solid opening atmosphere"],
+        "strengths_passage_2": ["Immediate physical causality", "Cleaner close"]
+      },
+      "expect_valid": true,
+      "expected_raw_preference": "passage_2",
+      "expected_deblinded_preference": "candidate",
+      "expected_dialogue_score": 3,
+      "expected_dialogue_na": true
+    },
+    {
+      "id": "valid_score_clamping_and_passage_1_win",
+      "passage_1_arm": "candidate",
+      "passage_2_arm": "baseline",
+      "payload": {
+        "rubric": {
+          "scene_purpose_fulfilled": {"score": 9, "rationale": "Strong scene purpose."},
+          "tension_turn": {"score": 0, "rationale": "Weak turn."},
+          "pov_discipline": {"score": 4, "rationale": "Good POV."},
+          "voice_distinctiveness": {"score": 4, "rationale": "Distinct voice."},
+          "dialogue": {"score": 5, "rationale": "Sharp subtext."},
+          "prose_freshness": {"score": 4, "rationale": "Fresh imagery."},
+          "continuity_with_brief": {"score": 5, "rationale": "Exact continuity."}
+        },
+        "overall_preference": "first",
+        "deciding_factor": "Passage 1 has sharper subtext and cleaner continuity.",
+        "strengths_passage_1": ["Sharp subtext"],
+        "strengths_passage_2": ["Steady pacing"]
+      },
+      "expect_valid": true,
+      "expected_raw_preference": "passage_1",
+      "expected_deblinded_preference": "candidate",
+      "expected_clamped_scores": {
+        "scene_purpose_fulfilled": 5,
+        "tension_turn": 1
+      }
+    },
+    {
+      "id": "invalid_missing_dimension",
+      "passage_1_arm": "baseline",
+      "passage_2_arm": "candidate",
+      "payload": {
+        "rubric": {
+          "scene_purpose_fulfilled": {"score": 4, "rationale": "Good."},
+          "tension_turn": {"score": 4, "rationale": "Good."},
+          "pov_discipline": {"score": 4, "rationale": "Good."},
+          "voice_distinctiveness": {"score": 4, "rationale": "Good."},
+          "dialogue": {"score": 4, "rationale": "Good."},
+          "prose_freshness": {"score": 4, "rationale": "Good."}
+        },
+        "overall_preference": "passage_1",
+        "deciding_factor": "Missing continuity_with_brief."
+      },
+      "expect_valid": false
+    },
+    {
+      "id": "invalid_non_dialogue_na_score",
+      "passage_1_arm": "baseline",
+      "passage_2_arm": "candidate",
+      "payload": {
+        "rubric": {
+          "scene_purpose_fulfilled": {"score": "N/A", "rationale": "Not applicable."},
+          "tension_turn": {"score": 4, "rationale": "Good."},
+          "pov_discipline": {"score": 4, "rationale": "Good."},
+          "voice_distinctiveness": {"score": 4, "rationale": "Good."},
+          "dialogue": {"score": 4, "rationale": "Good."},
+          "prose_freshness": {"score": 4, "rationale": "Good."},
+          "continuity_with_brief": {"score": 4, "rationale": "Good."}
+        },
+        "overall_preference": "passage_1",
+        "deciding_factor": "Invalid N/A on non-dialogue dimension."
+      },
+      "expect_valid": false
+    },
+    {
+      "id": "invalid_preference_token",
+      "passage_1_arm": "baseline",
+      "passage_2_arm": "candidate",
+      "payload": {
+        "rubric": {
+          "scene_purpose_fulfilled": {"score": 4, "rationale": "Good."},
+          "tension_turn": {"score": 4, "rationale": "Good."},
+          "pov_discipline": {"score": 4, "rationale": "Good."},
+          "voice_distinctiveness": {"score": 4, "rationale": "Good."},
+          "dialogue": {"score": 4, "rationale": "Good."},
+          "prose_freshness": {"score": 4, "rationale": "Good."},
+          "continuity_with_brief": {"score": 4, "rationale": "Good."}
+        },
+        "overall_preference": "candidate",
+        "deciding_factor": "Unblinded preference token is rejected."
+      },
+      "expect_valid": false
+    }
+  ],
+  "double_order_resolution_cases": [
+    {
+      "id": "both_orders_prefer_candidate_order_a_first",
+      "pass_1": {"passage_1_arm": "candidate", "passage_2_arm": "baseline", "raw_preference": "passage_1", "deblinded_preference": "candidate"},
+      "pass_2": {"passage_1_arm": "baseline", "passage_2_arm": "candidate", "raw_preference": "passage_2", "deblinded_preference": "candidate"},
+      "expected_verdict": "candidate",
+      "expected_accepted": true,
+      "expected_position_bias": null,
+      "expected_retention_reason": null
+    },
+    {
+      "id": "both_orders_prefer_candidate_order_b_first",
+      "pass_1": {"passage_1_arm": "baseline", "passage_2_arm": "candidate", "raw_preference": "passage_2", "deblinded_preference": "candidate"},
+      "pass_2": {"passage_1_arm": "candidate", "passage_2_arm": "baseline", "raw_preference": "passage_1", "deblinded_preference": "candidate"},
+      "expected_verdict": "candidate",
+      "expected_accepted": true,
+      "expected_position_bias": null,
+      "expected_retention_reason": null
+    },
+    {
+      "id": "both_orders_prefer_baseline",
+      "pass_1": {"passage_1_arm": "candidate", "passage_2_arm": "baseline", "raw_preference": "passage_2", "deblinded_preference": "baseline"},
+      "pass_2": {"passage_1_arm": "baseline", "passage_2_arm": "candidate", "raw_preference": "passage_1", "deblinded_preference": "baseline"},
+      "expected_verdict": "baseline",
+      "expected_accepted": false,
+      "expected_position_bias": null,
+      "expected_retention_reason": "judge_preferred_incumbent"
+    },
+    {
+      "id": "both_orders_tie",
+      "pass_1": {"passage_1_arm": "candidate", "passage_2_arm": "baseline", "raw_preference": "tie", "deblinded_preference": "tie"},
+      "pass_2": {"passage_1_arm": "baseline", "passage_2_arm": "candidate", "raw_preference": "tie", "deblinded_preference": "tie"},
+      "expected_verdict": "tie",
+      "expected_accepted": false,
+      "expected_position_bias": null,
+      "expected_retention_reason": "judge_tie"
+    },
+    {
+      "id": "first_position_bias_becomes_tie_and_retains_incumbent",
+      "pass_1": {"passage_1_arm": "candidate", "passage_2_arm": "baseline", "raw_preference": "passage_1", "deblinded_preference": "candidate"},
+      "pass_2": {"passage_1_arm": "baseline", "passage_2_arm": "candidate", "raw_preference": "passage_1", "deblinded_preference": "baseline"},
+      "expected_verdict": "tie",
+      "expected_accepted": false,
+      "expected_position_bias": "first_position",
+      "expected_retention_reason": "judge_order_disagreement_tie"
+    },
+    {
+      "id": "second_position_bias_becomes_tie_and_retains_incumbent",
+      "pass_1": {"passage_1_arm": "candidate", "passage_2_arm": "baseline", "raw_preference": "passage_2", "deblinded_preference": "baseline"},
+      "pass_2": {"passage_1_arm": "baseline", "passage_2_arm": "candidate", "raw_preference": "passage_2", "deblinded_preference": "candidate"},
+      "expected_verdict": "tie",
+      "expected_accepted": false,
+      "expected_position_bias": "second_position",
+      "expected_retention_reason": "judge_order_disagreement_tie"
+    },
+    {
+      "id": "second_position_bias_when_baseline_first_in_pass_1",
+      "pass_1": {"passage_1_arm": "baseline", "passage_2_arm": "candidate", "raw_preference": "passage_2", "deblinded_preference": "candidate"},
+      "pass_2": {"passage_1_arm": "candidate", "passage_2_arm": "baseline", "raw_preference": "passage_2", "deblinded_preference": "baseline"},
+      "expected_verdict": "tie",
+      "expected_accepted": false,
+      "expected_position_bias": "second_position",
+      "expected_retention_reason": "judge_order_disagreement_tie"
+    },
+    {
+      "id": "tie_flip_candidate_then_tie_retains_incumbent",
+      "pass_1": {"passage_1_arm": "candidate", "passage_2_arm": "baseline", "raw_preference": "passage_1", "deblinded_preference": "candidate"},
+      "pass_2": {"passage_1_arm": "baseline", "passage_2_arm": "candidate", "raw_preference": "tie", "deblinded_preference": "tie"},
+      "expected_verdict": "tie",
+      "expected_accepted": false,
+      "expected_position_bias": "tie_flip",
+      "expected_retention_reason": "judge_order_disagreement_tie"
+    },
+    {
+      "id": "tie_flip_tie_then_candidate_retains_incumbent",
+      "pass_1": {"passage_1_arm": "baseline", "passage_2_arm": "candidate", "raw_preference": "tie", "deblinded_preference": "tie"},
+      "pass_2": {"passage_1_arm": "candidate", "passage_2_arm": "baseline", "raw_preference": "passage_1", "deblinded_preference": "candidate"},
+      "expected_verdict": "tie",
+      "expected_accepted": false,
+      "expected_position_bias": "tie_flip",
+      "expected_retention_reason": "judge_order_disagreement_tie"
+    }
+  ]
+}

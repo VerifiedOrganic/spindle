@@ -5,9 +5,14 @@ use crate::drafting::{
         CriticBudget, assemble_critic_messages, assemble_critic_repair_messages,
         ingest_and_dedup_findings, parse_and_validate_critique_output,
     },
+    revision::{
+        JudgeBudget, RevisionBudget, assemble_pairwise_judge_messages, assemble_revision_messages,
+        parse_and_validate_single_judge_pass,
+    },
 };
 use spindle_core::drafting::{
-    CriticFindingInput, DraftingPacketV1, EditorialPolicy, IngestedFinding, ShadowCritiqueOutcome,
+    CriticFindingInput, CritiqueDirective, DeblindedArm, DraftingPacketV1, EditorialPolicy,
+    IngestedFinding, ShadowCritiqueOutcome, SinglePassJudgeRecord,
 };
 
 #[derive(Debug, Clone)]
@@ -16,7 +21,25 @@ pub struct ShadowCritiqueRunResult {
     pub deduplicated_finding_ids: Vec<String>,
     pub prompt_hashes: Vec<String>,
     pub model_call_ids: Vec<String>,
+    pub tokens_used: usize,
     pub outcome: ShadowCritiqueOutcome,
+}
+
+#[derive(Debug, Clone)]
+pub struct RevisionCandidateRunResult {
+    pub route_used: String,
+    pub prompt_hash: String,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub response: ModelResponse,
+}
+
+#[derive(Debug, Clone)]
+pub struct SinglePassJudgeRunResult {
+    pub prompt_hash: String,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub record: SinglePassJudgeRecord,
 }
 
 impl ModelRouter {
@@ -588,7 +611,7 @@ impl ModelRouter {
             .or(tokenizer);
 
         let route_system = system_prompt_for_request(&route, Some(rating));
-        let (initial_messages, initial_hash, _) = assemble_critic_messages(
+        let (initial_messages, initial_hash, initial_input_tokens) = assemble_critic_messages(
             packet,
             expected_packet_hash,
             base_text,
@@ -684,6 +707,16 @@ impl ModelRouter {
         if let Some(cid) = resp1.call_id.clone() {
             model_call_ids.push(cid);
         }
+        let resp1_output_tokens = resp1
+            .usage
+            .as_ref()
+            .and_then(|u| u.output_tokens)
+            .map(|n| n as usize)
+            .unwrap_or_else(|| {
+                t.and_then(|tok| tok.count_text(&resp1.output).ok())
+                    .unwrap_or(0)
+            });
+        let call1_tokens = initial_input_tokens.saturating_add(resp1_output_tokens);
 
         match parse_and_validate_critique_output(
             &resp1.output,
@@ -697,6 +730,7 @@ impl ModelRouter {
                 deduplicated_finding_ids,
                 prompt_hashes,
                 model_call_ids,
+                tokens_used: call1_tokens,
                 outcome: ShadowCritiqueOutcome::Critiqued {
                     critique: Box::new(valid_critique),
                     repair_used: false,
@@ -709,6 +743,7 @@ impl ModelRouter {
                         deduplicated_finding_ids,
                         prompt_hashes,
                         model_call_ids,
+                        tokens_used: call1_tokens,
                         outcome: ShadowCritiqueOutcome::CriticInvalid {
                             reason: first_err.to_string(),
                             attempts: 1,
@@ -718,28 +753,32 @@ impl ModelRouter {
                 }
 
                 // Bounded 1-shot schema/anchor repair inside the call cap
-                let (repair_messages, repair_hash, _) = match assemble_critic_repair_messages(
-                    &initial_messages,
-                    &resp1.output,
-                    &first_err,
-                    budget,
-                    t,
-                ) {
-                    Ok(v) => v,
-                    Err(prep_err) => {
-                        return Ok(ShadowCritiqueRunResult {
-                            ingested_findings,
-                            deduplicated_finding_ids,
-                            prompt_hashes,
-                            model_call_ids,
-                            outcome: ShadowCritiqueOutcome::CriticInvalid {
-                                reason: format!("{first_err}; repair assembly failed: {prep_err}"),
-                                attempts: 1,
-                                repair_attempted: false,
-                            },
-                        });
-                    }
-                };
+                let (repair_messages, repair_hash, repair_input_tokens) =
+                    match assemble_critic_repair_messages(
+                        &initial_messages,
+                        &resp1.output,
+                        &first_err,
+                        budget,
+                        t,
+                    ) {
+                        Ok(v) => v,
+                        Err(prep_err) => {
+                            return Ok(ShadowCritiqueRunResult {
+                                ingested_findings,
+                                deduplicated_finding_ids,
+                                prompt_hashes,
+                                model_call_ids,
+                                tokens_used: call1_tokens,
+                                outcome: ShadowCritiqueOutcome::CriticInvalid {
+                                    reason: format!(
+                                        "{first_err}; repair assembly failed: {prep_err}"
+                                    ),
+                                    attempts: 1,
+                                    repair_attempted: false,
+                                },
+                            });
+                        }
+                    };
                 prompt_hashes.push(repair_hash.clone());
                 route.system_prompt = repair_messages.system.clone();
                 let req2 = ModelRequest {
@@ -815,6 +854,18 @@ impl ModelRouter {
                 if let Some(cid) = resp2.call_id.clone() {
                     model_call_ids.push(cid);
                 }
+                let resp2_output_tokens = resp2
+                    .usage
+                    .as_ref()
+                    .and_then(|u| u.output_tokens)
+                    .map(|n| n as usize)
+                    .unwrap_or_else(|| {
+                        t.and_then(|tok| tok.count_text(&resp2.output).ok())
+                            .unwrap_or(0)
+                    });
+                let total_critic_tokens = call1_tokens
+                    .saturating_add(repair_input_tokens)
+                    .saturating_add(resp2_output_tokens);
 
                 match parse_and_validate_critique_output(
                     &resp2.output,
@@ -828,6 +879,7 @@ impl ModelRouter {
                         deduplicated_finding_ids,
                         prompt_hashes,
                         model_call_ids,
+                        tokens_used: total_critic_tokens,
                         outcome: ShadowCritiqueOutcome::Critiqued {
                             critique: Box::new(repaired_critique),
                             repair_used: true,
@@ -838,6 +890,7 @@ impl ModelRouter {
                         deduplicated_finding_ids,
                         prompt_hashes,
                         model_call_ids,
+                        tokens_used: total_critic_tokens,
                         outcome: ShadowCritiqueOutcome::CriticInvalid {
                             reason: repair_err.to_string(),
                             attempts: 2,
@@ -847,6 +900,495 @@ impl ModelRouter {
                 }
             }
         }
+    }
+
+    /// Derive the effective `RevisionBudget` (`18,000` input / `3,000` output / `512` framing)
+    /// and provider settings metadata for prior-draft revision (`revise` route falling back to `draft`).
+    pub fn eval_revision_budget_and_settings(
+        &self,
+        rating: &str,
+        generation_seed: Option<i64>,
+    ) -> anyhow::Result<(RevisionBudget, serde_json::Value)> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
+        let (route_name, route) = match resolve_cleared_route(&runtime, "revise", Some(rating)) {
+            Ok(r) => ("revise", r.clone()),
+            Err(_) => (
+                "draft",
+                resolve_cleared_route(&runtime, "draft", Some(rating))?.clone(),
+            ),
+        };
+        anyhow::ensure!(
+            route.adapter_kind == "http",
+            "budget_unknown: revision framing is only verified for HTTP adapters"
+        );
+        let agent = http_agent_for_route(&runtime, &route)?;
+        let context_window = agent.config.max_context.unwrap_or(32_768);
+        let mut budget = RevisionBudget::scene_default(agent.config.model.clone(), context_window);
+        if let Some(max_tokens) = route.max_tokens {
+            budget.output_reserve = budget.output_reserve.max(max_tokens as usize);
+        }
+        budget.generation_seed = generation_seed.or(route.seed);
+        let effective_max_tokens = route
+            .max_tokens
+            .unwrap_or_else(|| u32::try_from(budget.output_reserve).unwrap_or(3_000));
+        let settings = if agent.config.tokenizer.is_some() {
+            let scope = self.counter_scope(&runtime, &route)?;
+            let encoder = self.configured_tokenizer(&scope)?;
+            serde_json::json!({
+                "route": route_name,
+                "transport": "ollama_native_chat",
+                "agent_id": agent.config.id,
+                "model": agent.config.model,
+                "model_revision": encoder.config().model_revision,
+                "tokenizer_id": encoder.id(),
+                "tokenizer_version": encoder.version(),
+                "context_window": scope.max_context,
+                "max_tokens": effective_max_tokens,
+                "output_reserve": budget.output_reserve,
+                "input_limit": budget.input_limit,
+                "framing_reserve": budget.framing_reserve,
+                "temperature": route.temperature,
+                "top_p": route.top_p,
+                "seed": budget.generation_seed,
+                "truncate": false,
+                "shift": false,
+            })
+        } else {
+            serde_json::json!({
+                "route": route_name,
+                "transport": "openai_compatible_http",
+                "agent_id": agent.config.id,
+                "model": agent.config.model,
+                "model_revision": serde_json::Value::Null,
+                "tokenizer_id": serde_json::Value::Null,
+                "tokenizer_version": serde_json::Value::Null,
+                "context_window": context_window,
+                "max_tokens": effective_max_tokens,
+                "output_reserve": budget.output_reserve,
+                "input_limit": budget.input_limit,
+                "framing_reserve": budget.framing_reserve,
+                "temperature": route.temperature,
+                "top_p": route.top_p,
+                "seed": budget.generation_seed,
+                "truncate": false,
+                "shift": false,
+            })
+        };
+        Ok((budget, settings))
+    }
+
+    /// Derive the effective `JudgeBudget` (`16,000` input / `1,000` output / `512` framing)
+    /// and provider settings metadata for the `review` route pairwise acceptance judge.
+    pub fn eval_judge_budget_and_settings(
+        &self,
+        route_name: &str,
+        rating: &str,
+        generation_seed: Option<i64>,
+    ) -> anyhow::Result<(JudgeBudget, serde_json::Value)> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
+        let route = resolve_cleared_route(&runtime, route_name, Some(rating))?.clone();
+        anyhow::ensure!(
+            route.adapter_kind == "http",
+            "budget_unknown: judge framing is only verified for HTTP adapters"
+        );
+        let agent = http_agent_for_route(&runtime, &route)?;
+        let context_window = agent.config.max_context.unwrap_or(32_768);
+        let mut budget = JudgeBudget::scene_default(agent.config.model.clone(), context_window);
+        if let Some(max_tokens) = route.max_tokens {
+            budget.output_reserve = budget.output_reserve.max(max_tokens as usize);
+        }
+        budget.generation_seed = generation_seed.or(route.seed);
+        let effective_max_tokens = route
+            .max_tokens
+            .unwrap_or_else(|| u32::try_from(budget.output_reserve).unwrap_or(1_000));
+        let settings = if agent.config.tokenizer.is_some() {
+            let scope = self.counter_scope(&runtime, &route)?;
+            let encoder = self.configured_tokenizer(&scope)?;
+            serde_json::json!({
+                "route": route_name,
+                "transport": "ollama_native_chat",
+                "agent_id": agent.config.id,
+                "model": agent.config.model,
+                "model_revision": encoder.config().model_revision,
+                "tokenizer_id": encoder.id(),
+                "tokenizer_version": encoder.version(),
+                "context_window": scope.max_context,
+                "max_tokens": effective_max_tokens,
+                "output_reserve": budget.output_reserve,
+                "input_limit": budget.input_limit,
+                "framing_reserve": budget.framing_reserve,
+                "temperature": route.temperature,
+                "top_p": route.top_p,
+                "seed": budget.generation_seed,
+                "truncate": false,
+                "shift": false,
+            })
+        } else {
+            serde_json::json!({
+                "route": route_name,
+                "transport": "openai_compatible_http",
+                "agent_id": agent.config.id,
+                "model": agent.config.model,
+                "model_revision": serde_json::Value::Null,
+                "tokenizer_id": serde_json::Value::Null,
+                "tokenizer_version": serde_json::Value::Null,
+                "context_window": context_window,
+                "max_tokens": effective_max_tokens,
+                "output_reserve": budget.output_reserve,
+                "input_limit": budget.input_limit,
+                "framing_reserve": budget.framing_reserve,
+                "temperature": route.temperature,
+                "top_p": route.top_p,
+                "seed": budget.generation_seed,
+                "truncate": false,
+                "shift": false,
+            })
+        };
+        Ok((budget, settings))
+    }
+
+    /// Execute a prior-draft revision pass over `incumbent_text` using the selected
+    /// actionable `directives` and `strengths_to_preserve` on the `revise` route
+    /// (falling back to `draft` when `revise` is not separately configured).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn revise_draft_candidate(
+        &self,
+        policy: EditorialPolicy,
+        packet: &DraftingPacketV1,
+        incumbent_text: &str,
+        incumbent_text_hash: &str,
+        directives: &[CritiqueDirective],
+        strengths_to_preserve: &[String],
+        budget: &RevisionBudget,
+        tokenizer: Option<&dyn DraftTokenizer>,
+    ) -> anyhow::Result<RevisionCandidateRunResult> {
+        anyhow::ensure!(
+            policy == EditorialPolicy::CritiqueV1,
+            "prior-draft revision requires critique_v1 policy"
+        );
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
+        let rating = packet.scene_card.rating.as_str();
+        let (route_name, mut route) = match resolve_cleared_route(&runtime, "revise", Some(rating))
+        {
+            Ok(r) => ("revise", r.clone()),
+            Err(_) => (
+                "draft",
+                resolve_cleared_route(&runtime, "draft", Some(rating))?.clone(),
+            ),
+        };
+        anyhow::ensure!(
+            route.adapter_kind == "http",
+            "budget_unknown: revision framing is only verified for HTTP adapters"
+        );
+        let agent = http_agent_for_route(&runtime, &route)?;
+        anyhow::ensure!(
+            agent.config.model == budget.model_id,
+            "budget_unknown: resolved revision model does not match revision budget"
+        );
+        let reserve: u32 = budget.output_reserve.try_into()?;
+        anyhow::ensure!(reserve > 0, "revision output reserve must be positive");
+        anyhow::ensure!(
+            route.max_tokens.is_none_or(|max| max <= reserve),
+            "configured revision output exceeds revision reservation"
+        );
+        if route.max_tokens.is_none() {
+            route.max_tokens = Some(reserve);
+        }
+        if budget.generation_seed.is_some() {
+            route.seed = budget.generation_seed;
+        }
+        let scope = if agent.config.tokenizer.is_some() || tokenizer.is_none() {
+            Some(self.counter_scope(&runtime, &route)?)
+        } else {
+            None
+        };
+        if let Some(scope) = &scope {
+            anyhow::ensure!(
+                budget.context_window <= scope.max_context,
+                "revision window exceeds configured model context"
+            );
+        }
+        let configured = scope
+            .as_ref()
+            .map(|scope| self.configured_tokenizer(scope))
+            .transpose()?;
+        let t = configured
+            .as_deref()
+            .map(|encoder| encoder as &dyn DraftTokenizer)
+            .or(tokenizer);
+
+        let route_system = system_prompt_for_request(&route, Some(rating));
+        let (messages, prompt_hash, input_tokens) = assemble_revision_messages(
+            packet,
+            incumbent_text,
+            incumbent_text_hash,
+            directives,
+            strengths_to_preserve,
+            budget,
+            t,
+            &route_system,
+        )?;
+        route.system_prompt = messages.system.clone();
+        let req = ModelRequest {
+            route: route_name.into(),
+            prompt: messages.user.clone(),
+            rating: Some(rating.into()),
+            context: Some(RequestContext {
+                project_id: Some(packet.project_id.clone()),
+                scene_id: packet.scene_id.clone(),
+                run_id: packet.run_id.clone(),
+                prompt_template_id: Some("draft.revise_v1".into()),
+                prompt_version: Some("v1".into()),
+                context_packet_hash: Some(prompt_hash.clone()),
+                ..Default::default()
+            }),
+        };
+        let verified_count = if let (Some(scope), Some(encoder)) = (&scope, &configured)
+            && encoder.config().verify_each_prompt
+        {
+            let receipt = self
+                .probe_count(scope, &messages, Some(rating), req.context.as_ref())
+                .await?;
+            encoder.verify_count(&messages, receipt.input_tokens)?;
+            Some(receipt.input_tokens)
+        } else {
+            None
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        self.record_dispatch(DispatchRecord::Dispatch {
+            route: req.route.clone(),
+            agent: dispatch_agent_label(&runtime, &route),
+            rating: req.rating.clone(),
+            prompt: req.prompt.clone(),
+        })?;
+        let start = std::time::Instant::now();
+        let mut resp = if let Some(scope) = &scope {
+            self.run_ollama_packet(scope, &route, &messages).await
+        } else {
+            self.run_http_inner(&runtime, &route, req.rating.as_deref(), &req.prompt, false)
+                .await
+        };
+        self.record_usage(
+            &req.route,
+            req.rating.as_deref(),
+            req.context.as_ref(),
+            &req.prompt,
+            false,
+            Some(&route),
+            start,
+            &mut resp,
+        )
+        .await;
+        let resp = resp?;
+        if let Some(encoder) = &configured {
+            let count = resp
+                .usage
+                .as_ref()
+                .and_then(|u| u.input_tokens)
+                .context("native revision missing prompt_eval_count; recovery required")?;
+            encoder.verify_count(&messages, count.try_into()?)?;
+            if let Some(verified) = verified_count {
+                anyhow::ensure!(
+                    count == verified as u64,
+                    "native revision prompt count differs from verified probe; recovery required"
+                );
+            }
+        }
+        let output_tokens = resp
+            .usage
+            .as_ref()
+            .and_then(|u| u.output_tokens)
+            .map(|n| n as usize)
+            .unwrap_or_else(|| {
+                t.and_then(|tok| tok.count_text(&resp.output).ok())
+                    .unwrap_or(0)
+            });
+
+        Ok(RevisionCandidateRunResult {
+            route_used: route_name.into(),
+            prompt_hash,
+            input_tokens,
+            output_tokens,
+            response: resp,
+        })
+    }
+
+    /// Execute a single blinded pairwise acceptance judge pass on the `review` route.
+    /// Any transport, token verification, or JSON validation error is returned so the
+    /// caller can fail closed (`JudgeInvalidOrUnavailable`) and retain the incumbent.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn judge_candidate_single_pass(
+        &self,
+        policy: EditorialPolicy,
+        packet: &DraftingPacketV1,
+        order_index: u8,
+        passage_1_arm: DeblindedArm,
+        passage_1_text: &str,
+        passage_2_arm: DeblindedArm,
+        passage_2_text: &str,
+        budget: &JudgeBudget,
+        tokenizer: Option<&dyn DraftTokenizer>,
+    ) -> anyhow::Result<SinglePassJudgeRunResult> {
+        anyhow::ensure!(
+            policy == EditorialPolicy::CritiqueV1,
+            "pairwise acceptance judge requires critique_v1 policy"
+        );
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?
+            .clone();
+        let rating = packet.scene_card.rating.as_str();
+        let mut route = resolve_cleared_route(&runtime, "review", Some(rating))?.clone();
+        anyhow::ensure!(
+            route.adapter_kind == "http",
+            "budget_unknown: judge framing is only verified for HTTP adapters"
+        );
+        let agent = http_agent_for_route(&runtime, &route)?;
+        anyhow::ensure!(
+            agent.config.model == budget.model_id,
+            "budget_unknown: resolved review model does not match judge budget"
+        );
+        let reserve: u32 = budget.output_reserve.try_into()?;
+        anyhow::ensure!(reserve > 0, "judge output reserve must be positive");
+        // Allow the judge call to cap output tokens at the judge's output_reserve (1,000)
+        // even if the shared review route has a larger default max_tokens (e.g. 1,500).
+        route.max_tokens = Some(route.max_tokens.map_or(reserve, |max| max.min(reserve)));
+        if budget.generation_seed.is_some() {
+            route.seed = budget.generation_seed;
+        }
+        let scope = if agent.config.tokenizer.is_some() || tokenizer.is_none() {
+            Some(self.counter_scope(&runtime, &route)?)
+        } else {
+            None
+        };
+        if let Some(scope) = &scope {
+            anyhow::ensure!(
+                budget.context_window <= scope.max_context,
+                "judge window exceeds configured review model context"
+            );
+        }
+        let configured = scope
+            .as_ref()
+            .map(|scope| self.configured_tokenizer(scope))
+            .transpose()?;
+        let t = configured
+            .as_deref()
+            .map(|encoder| encoder as &dyn DraftTokenizer)
+            .or(tokenizer);
+
+        let route_system = system_prompt_for_request(&route, Some(rating));
+        let (messages, prompt_hash, input_tokens) = assemble_pairwise_judge_messages(
+            packet,
+            passage_1_text,
+            passage_2_text,
+            budget,
+            t,
+            &route_system,
+        )?;
+        route.system_prompt = messages.system.clone();
+        let req = ModelRequest {
+            route: "review".into(),
+            prompt: messages.user.clone(),
+            rating: Some(rating.into()),
+            context: Some(RequestContext {
+                project_id: Some(packet.project_id.clone()),
+                scene_id: packet.scene_id.clone(),
+                run_id: packet.run_id.clone(),
+                prompt_template_id: Some(format!("review.pairwise_judge_v1.pass_{order_index}")),
+                prompt_version: Some("v1".into()),
+                context_packet_hash: Some(prompt_hash.clone()),
+                ..Default::default()
+            }),
+        };
+        let verified_count = if let (Some(scope), Some(encoder)) = (&scope, &configured)
+            && encoder.config().verify_each_prompt
+        {
+            let receipt = self
+                .probe_count(scope, &messages, Some(rating), req.context.as_ref())
+                .await?;
+            encoder.verify_count(&messages, receipt.input_tokens)?;
+            Some(receipt.input_tokens)
+        } else {
+            None
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        self.record_dispatch(DispatchRecord::Dispatch {
+            route: req.route.clone(),
+            agent: dispatch_agent_label(&runtime, &route),
+            rating: req.rating.clone(),
+            prompt: req.prompt.clone(),
+        })?;
+        let start = std::time::Instant::now();
+        let mut resp = if let Some(scope) = &scope {
+            self.run_ollama_packet(scope, &route, &messages).await
+        } else {
+            self.run_http_inner(&runtime, &route, req.rating.as_deref(), &req.prompt, false)
+                .await
+        };
+        self.record_usage(
+            &req.route,
+            req.rating.as_deref(),
+            req.context.as_ref(),
+            &req.prompt,
+            false,
+            Some(&route),
+            start,
+            &mut resp,
+        )
+        .await;
+        let resp = resp?;
+        if let Some(encoder) = &configured {
+            let count = resp
+                .usage
+                .as_ref()
+                .and_then(|u| u.input_tokens)
+                .context("native judge missing prompt_eval_count; recovery required")?;
+            encoder.verify_count(&messages, count.try_into()?)?;
+            if let Some(verified) = verified_count {
+                anyhow::ensure!(
+                    count == verified as u64,
+                    "native judge prompt count differs from verified probe; recovery required"
+                );
+            }
+        }
+        let output_tokens = resp
+            .usage
+            .as_ref()
+            .and_then(|u| u.output_tokens)
+            .map(|n| n as usize)
+            .unwrap_or_else(|| {
+                t.and_then(|tok| tok.count_text(&resp.output).ok())
+                    .unwrap_or(0)
+            });
+
+        let record = parse_and_validate_single_judge_pass(
+            &resp.output,
+            order_index,
+            passage_1_arm,
+            passage_2_arm,
+            prompt_hash.clone(),
+            resp.call_id,
+        )?;
+
+        Ok(SinglePassJudgeRunResult {
+            prompt_hash,
+            input_tokens,
+            output_tokens,
+            record,
+        })
     }
 }
 
@@ -1449,5 +1991,1581 @@ max_tokens = 500
         }
         assert_eq!(std::fs::read(&draft_path).unwrap(), draft_bytes_snapshot);
         assert_eq!(critic_srv.join().unwrap(), 4);
+    }
+
+    fn make_valid_critique_json(
+        packet_hash: &str,
+        base_hash: &str,
+        scene_id: Option<&str>,
+        base_text: &str,
+    ) -> serde_json::Value {
+        let dims: Vec<serde_json::Value> = spindle_core::drafting::CriticDimension::ALL
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "dimension": d.as_str(),
+                    "score_1_to_5": 4,
+                    "evidence_spans": [],
+                    "rationale": format!("Assessment of {}.", d.as_str()),
+                })
+            })
+            .collect();
+        let quote: String = base_text.chars().take(12).collect();
+        let end_byte = quote.len();
+        serde_json::json!({
+            "schema_version": "critique_v1",
+            "base_text_hash": base_hash,
+            "packet_hash": packet_hash,
+            "rubric_version": "scene-critic-v1",
+            "dimensions": dims,
+            "directives": [
+                {
+                    "id": "dir-1",
+                    "dimension": "tension_turn",
+                    "severity": "major",
+                    "priority": 1,
+                    "anchor": {
+                        "scene_id": scene_id,
+                        "base_text_hash": base_hash,
+                        "start_byte": 0,
+                        "end_byte": end_byte,
+                        "exact_quote": quote,
+                        "context_before": null,
+                        "context_after": null
+                    },
+                    "diagnosis": "Opening beat stalls physical momentum.",
+                    "requested_change": "Sharpen opening physical action while keeping all locked items.",
+                    "preserve": ["POV discipline"],
+                    "success_test": "Opening moves immediately into physical action.",
+                    "source_finding_ids": [],
+                    "scope": "span"
+                }
+            ],
+            "strengths_to_preserve": ["Strong closing image"],
+            "requires_author_decision": [],
+            "no_edit_reason": null
+        })
+    }
+
+    fn make_judge_json(overall_preference: &str) -> serde_json::Value {
+        let mut rubric = serde_json::Map::new();
+        for dim in spindle_core::drafting::JudgeRubricDimension::ALL {
+            rubric.insert(
+                dim.as_str().to_string(),
+                serde_json::json!({
+                    "score": 4,
+                    "rationale": format!("Evidence for {}.", dim.as_str())
+                }),
+            );
+        }
+        serde_json::json!({
+            "rubric": rubric,
+            "overall_preference": overall_preference,
+            "deciding_factor": "Stronger physical turn and cleaner continuity.",
+            "strengths_passage_1": ["Atmosphere"],
+            "strengths_passage_2": ["Pacing"]
+        })
+    }
+
+    #[tokio::test]
+    async fn revision_loop_promotes_double_order_winner_and_recovers_from_crash_at_every_boundary()
+    {
+        use crate::drafting::critique::CriticBudget;
+        use crate::drafting::revision::{
+            BoundaryCrashPoint, JudgeBudget, RevisionBudget, RevisionLoopOptions,
+            select_initial_judge_order,
+        };
+        use crate::drafting::tests::{VerifiedFixtureTokenizer, budget, fixture};
+        use crate::sqlite::SqliteSpindleService;
+        use spindle_core::drafting::{DeblindedArm, EditorialPolicy, EditorialStage};
+
+        let temp = tempfile::tempdir().unwrap();
+        let draft_prose = "Cold floodwater rose around the stone sluice.\n\nThe lantern flickered in the damp wind.";
+        let revised_prose = "Cold floodwater surged against the stone sluice as Mara braced her shoulder.\n\nThe lantern flickered in the damp wind.";
+
+        // Spawn draft capture server for initial draft generation
+        let draft_reply = serde_json::json!({
+            "choices": [{"message": {"content": draft_prose}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 18, "total_tokens": 118}
+        })
+        .to_string();
+        let (draft_url, _, draft_srv) = spawn_http_capture_server(vec![(200, draft_reply)]);
+
+        let pool = crate::sqlite::SqlitePool::open(&temp.path().join("spindle.db"))
+            .await
+            .unwrap();
+        let router = ModelRouter::local_only();
+        let cfg_path = temp.path().join("spindle.toml");
+        let cfg_text = format!(
+            "[health_check]\nenabled = false\n[[agents]]\nid = \"venice\"\nname = \"Venice\"\nprovider = \"venice\"\nendpoint = \"{draft_url}\"\nmodel = \"venice-model\"\nratings = [\"general\"]\n[[routing]]\nroute = \"draft\"\nagent = \"venice\"\nmax_tokens = 300\n[[routing]]\nroute = \"review\"\nagent = \"venice\"\nmax_tokens = 500\n"
+        );
+        std::fs::write(&cfg_path, &cfg_text).unwrap();
+        router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+        let repository = crate::sqlite::repository::Repository::with_model_router(
+            pool.clone(),
+            temp.path().join("data"),
+            router.clone(),
+        );
+        let service = SqliteSpindleService::new(repository.clone());
+        let created = service
+            .create_project(spindle_core::models::CreateProjectInput {
+                name: "Revision Loop Test".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: spindle_core::models::ReaderContract {
+                    promise: "A crossing".into(),
+                    style_notes: vec![],
+                    boundaries: vec![],
+                },
+            })
+            .await
+            .unwrap();
+        let active_branch = repository
+            .get_active_branch(&created.project_id)
+            .await
+            .unwrap();
+
+        let mut pkt = fixture();
+        pkt.project_id = created.project_id.clone();
+        pkt.branch_id = active_branch.id.clone();
+        for src in &mut pkt.source_versions {
+            src.branch_id = active_branch.id.clone();
+        }
+        pkt.scene_card.source.branch_id = active_branch.id.clone();
+        pkt.scene_card.pov.source.branch_id = active_branch.id.clone();
+        for c in &mut pkt.hard_constraints {
+            c.source.branch_id = active_branch.id.clone();
+        }
+
+        let mut draft_budget = budget();
+        draft_budget.model_id = "venice-model".into();
+        let initial_draft_path = temp.path().join("initial_draft.artifact.json");
+        let draft_art = service
+            .draft_packet_to_artifact(
+                EditorialPolicy::CritiqueV1,
+                pkt.clone(),
+                &draft_budget,
+                Some(&VerifiedFixtureTokenizer),
+                &initial_draft_path,
+            )
+            .await
+            .unwrap();
+        assert_eq!(draft_srv.join().unwrap(), 1);
+
+        struct StubExtractor;
+        impl spindle_core::drafting::extraction::AcceptedTextExtractor for StubExtractor {
+            fn extract<'a>(
+                &'a self,
+                request: &'a spindle_core::drafting::extraction::AcceptedTextExtractionRequestV1,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = std::result::Result<
+                                spindle_core::drafting::extraction::CompatibilityExtractionV1,
+                                spindle_core::drafting::extraction::ExtractionFailure,
+                            >,
+                        > + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move {
+                    Ok(
+                        spindle_core::drafting::extraction::CompatibilityExtractionV1 {
+                            canon_audit: None,
+                            accepted_text_sha256: request.accepted.text_sha256.clone(),
+                            summary: format!("Extracted {}", &request.accepted.text_sha256[..8]),
+                            tone: Some("tense".into()),
+                            character_states: vec![],
+                            canonical_facts: vec![],
+                            relationship_updates: vec![],
+                            beats: vec![],
+                            continuity_notes: vec![],
+                        },
+                    )
+                })
+            }
+        }
+
+        // Accept and extract the incumbent artifact before revision to verify that winning
+        // promotion invalidates text-bound extraction state and requires fresh extraction.
+        crate::drafting::artifact::accept_artifact(&initial_draft_path, &draft_art.text_sha256)
+            .unwrap();
+        let extracted_incumbent = crate::drafting::artifact::extract_accepted(
+            &initial_draft_path,
+            &StubExtractor,
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            extracted_incumbent
+                .extraction
+                .as_ref()
+                .unwrap()
+                .accepted_text_sha256,
+            draft_art.text_sha256
+        );
+        assert!(extracted_incumbent.extraction_request.is_some());
+        assert_eq!(extracted_incumbent.extraction_attempts, 1);
+        let initial_draft_bytes = std::fs::read(&initial_draft_path).unwrap();
+
+        let rev_sha = {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(revised_prose.as_bytes()))
+        };
+        let (p1_arm, _p2_arm) = select_initial_judge_order(
+            &draft_art.packet_hash,
+            &draft_art.text_sha256,
+            &rev_sha,
+            1,
+            None,
+        );
+        let pass1_pref = if p1_arm == DeblindedArm::Candidate {
+            "passage_1"
+        } else {
+            "passage_2"
+        };
+        let pass2_pref = if p1_arm == DeblindedArm::Candidate {
+            "passage_2"
+        } else {
+            "passage_1"
+        };
+
+        let critique_json = make_valid_critique_json(
+            &draft_art.packet_hash,
+            &draft_art.text_sha256,
+            draft_art.scene_id.as_deref(),
+            &draft_art.text,
+        );
+        let four_paid_replies = vec![
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                })
+                .to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": revised_prose}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                })
+                .to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": make_judge_json(pass1_pref).to_string()}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                })
+                .to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": make_judge_json(pass2_pref).to_string()}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                })
+                .to_string(),
+            ),
+        ];
+
+        let (loop_url, _loop_reqs, loop_srv) = spawn_http_capture_server(four_paid_replies);
+        let updated_cfg = cfg_text.replace(&draft_url, &loop_url);
+        std::fs::write(&cfg_path, updated_cfg).unwrap();
+        router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+        let draft_path = temp.path().join("crash_recovery_draft.artifact.json");
+        std::fs::write(&draft_path, &initial_draft_bytes).unwrap();
+        let loop_path = temp.path().join("crash_recovery_loop.artifact.json");
+
+        let critic_budget = CriticBudget::scene_default("venice-model".into(), 20_000);
+        let revision_budget = RevisionBudget::scene_default("venice-model".into(), 25_000);
+        let judge_budget = JudgeBudget::scene_default("venice-model".into(), 20_000);
+
+        // Crash sequentially at EVERY boundary on the same loop_path!
+        // Because each boundary persists its StageTransitionRecord and state before crashing,
+        // resuming after each crash never replays any already-completed HTTP model call!
+        let boundaries = [
+            BoundaryCrashPoint::Stage(EditorialStage::Drafted, 1),
+            BoundaryCrashPoint::Stage(EditorialStage::DeterministicChecked, 1),
+            BoundaryCrashPoint::Stage(EditorialStage::Critiqued, 1),
+            BoundaryCrashPoint::Stage(EditorialStage::CandidateReady, 1),
+            BoundaryCrashPoint::Stage(EditorialStage::CandidateChecked, 1),
+            BoundaryCrashPoint::JudgePass1(1),
+            BoundaryCrashPoint::Stage(EditorialStage::PairwiseJudged, 1),
+        ];
+
+        for crash_point in boundaries {
+            let err = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &draft_path,
+                    &loop_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions {
+                        crash_after: Some(crash_point),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("simulated_crash_at_boundary"),
+                "unexpected error at {crash_point:?}: {err}"
+            );
+            // At every crash boundary prior to final promotion, the incumbent draft on disk is untouched!
+            assert_eq!(
+                std::fs::read(&draft_path).unwrap(),
+                initial_draft_bytes,
+                "incumbent artifact mutated prematurely at {crash_point:?}"
+            );
+        }
+
+        // Crash immediately after saving the promoted draft artifact, before persisting the
+        // terminal AcceptedRevision loop snapshot (two-file commit boundary).
+        let mid_commit_err = service
+            .revise_artifact_loop(
+                EditorialPolicy::CritiqueV1,
+                &draft_path,
+                &loop_path,
+                vec![],
+                &critic_budget,
+                &revision_budget,
+                &judge_budget,
+                Some(&VerifiedFixtureTokenizer),
+                RevisionLoopOptions {
+                    crash_after: Some(BoundaryCrashPoint::AfterDraftPromotionSave),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            mid_commit_err
+                .to_string()
+                .contains("simulated_crash_at_boundary:after_draft_promotion_save"),
+            "unexpected error at AfterDraftPromotionSave: {mid_commit_err}"
+        );
+
+        // At this point, the draft on disk is already promoted with extraction invalidated,
+        // while the loop artifact on disk is still non-terminal with pending_promotion recorded.
+        let mid_commit_draft = crate::drafting::artifact::load_artifact(&draft_path).unwrap();
+        assert_eq!(mid_commit_draft.text, revised_prose);
+        assert_eq!(mid_commit_draft.text_sha256, rev_sha);
+        assert_eq!(
+            mid_commit_draft.accepted_text_sha256.as_deref(),
+            Some(rev_sha.as_str())
+        );
+        assert!(mid_commit_draft.extraction.is_none());
+        assert!(mid_commit_draft.extraction_request.is_none());
+        assert_eq!(mid_commit_draft.extraction_attempts, 0);
+        assert!(mid_commit_draft.extraction_failure.is_none());
+
+        let mid_commit_loop =
+            crate::drafting::revision::load_revision_loop_artifact(&loop_path).unwrap();
+        assert_eq!(
+            mid_commit_loop.current_stage,
+            EditorialStage::PairwiseJudged
+        );
+        assert!(mid_commit_loop.pending_promotion.is_some());
+
+        // Now resume with no crash hook: it recognizes the completed promotion, does not false-positive
+        // CAS fail against the already-revised draft, and finalizes AcceptedRevision with 0 extra HTTP calls!
+        let final_loop = service
+            .revise_artifact_loop(
+                EditorialPolicy::CritiqueV1,
+                &draft_path,
+                &loop_path,
+                vec![],
+                &critic_budget,
+                &revision_budget,
+                &judge_budget,
+                Some(&VerifiedFixtureTokenizer),
+                RevisionLoopOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(final_loop.current_stage, EditorialStage::AcceptedRevision);
+        assert!(final_loop.revision_promoted);
+        assert_eq!(final_loop.accepted_text, revised_prose);
+        assert_eq!(final_loop.accepted_text_sha256, rev_sha);
+        assert_eq!(final_loop.total_calls_used, 4);
+        assert_eq!(final_loop.retention_reason, None);
+        assert!(final_loop.pending_promotion.is_none());
+
+        // Verify the draft artifact on disk was promoted to the revised text, had its old
+        // extraction state cleared, and can now be extracted for the newly accepted hash.
+        let promoted_draft = crate::drafting::artifact::load_artifact(&draft_path).unwrap();
+        assert_eq!(promoted_draft.text, revised_prose);
+        assert_eq!(
+            promoted_draft.accepted_text_sha256.as_deref(),
+            Some(rev_sha.as_str())
+        );
+        assert!(promoted_draft.extraction.is_none());
+        assert!(promoted_draft.extraction_request.is_none());
+        assert_eq!(promoted_draft.extraction_attempts, 0);
+        assert!(promoted_draft.extraction_failure.is_none());
+
+        let re_extracted = crate::drafting::artifact::extract_accepted(
+            &draft_path,
+            &StubExtractor,
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert_eq!(re_extracted.extraction_attempts, 1);
+        assert_eq!(
+            re_extracted
+                .extraction
+                .as_ref()
+                .unwrap()
+                .accepted_text_sha256,
+            rev_sha
+        );
+        assert_eq!(
+            re_extracted
+                .extraction_request
+                .as_ref()
+                .unwrap()
+                .accepted
+                .text_sha256,
+            rev_sha
+        );
+
+        // Re-running after terminal state is a pure idempotent no-op
+        let idempotent_rerun = service
+            .revise_artifact_loop(
+                EditorialPolicy::CritiqueV1,
+                &draft_path,
+                &loop_path,
+                vec![],
+                &critic_budget,
+                &revision_budget,
+                &judge_budget,
+                Some(&VerifiedFixtureTokenizer),
+                RevisionLoopOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(idempotent_rerun, final_loop);
+
+        // Exactly 4 HTTP requests were made across all 8 crash boundaries + resume + idempotent rerun!
+        assert_eq!(loop_srv.join().unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn revision_loop_retains_incumbent_on_tie_error_new_blocker_fingerprint_and_cas_conflict()
+    {
+        use crate::drafting::critique::CriticBudget;
+        use crate::drafting::revision::{
+            BoundaryCrashPoint, JudgeBudget, RevisionBudget, RevisionLoopOptions,
+            select_initial_judge_order,
+        };
+        use crate::drafting::tests::{VerifiedFixtureTokenizer, budget, fixture};
+        use crate::sqlite::SqliteSpindleService;
+        use spindle_core::drafting::{
+            DeblindedArm, EditorialPolicy, EditorialStage, RevisionRetentionReason,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let draft_prose = "Cold floodwater rose around the stone sluice.\n\nThe lantern flickered in the damp wind.";
+        let revised_clean = "Cold floodwater surged against the stone sluice as Mara braced her shoulder.\n\nThe lantern flickered in the damp wind.";
+        let revised_with_slop_blocker = "Cold floodwater rose.\n\nShe felt a mix of relief and dread as the gate moved. She didn't know what tomorrow would bring.";
+
+        let draft_reply = serde_json::json!({
+            "choices": [{"message": {"content": draft_prose}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 18, "total_tokens": 118}
+        })
+        .to_string();
+        let (draft_url, _, draft_srv) = spawn_http_capture_server(vec![(200, draft_reply)]);
+
+        let pool = crate::sqlite::SqlitePool::open(&temp.path().join("spindle.db"))
+            .await
+            .unwrap();
+        let router = ModelRouter::local_only();
+        let cfg_path = temp.path().join("spindle.toml");
+        let cfg_text = format!(
+            "[health_check]\nenabled = false\n[[agents]]\nid = \"venice\"\nname = \"Venice\"\nprovider = \"venice\"\nendpoint = \"{draft_url}\"\nmodel = \"venice-model\"\nratings = [\"general\"]\n[[routing]]\nroute = \"draft\"\nagent = \"venice\"\nmax_tokens = 300\n[[routing]]\nroute = \"review\"\nagent = \"venice\"\nmax_tokens = 500\n"
+        );
+        std::fs::write(&cfg_path, &cfg_text).unwrap();
+        router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+        let repository = crate::sqlite::repository::Repository::with_model_router(
+            pool.clone(),
+            temp.path().join("data"),
+            router.clone(),
+        );
+        let service = SqliteSpindleService::new(repository.clone());
+        let created = service
+            .create_project(spindle_core::models::CreateProjectInput {
+                name: "Retention Cases Test".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: spindle_core::models::ReaderContract {
+                    promise: "A crossing".into(),
+                    style_notes: vec![],
+                    boundaries: vec![],
+                },
+            })
+            .await
+            .unwrap();
+        let active_branch = repository
+            .get_active_branch(&created.project_id)
+            .await
+            .unwrap();
+
+        let mut pkt = fixture();
+        pkt.project_id = created.project_id.clone();
+        pkt.branch_id = active_branch.id.clone();
+        for src in &mut pkt.source_versions {
+            src.branch_id = active_branch.id.clone();
+        }
+        pkt.scene_card.source.branch_id = active_branch.id.clone();
+        pkt.scene_card.pov.source.branch_id = active_branch.id.clone();
+        for c in &mut pkt.hard_constraints {
+            c.source.branch_id = active_branch.id.clone();
+        }
+
+        let mut draft_budget = budget();
+        draft_budget.model_id = "venice-model".into();
+        let base_draft_path = temp.path().join("base.artifact.json");
+        let draft_art = service
+            .draft_packet_to_artifact(
+                EditorialPolicy::CritiqueV1,
+                pkt,
+                &draft_budget,
+                Some(&VerifiedFixtureTokenizer),
+                &base_draft_path,
+            )
+            .await
+            .unwrap();
+        assert_eq!(draft_srv.join().unwrap(), 1);
+        let base_draft_bytes = std::fs::read(&base_draft_path).unwrap();
+
+        let critique_json = make_valid_critique_json(
+            &draft_art.packet_hash,
+            &draft_art.text_sha256,
+            draft_art.scene_id.as_deref(),
+            &draft_art.text,
+        );
+        let critic_budget = CriticBudget::scene_default("venice-model".into(), 20_000);
+        let revision_budget = RevisionBudget::scene_default("venice-model".into(), 25_000);
+        let judge_budget = JudgeBudget::scene_default("venice-model".into(), 20_000);
+
+        // Case 1: New deterministic hard anti-slop blocker disqualifies candidate BEFORE pairwise judging (only 2 calls: critic + revision)
+        {
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_with_slop_blocker}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 25, "total_tokens": 165}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case1_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case1_loop.json");
+            let res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!res.revision_promoted);
+            assert_eq!(
+                res.retention_reason,
+                Some(RevisionRetentionReason::CandidateDisqualifiedByDeterministicCheck)
+            );
+            assert_eq!(res.total_calls_used, 2);
+            assert_eq!(res.accepted_text, draft_prose);
+            assert_eq!(srv.join().unwrap(), 2);
+        }
+
+        // Case 2: Swapped-order position bias (both passes pick passage_1) resolves to Tie and retains incumbent
+        {
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json("passage_1").to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json("passage_1").to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case2_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case2_loop.json");
+            let res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!res.revision_promoted);
+            assert_eq!(
+                res.retention_reason,
+                Some(RevisionRetentionReason::JudgeOrderDisagreementTie)
+            );
+            assert_eq!(res.accepted_text, draft_prose);
+            assert_eq!(srv.join().unwrap(), 4);
+        }
+
+        // Case 3: Invalid judge JSON output retains incumbent and marks parked_for_review
+        {
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": "not valid judge json"}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 10, "total_tokens": 160}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case3_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case3_loop.json");
+            let res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!res.revision_promoted);
+            assert!(res.parked_for_review);
+            assert_eq!(
+                res.retention_reason,
+                Some(RevisionRetentionReason::JudgeInvalidOrUnavailable)
+            );
+            assert_eq!(res.accepted_text, draft_prose);
+            assert_eq!(srv.join().unwrap(), 3);
+        }
+
+        // Case 4: Identical candidate hash stops before judging (only 2 calls)
+        {
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": draft_prose}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 18, "total_tokens": 158}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case4_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case4_loop.json");
+            let res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!res.revision_promoted);
+            assert_eq!(
+                res.retention_reason,
+                Some(RevisionRetentionReason::IdenticalCandidateHash)
+            );
+            assert_eq!(res.total_calls_used, 2);
+            assert_eq!(srv.join().unwrap(), 2);
+        }
+
+        // Case 5: Compare-and-Swap (CAS) conflict when incumbent artifact on disk is modified before promotion
+        {
+            let rev_sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(revised_clean.as_bytes()))
+            };
+            let (p1_arm, _) = select_initial_judge_order(
+                &draft_art.packet_hash,
+                &draft_art.text_sha256,
+                &rev_sha,
+                1,
+                None,
+            );
+            let pass1_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_1"
+            } else {
+                "passage_2"
+            };
+            let pass2_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_2"
+            } else {
+                "passage_1"
+            };
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass1_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass2_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case5_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case5_loop.json");
+
+            // Pause at PairwiseJudged just before CAS promotion
+            let _ = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions {
+                        crash_after: Some(BoundaryCrashPoint::Stage(
+                            EditorialStage::PairwiseJudged,
+                            1,
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+
+            // Simulate a concurrent edit to the packet's plan_revision on disk before promotion!
+            let mut concurrent_draft = crate::drafting::artifact::load_artifact(&d_path).unwrap();
+            concurrent_draft
+                .prepared_packet
+                .as_mut()
+                .unwrap()
+                .packet
+                .plan_revision = "concurrent-plan-rev-99".into();
+            crate::drafting::artifact::save_artifact(&d_path, &concurrent_draft).unwrap();
+            let concurrent_bytes = std::fs::read(&d_path).unwrap();
+
+            let cas_res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(cas_res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!cas_res.revision_promoted);
+            assert_eq!(
+                cas_res.retention_reason,
+                Some(RevisionRetentionReason::StaleCasConflict)
+            );
+            // Concurrent draft artifact on disk was NOT overwritten!
+            assert_eq!(std::fs::read(&d_path).unwrap(), concurrent_bytes);
+            assert_eq!(srv.join().unwrap(), 4);
+        }
+
+        // Case 6: Unresolved external finding with unchanged finding fingerprint stops with NoDirectiveProgress before judging (2 calls)
+        {
+            use spindle_core::drafting::{
+                CriticDimension, CriticFindingInput, DirectiveSeverity, FeedbackSourceKind,
+            };
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case6_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case6_loop.json");
+            let unresolved_finding = CriticFindingInput {
+                finding_id: "ext-1".into(),
+                source: FeedbackSourceKind::Continuity,
+                check_type: "timeline_drift".into(),
+                dimension: CriticDimension::Continuity,
+                severity: DirectiveSeverity::Major,
+                message: "Lantern was left behind in chapter 1".into(),
+                anchor: None,
+                suggested_fix: Some("Remove lantern reference".into()),
+            };
+            let res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![unresolved_finding],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!res.revision_promoted);
+            assert_eq!(
+                res.retention_reason,
+                Some(RevisionRetentionReason::NoDirectiveProgress)
+            );
+            assert_eq!(res.total_calls_used, 2);
+            assert_eq!(srv.join().unwrap(), 2);
+        }
+
+        // Case 7: Scene call budget exhaustion (max_scene_calls = 2) stops before pairwise judging with BudgetExhausted
+        {
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case7_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case7_loop.json");
+            let res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions {
+                        max_scene_calls: 2,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!res.revision_promoted);
+            assert_eq!(
+                res.retention_reason,
+                Some(RevisionRetentionReason::BudgetExhausted)
+            );
+            assert_eq!(res.total_calls_used, 2);
+            assert_eq!(srv.join().unwrap(), 2);
+        }
+
+        // Case 8: Anchored external finding whose exact_quote is rewritten by the revision is projected without stale_anchor_hash and increments resolved_finding_count
+        {
+            use spindle_core::drafting::{
+                CriticDimension, CriticFindingInput, CritiqueAnchor, DirectiveSeverity,
+                FeedbackSourceKind,
+            };
+            let rev_sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(revised_clean.as_bytes()))
+            };
+            let (p1_arm, _p2_arm) = select_initial_judge_order(
+                &draft_art.packet_hash,
+                &draft_art.text_sha256,
+                &rev_sha,
+                1,
+                None,
+            );
+            let pass1_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_1"
+            } else {
+                "passage_2"
+            };
+            let pass2_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_2"
+            } else {
+                "passage_1"
+            };
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass1_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 180, "completion_tokens": 30, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass2_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 180, "completion_tokens": 30, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case8_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case8_loop.json");
+            let quote = "rose around the stone sluice.";
+            let quote_start = draft_prose.find(quote).unwrap();
+            let quote_end = quote_start + quote.len();
+            let anchored_finding = CriticFindingInput {
+                finding_id: "ext-anchored-1".into(),
+                source: FeedbackSourceKind::AntiSlop,
+                check_type: "weak_verb".into(),
+                dimension: CriticDimension::Freshness,
+                severity: DirectiveSeverity::Minor,
+                message: "Sharpen physical action around the sluice".into(),
+                anchor: Some(CritiqueAnchor {
+                    scene_id: draft_art.scene_id.clone(),
+                    base_text_hash: draft_art.text_sha256.clone(),
+                    start_byte: quote_start,
+                    end_byte: quote_end,
+                    exact_quote: quote.to_string(),
+                    context_before: Some("Cold floodwater".into()),
+                    context_after: Some("The lantern".into()),
+                }),
+                suggested_fix: Some("Show physical tension against the sluice".into()),
+            };
+            let res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![anchored_finding],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.current_stage, EditorialStage::AcceptedRevision);
+            assert!(res.revision_promoted);
+            let cmp = res.rounds[0]
+                .candidate_check_comparison
+                .as_ref()
+                .expect("comparison recorded");
+            assert_eq!(cmp.resolved_finding_count, 1);
+            assert_eq!(srv.join().unwrap(), 4);
+        }
+
+        // Case 9: Live repository canon mutation (create_world_rule) while leaving the artifact file on disk untouched triggers StaleCasConflict
+        {
+            let rev_sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(revised_clean.as_bytes()))
+            };
+            let (p1_arm, _) = select_initial_judge_order(
+                &draft_art.packet_hash,
+                &draft_art.text_sha256,
+                &rev_sha,
+                1,
+                None,
+            );
+            let pass1_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_1"
+            } else {
+                "passage_2"
+            };
+            let pass2_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_2"
+            } else {
+                "passage_1"
+            };
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass1_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass2_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case9_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case9_loop.json");
+
+            let _ = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions {
+                        crash_after: Some(BoundaryCrashPoint::Stage(
+                            EditorialStage::PairwiseJudged,
+                            1,
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+
+            // Mutate canon in the SQLite repository while leaving d_path completely untouched on disk!
+            repository
+                .create_world_rule(&spindle_core::models::CreateWorldRuleInput {
+                    project_id: created.project_id.clone(),
+                    rule_name: "Sluice Gate Hydraulics".into(),
+                    rule_type: "physics".into(),
+                    description: "The stone sluice requires two operators to lift.".into(),
+                    established_in: None,
+                    relevance_tags: vec!["sluice".into()],
+                    scan_pattern: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+
+            let cas_res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(cas_res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!cas_res.revision_promoted);
+            assert_eq!(
+                cas_res.retention_reason,
+                Some(RevisionRetentionReason::StaleCasConflict)
+            );
+            assert_eq!(cas_res.accepted_text, draft_prose);
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+            assert_eq!(srv.join().unwrap(), 4);
+        }
+
+        // Case 10: Live repository chapter plan mutation (plan_chapter) while leaving the artifact file on disk untouched triggers StaleCasConflict
+        {
+            let rev_sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(revised_clean.as_bytes()))
+            };
+            let (p1_arm, _) = select_initial_judge_order(
+                &draft_art.packet_hash,
+                &draft_art.text_sha256,
+                &rev_sha,
+                1,
+                None,
+            );
+            let pass1_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_1"
+            } else {
+                "passage_2"
+            };
+            let pass2_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_2"
+            } else {
+                "passage_1"
+            };
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass1_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass2_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case10_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case10_loop.json");
+
+            let _ = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions {
+                        crash_after: Some(BoundaryCrashPoint::Stage(
+                            EditorialStage::PairwiseJudged,
+                            1,
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+
+            // Mutate chapter plan in the SQLite repository while leaving d_path completely untouched on disk!
+            repository
+                .plan_chapter(&spindle_core::models::PlanChapterInput {
+                    project_id: created.project_id.clone(),
+                    book_number: 1,
+                    chapter_number: 1,
+                    pov_character_id: None,
+                    synopsis: "Updated chapter plan synopsis during model calls".into(),
+                    target_theme_ids: vec![],
+                    target_conflict_ids: vec![],
+                    target_plot_line_ids: vec![],
+                    scenes: vec![spindle_core::models::PlanChapterSceneInput {
+                        scene_order: 1,
+                        summary: "Mara crosses the flooded sluice".into(),
+                        beat_structure: vec![],
+                        character_ids: vec![],
+                        location_id: None,
+                        content_rating: None,
+                        purpose: "Establish flood stakes".into(),
+                        research_required: Some(false),
+                        research_tags: vec![],
+                        explicit_query: None,
+                    }],
+                })
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+
+            let cas_res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(cas_res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!cas_res.revision_promoted);
+            assert_eq!(
+                cas_res.retention_reason,
+                Some(RevisionRetentionReason::StaleCasConflict)
+            );
+            assert_eq!(cas_res.accepted_text, draft_prose);
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+            assert_eq!(srv.join().unwrap(), 4);
+        }
+
+        // Case 11: Active authoring-run scene handoff plan-revision mismatch (P3 #54 composition)
+        // rejects promotion with StaleCasConflict even if the draft artifact file on disk is untouched.
+        {
+            let rev_sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(revised_clean.as_bytes()))
+            };
+            let (p1_arm, _) = select_initial_judge_order(
+                &draft_art.packet_hash,
+                &draft_art.text_sha256,
+                &rev_sha,
+                1,
+                None,
+            );
+            let pass1_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_1"
+            } else {
+                "passage_2"
+            };
+            let pass2_pref = if p1_arm == DeblindedArm::Candidate {
+                "passage_2"
+            } else {
+                "passage_1"
+            };
+            let replies = vec![
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": revised_clean}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 140, "completion_tokens": 24, "total_tokens": 164}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass1_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+                (
+                    200,
+                    serde_json::json!({
+                        "choices": [{"message": {"content": make_judge_json(pass2_pref).to_string()}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}
+                    })
+                    .to_string(),
+                ),
+            ];
+            let (url, _, srv) = spawn_http_capture_server(replies);
+            std::fs::write(&cfg_path, cfg_text.replace(&draft_url, &url)).unwrap();
+            router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+            let d_path = temp.path().join("case11_draft.json");
+            std::fs::write(&d_path, &base_draft_bytes).unwrap();
+            let l_path = temp.path().join("case11_loop.json");
+
+            let _ = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions {
+                        crash_after: Some(BoundaryCrashPoint::Stage(
+                            EditorialStage::PairwiseJudged,
+                            1,
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+
+            // Record an active authoring_run + authoring_run_scene with a superseded handoff
+            // plan revision for chapter 1 scene 1 while leaving d_path untouched on disk.
+            let pid = created.project_id.clone();
+            let bid = active_branch.id.clone();
+            repository
+                .pool()
+                .write(move |conn| {
+                    let now = chrono::Utc::now().timestamp_micros();
+                    conn.execute(
+                        "INSERT INTO authoring_run (
+                            id, project_id, active_branch_id, book_number, start_chapter, end_chapter,
+                            checkpoint_interval, last_checkpoint_end_chapter, artifacts_dir,
+                            editorial_directives, status, created_at, updated_at, mining_policy,
+                            max_revise_attempts, checkpoint_policy, replan_policy
+                        ) VALUES ('run_handoff_stale', ?1, ?2, 1, 1, 1, 1, 0, 'runs/stale', '[]', 'active', ?3, ?3, 'auto', 2, 'manual', 'manual')",
+                        rusqlite::params![&pid, &bid, now],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO authoring_run_chapter (
+                            authoring_run_id, chapter_number, planned, synopsis, pov_character_id,
+                            status, summary_saved, summary_artifact_path
+                        ) VALUES ('run_handoff_stale', 1, 1, 'Flooded sluice crossing', NULL, 'in_progress', 0, NULL)",
+                        [],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO authoring_run_scene (
+                            authoring_run_id, chapter_number, scene_order, character_ids, location_id,
+                            content_rating, tone, source_path, phase, scene_id, scene_artifact_path,
+                            draft_diagnostics, blocked_reason, research_required, research_tags,
+                            explicit_query, mine_status, mine_detail, verify_status, verify_detail,
+                            revise_attempts, last_finding_fingerprint
+                        ) VALUES ('run_handoff_stale', 1, 1, '[]', 'loc:sluice', 'mature', NULL, NULL, 'pending', NULL, 'scenes/ch01_s01.md', '{\"superseded_handoff_plan_revision\":1}', NULL, 0, '[]', NULL, NULL, NULL, NULL, NULL, 0, NULL)",
+                        [],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+
+            let cas_res = service
+                .revise_artifact_loop(
+                    EditorialPolicy::CritiqueV1,
+                    &d_path,
+                    &l_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    RevisionLoopOptions::default(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(cas_res.current_stage, EditorialStage::AcceptedOriginal);
+            assert!(!cas_res.revision_promoted);
+            assert_eq!(
+                cas_res.retention_reason,
+                Some(RevisionRetentionReason::StaleCasConflict)
+            );
+            assert_eq!(cas_res.accepted_text, draft_prose);
+            assert_eq!(std::fs::read(&d_path).unwrap(), base_draft_bytes);
+            assert_eq!(srv.join().unwrap(), 4);
+        }
     }
 }

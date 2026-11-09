@@ -971,11 +971,63 @@ pub fn assemble_critic_repair_messages(
         ));
     }
 
+    let mut quote_offset_hints = String::new();
+    if let Some(base_draft) = initial_messages
+        .user
+        .split("EXACT BASE DRAFT UTF-8\n")
+        .nth(1)
+        .map(|s| s.trim_end_matches('\n'))
+        && let Ok(parsed) =
+            serde_json::from_str::<serde_json::Value>(strip_thinking_and_fences(invalid_raw_output))
+    {
+        let mut quotes = BTreeSet::new();
+        if let Some(dims) = parsed.get("dimensions").and_then(|v| v.as_array()) {
+            for d in dims {
+                if let Some(spans) = d.get("evidence_spans").and_then(|v| v.as_array()) {
+                    for s in spans {
+                        if let Some(q) = s.get("exact_quote").and_then(|v| v.as_str())
+                            && !q.is_empty()
+                        {
+                            quotes.insert(q.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(dirs) = parsed.get("directives").and_then(|v| v.as_array()) {
+            for d in dirs {
+                if let Some(q) = d
+                    .get("anchor")
+                    .and_then(|a| a.get("exact_quote"))
+                    .and_then(|v| v.as_str())
+                    && !q.is_empty()
+                {
+                    quotes.insert(q.to_string());
+                }
+            }
+        }
+        for q in quotes {
+            if let Some(start) = base_draft.find(&q) {
+                let end = start + q.len();
+                quote_offset_hints.push_str(&format!(
+                    "- start_byte: {start}, end_byte: {end} => exact_quote: {q:?}\n"
+                ));
+            }
+        }
+    }
+    let offset_hint_block = if quote_offset_hints.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nVerified UTF-8 [start_byte, end_byte) offsets in base_text for your quoted spans:\n{quote_offset_hints}"
+        )
+    };
+
     let user = format!(
         "{}\n\n\
          SCHEMA / ANCHOR REPAIR REQUIRED\n\
          Your previous output failed CritiqueV1 validation with error:\n\
-         {validation_error}\n\n\
+         {validation_error}{offset_hint_block}\n\n\
          Previous invalid output:\n\
          {invalid_raw_output}\n\n\
          Return a corrected CritiqueV1 JSON object conforming to CRITIQUE_V1 FIELD & ENUM \
