@@ -5363,7 +5363,7 @@ pub struct SearchBibleOutput {
     pub markdown: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct TextByteRange {
     pub start: usize,
     pub end: usize,

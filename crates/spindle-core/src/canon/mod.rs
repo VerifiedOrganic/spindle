@@ -20,10 +20,12 @@ macro_rules! vocabulary {
     };
 }
 mod backfill;
+mod claim_validation;
 mod events;
 mod policy;
 mod reducer;
 pub use backfill::*;
+pub use claim_validation::*;
 pub use events::*;
 pub use policy::*;
 pub use reducer::*;

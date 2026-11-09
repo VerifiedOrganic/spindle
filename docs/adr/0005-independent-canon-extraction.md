@@ -1,6 +1,6 @@
 # ADR 0005: independent evidence-bound canon claims
 
-Status: proposed implementation, shadow contracts + append-only event store/reducers + calibrated policy and per-project cutover (canon-memory PRs B–E).
+Status: proposed implementation, shadow contracts + append-only event store/reducers + calibrated policy/cutover + shared claim validators (canon-memory PRs B–F).
 
 ## Decision
 
@@ -79,6 +79,18 @@ canon_read` transitions on compatibility parity/quarantine readiness while
 keeping rollback reversible. Legacy-unverified rows participate in compatibility
 reads but are warning/info-only until corroborated. Extraction still makes no
 default authoring cutover and no MCP tool is added by this policy layer.
+
+PR F adds `spindle_core::canon::claim_validation`: the lexical prefilter is
+retained, deterministic lanes cover unkeyed attribute prose drift, paraphrased
+knowledge references before the learned position and secret narration by the
+nearest out-of-circle actor, and a `SemanticClaimAdjudicator` port reports an
+explicit degraded/incomplete status when a route is absent or fails. Negation,
+irrealis/POV, dialogue, thin-overlap and time controls are regression fixtures.
+The lanes reuse the existing `canonical_fact_prose_drift`, `knowledge_timing`,
+`secret_leak` and retcon check types so no public tool schema changes. World-rule
+scanner semantics v4 adds plain-verb inflections and explicit cost-omission
+promotion while retaining the existing lexical behavior. The continuity recall
+corpus/scorer is unchanged; measured results are reported separately.
 
 The versioned meanings above are a protocol boundary. Unknown predicates are
 rejected, not preserved as arbitrary JSON; changing a predicate's meaning needs

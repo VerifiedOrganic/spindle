@@ -6432,3 +6432,385 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
         1
     );
 }
+
+// ── PR F: shared claim-vs-canon deterministic lanes ─────────────────────
+
+mod claim_validation_lanes {
+    use super::*;
+    use spindle_core::models::{
+        CheckConsistencyInput, ConsistencyScopeInput, ContentRating, CreateWorldRuleInput,
+        RecordKnowledgeInput, RegisterCanonicalFactInput, StoryPlacement,
+    };
+
+    async fn save_scene(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        chapter: i32,
+        text: &str,
+    ) -> String {
+        if chapter > 1 {
+            let _ = svc
+                .create_chapter(spindle_core::models::CreateChapterInput {
+                    project_id: project_id.to_string(),
+                    book_id: None,
+                    book_number: Some(1),
+                    chapter_number: Some(chapter),
+                    title: None,
+                })
+                .await;
+        }
+        svc.save_scene_draft(spindle_core::models::SaveSceneDraftInput {
+            project_id: project_id.to_string(),
+            book_number: 1,
+            chapter_number: chapter,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: text.to_string(),
+            summary: "claim validation".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .scene_id
+    }
+
+    async fn run_checks(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        check: &str,
+    ) -> Vec<spindle_core::models::ConsistencyIssue> {
+        svc.check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
+            project_id: project_id.to_string(),
+            scope: ConsistencyScopeInput::full(),
+            checks: vec![check.to_string()],
+            severity_filter: Vec::new(),
+            deep_check: Some(false),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        })
+        .await
+        .unwrap()
+        .issues
+    }
+
+    #[tokio::test]
+    async fn unkeyed_attribute_contradiction_is_detected() {
+        let (_tmp, svc) = fresh_service().await;
+        let (project, seed_scene_id, _) = project_with_scene(&svc, "Unkeyed Attribute").await;
+        let character_id = create_character_named(&svc, &project.project_id, "Mara Vance").await;
+        svc.register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project.project_id.clone(),
+            scene_id: Some(seed_scene_id),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: Some("character_attribute".into()),
+            key: Some("Mara left hand prosthetic".into()),
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(character_id),
+            predicate: Some("Mara left hand prosthetic".into()),
+            value_kind: Some("text".into()),
+            value_text: Some("articulated iron gauntlet".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: None,
+        })
+        .await
+        .unwrap();
+        save_scene(
+            &svc,
+            &project.project_id,
+            11,
+            "Mara Vance flexed the five bare, unscarred fingers of her flesh-and-blood left hand.",
+        )
+        .await;
+
+        let issues = run_checks(&svc, &project.project_id, "canonical_fact_prose_drift").await;
+        assert!(
+            issues.iter().any(|issue| {
+                issue.check_type == "canonical_fact_prose_drift"
+                    && issue.message.contains("chapter 11")
+                    && (issue.message.contains("prosthetic") || issue.message.contains("gauntlet"))
+            }),
+            "expected unkeyed attribute drift, got {issues:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unkeyed_attribute_negation_and_pov_controls_are_clean() {
+        let (_tmp, svc) = fresh_service().await;
+        let (project, seed_scene_id, _) =
+            project_with_scene(&svc, "Unkeyed Attribute Control").await;
+        let character_id = create_character_named(&svc, &project.project_id, "Mara Vance").await;
+        svc.register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project.project_id.clone(),
+            scene_id: Some(seed_scene_id),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: Some("character_attribute".into()),
+            key: Some("Mara left hand prosthetic".into()),
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(character_id),
+            predicate: Some("Mara left hand prosthetic".into()),
+            value_kind: Some("text".into()),
+            value_text: Some("articulated iron gauntlet".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: None,
+        })
+        .await
+        .unwrap();
+        save_scene(
+            &svc,
+            &project.project_id,
+            11,
+            "Mara Vance did not have a bare flesh-and-blood left hand. In the dream, she flexed bare fingers.",
+        )
+        .await;
+        let issues = run_checks(&svc, &project.project_id, "canonical_fact_prose_drift").await;
+        assert!(
+            issues
+                .iter()
+                .all(|issue| !issue.message.contains("conflicts with canonical value")),
+            "negation/POV control must not flag: {issues:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn paraphrased_knowledge_leak_is_detected_before_learned() {
+        let (_tmp, svc) = fresh_service().await;
+        let (project, _seed_scene_id, _) = project_with_scene(&svc, "Paraphrase Knowledge").await;
+        let character_id = create_character_named(&svc, &project.project_id, "Caelen Dravos").await;
+        svc.record_knowledge(RecordKnowledgeInput {
+            project_id: project.project_id.clone(),
+            character_id,
+            branch_id: None,
+            fact: "Commander Varek poisoned the well at Salt Spire".into(),
+            source_summary: "Nightshade found at the well.".into(),
+            learned_at: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 16,
+                scene_order: Some(1),
+                note: None,
+            }),
+            confidence: Some(1.0),
+            tags: Vec::new(),
+            reader_visible: true,
+            secret_of_fact_id: None,
+        })
+        .await
+        .unwrap();
+        save_scene(
+            &svc,
+            &project.project_id,
+            6,
+            "Before retreating from the arch, Caelen Dravos warned the guards that Varek had already tainted the drinking water beneath the Salt Spire.",
+        )
+        .await;
+        let issues = run_checks(&svc, &project.project_id, "knowledge_timing").await;
+        assert!(
+            issues.iter().any(|issue| {
+                issue.check_type == "knowledge_timing"
+                    && issue.message.contains("chapter 16")
+                    && issue.message.contains("Caelen Dravos")
+            }),
+            "expected paraphrased knowledge leak, got {issues:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn world_rule_implicit_cost_omission_is_detected() {
+        let (_tmp, svc) = fresh_service().await;
+        let (project, _seed_scene_id, _) = project_with_scene(&svc, "Rule Cost Omission").await;
+        svc.create_world_rule(CreateWorldRuleInput {
+            project_id: project.project_id.clone(),
+            rule_name: "Neural Splice Cooldown".into(),
+            rule_type: "magic_system".into(),
+            description: "Running a deep neural splice override drains thirty percent of the rig battery and causes eye strain.".into(),
+            scan_pattern: Some("channel|cast|invoke|unleash".into()),
+            relevance_tags: vec!["splice".into()],
+            established_in: Some(spindle_core::models::EstablishedIn {
+                book_number: 1,
+                chapter_number: 1,
+                note: None,
+            }),
+        })
+        .await
+        .unwrap();
+        save_scene(
+            &svc,
+            &project.project_id,
+            13,
+            "Tarek Nouri then invoked a deep neural splice on the relay using zero battery charge and suffering no eye strain at all.",
+        )
+        .await;
+        let issues = run_checks(&svc, &project.project_id, "world_rule_semantic_drift").await;
+        assert!(
+            issues.iter().any(|issue| {
+                issue.check_type == "world_rule_semantic_drift"
+                    && issue.message.contains("likely violates world rule")
+                    && issue.message.contains("Neural Splice Cooldown")
+            }),
+            "expected implicit cost omission, got {issues:?}"
+        );
+    }
+}
+
+mod secret_leak_narration {
+    use super::*;
+    use spindle_core::models::{
+        CheckConsistencyInput, ConsistencyScopeInput, ContentRating, CreateCharacterInput,
+        RegisterCanonicalFactInput, SaveSceneDraftInput, SecrecyScope,
+    };
+
+    async fn make_character(svc: &SqliteSpindleService, project_id: &str, name: &str) -> String {
+        svc.create_character(CreateCharacterInput {
+            aliases: Vec::new(),
+            project_id: project_id.to_string(),
+            name: name.to_string(),
+            summary: format!("{name} in play."),
+            role: "supporting".into(),
+            realm: None,
+            voice_profile: spindle_core::models::CharacterVoiceProfileData {
+                tone: None,
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
+                base_emotions: std::collections::BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap()
+        .character_id
+    }
+
+    #[tokio::test]
+    async fn out_of_circle_narration_leak_is_detected() {
+        let (_tmp, svc) = fresh_service().await;
+        let (project, seed_scene_id, _) = project_with_scene(&svc, "Narration Secret").await;
+        let holder = make_character(&svc, &project.project_id, "Mara Vance").await;
+        let outsider = make_character(&svc, &project.project_id, "Caelen Dravos").await;
+        svc.register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project.project_id.clone(),
+            scene_id: Some(seed_scene_id),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: Some("secret_identity".into()),
+            key: Some("vault passphrase".into()),
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(holder.clone()),
+            predicate: Some("vault passphrase".into()),
+            value_kind: Some("text".into()),
+            value_text: Some("obsidiancrown".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: Some(SecrecyScope {
+                holder_ids: vec![holder.clone()],
+                concealment_note: None,
+            }),
+        })
+        .await
+        .unwrap();
+        let _ = svc
+            .create_chapter(spindle_core::models::CreateChapterInput {
+                project_id: project.project_id.clone(),
+                book_id: None,
+                book_number: Some(1),
+                chapter_number: Some(17),
+                title: None,
+            })
+            .await;
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 17,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "While Mara Vance turned away, Caelen Dravos quietly copied the vault passphrase obsidiancrown into his personal field notebook.".into(),
+            summary: "narration leak".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let issues = svc
+            .check_consistency(CheckConsistencyInput {
+                deep_scan_offset: None,
+                project_id: project.project_id.clone(),
+                scope: ConsistencyScopeInput::full(),
+                checks: vec!["secret_leak".to_string()],
+                severity_filter: Vec::new(),
+                deep_check: Some(false),
+                subjects: Vec::new(),
+                format: None,
+                budget_tokens: None,
+            })
+            .await
+            .unwrap()
+            .issues;
+        let narration: Vec<_> = issues
+            .iter()
+            .filter(|issue| {
+                issue.check_type == "secret_leak"
+                    && issue.message.contains("narrates secret fact")
+                    && issue.message.contains("obsidiancrown")
+            })
+            .collect();
+        assert_eq!(
+            narration.len(),
+            1,
+            "expected one narration leak: {issues:?}"
+        );
+        assert!(
+            narration[0].entity_ids.contains(&outsider),
+            "the acting outsider is the leak entity: {:?}",
+            narration[0].entity_ids
+        );
+    }
+}

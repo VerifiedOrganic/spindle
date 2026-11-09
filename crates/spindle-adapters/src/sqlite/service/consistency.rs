@@ -1,4 +1,8 @@
 use super::*;
+use spindle_core::canon::{
+    KnowledgeValidationFactV1, SceneValidationInputV1, SecretValidationCandidateV1,
+    detect_knowledge_paraphrase_leak, detect_secret_narration_leak,
+};
 
 impl SqliteSpindleService {
     /// Run the consistency validator suite over a project. Mirrors
@@ -967,10 +971,45 @@ impl SqliteSpindleService {
                         ) {
                             continue;
                         }
-                        if !contains_case_insensitive_phrase(
+                        let exact_hit = contains_case_insensitive_phrase(
                             &scene.full_text,
                             &fact.normalized_fact,
-                        ) {
+                        );
+                        let paraphrase = if exact_hit {
+                            None
+                        } else {
+                            let scene_input = SceneValidationInputV1 {
+                                scene_id: &scene.id,
+                                book_number: scene.book_number,
+                                chapter_number: scene.chapter_number,
+                                scene_order: scene.scene_order,
+                                text: &scene.full_text,
+                            };
+                            let core_fact = KnowledgeValidationFactV1 {
+                                fact_id: fact.id.clone(),
+                                character_id: fact.character_id.clone(),
+                                character_names: vec![character.name.clone()],
+                                fact: fact.fact.clone(),
+                                learned_book_number: learned_at.book_number,
+                                learned_chapter_number: learned_at.chapter_number,
+                                learned_scene_order: learned_at.scene_order,
+                            };
+                            detect_knowledge_paraphrase_leak(&scene_input, &core_fact)
+                        };
+                        if !exact_hit && paraphrase.is_none() {
+                            continue;
+                        }
+                        if let Some(finding) = paraphrase {
+                            issues.push(ConsistencyIssue {
+                                severity: finding.severity.as_str().to_string(),
+                                check_type: finding.check_type,
+                                message: finding.message,
+                                entity_ids: finding.entity_ids,
+                                suggested_action: Some(
+                                    "move the reveal, or record the character learning this earlier"
+                                        .to_string(),
+                                ),
+                            });
                             continue;
                         }
                         issues.push(ConsistencyIssue {
@@ -2157,18 +2196,25 @@ impl SqliteSpindleService {
                                 id: character.id.clone(),
                                 name: character.name.clone(),
                             };
-                            let leaked = attributed_dialogue_ranges(&scene.full_text, &speaker)
-                                .into_iter()
-                                .filter(|range| {
-                                    range.end > range.start && range.end <= scene.full_text.len()
-                                })
-                                .any(|range| {
-                                    crate::sqlite::validators::contains_case_insensitive_word(
-                                        &scene.full_text[range.start..range.end],
-                                        &value,
-                                    )
-                                });
-                            if leaked {
+                            let dialogue_leak =
+                                attributed_dialogue_ranges(&scene.full_text, &speaker)
+                                    .into_iter()
+                                    .filter(|range| {
+                                        range.end > range.start
+                                            && range.end <= scene.full_text.len()
+                                    })
+                                    .any(|range| {
+                                        crate::sqlite::validators::contains_case_insensitive_word(
+                                            &scene.full_text[range.start..range.end],
+                                            &value,
+                                        )
+                                    });
+                            let suggested_action = |medium: &str| {
+                                format!(
+                                    "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the {medium}"
+                                )
+                            };
+                            if dialogue_leak {
                                 issues.push(ConsistencyIssue {
                                     severity: "warning".to_string(),
                                     check_type: "secret_leak".to_string(),
@@ -2187,10 +2233,38 @@ impl SqliteSpindleService {
                                         character.id.clone(),
                                         scene.id.clone(),
                                     ],
-                                    suggested_action: Some(
-                                        "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the dialogue"
-                                            .to_string(),
-                                    ),
+                                    suggested_action: Some(suggested_action("dialogue")),
+                                });
+                                continue;
+                            }
+                            let scene_input = SceneValidationInputV1 {
+                                scene_id: &scene.id,
+                                book_number: scene.book_number,
+                                chapter_number: scene.chapter_number,
+                                scene_order: scene.scene_order,
+                                text: &scene.full_text,
+                            };
+                            let candidate = SecretValidationCandidateV1 {
+                                fact_id: fact.id.clone(),
+                                predicate: fact.predicate.clone(),
+                                value: value.clone(),
+                                character_id: character.id.clone(),
+                                character_name: character.name.clone(),
+                                other_present_character_names: characters
+                                    .iter()
+                                    .filter(|other| other.id != character.id)
+                                    .map(|other| other.name.clone())
+                                    .collect(),
+                            };
+                            if let Some(finding) =
+                                detect_secret_narration_leak(&scene_input, &candidate)
+                            {
+                                issues.push(ConsistencyIssue {
+                                    severity: finding.severity.as_str().to_string(),
+                                    check_type: finding.check_type,
+                                    message: finding.message,
+                                    entity_ids: finding.entity_ids,
+                                    suggested_action: Some(suggested_action("narration")),
                                 });
                             }
                         }
