@@ -1,4 +1,23 @@
 use super::static_tool_names;
+
+/// Tools that are operator-only in release R. They remain in the registry and
+/// disposition ledger so existing operator clients can be migrated, but they are
+/// hidden from every model profile and denied by name on stdio/HTTP model
+/// transports. Use the `spindle-mcp` CLI commands instead.
+pub(crate) const OPERATOR_ONLY_TOOLS: &[&str] = &[
+    "init_grok_skills",
+    "configure_agents",
+    "test_agent",
+    "rebuild_search_index",
+    "backfill_scene_source_offsets",
+    "operator_delete_scene",
+];
+
+/// True when `name` is an operator-only command that model transports must not
+/// list or call.
+pub(crate) fn is_operator_only(name: &str) -> bool {
+    OPERATOR_ONLY_TOOLS.contains(&name)
+}
 pub(super) fn profile_allowed_tool_names(profile: &str) -> Option<&'static [&'static str]> {
     match profile {
         "import" => Some(&[
@@ -108,7 +127,6 @@ pub(super) fn profile_allowed_tool_names(profile: &str) -> Option<&'static [&'st
             "save_scene_draft",
             "move_scene",
             "delete_scene",
-            "operator_delete_scene",
             "commit_scene_changes",
             "commit_character_state",
             "update_relationship",
@@ -124,7 +142,6 @@ pub(super) fn profile_allowed_tool_names(profile: &str) -> Option<&'static [&'st
             "find_scenes_referencing",
             "check_consistency",
             "run_dual_persona_review",
-            "backfill_scene_source_offsets",
             "register_canonical_fact",
             "extract_canonical_facts_from_scene",
             "migrate_canonical_fact",
@@ -303,7 +320,7 @@ pub(crate) fn validate_tool_profile(profile: Option<&str>) -> anyhow::Result<()>
 }
 
 pub(crate) fn profile_has_tool(profile: Option<&str>, name: &str) -> bool {
-    if !static_tool_names().contains(name) {
+    if !static_tool_names().contains(name) || is_operator_only(name) {
         return false;
     }
     match profile {
@@ -316,7 +333,7 @@ pub(crate) fn profile_has_tool(profile: Option<&str>, name: &str) -> bool {
 
 pub(crate) fn profile_help() -> String {
     format!(
-        "Select a startup profile with SPINDLE_TOOL_PROFILE. Profiles: {}. Unset and legacy-all keep the full compatibility catalog. Generated profiles retain current schemas; run 'spindle-mcp profiles' for units and capabilities.",
+        "Select a startup profile with SPINDLE_TOOL_PROFILE. Profiles: {}. Unset and legacy-all keep the full compatibility catalog except operator-only commands, which are CLI-only and denied on model transports. Run 'spindle-mcp profiles' for units and capabilities.",
         profile_names().join(", ")
     )
 }
@@ -329,6 +346,7 @@ pub(crate) fn print_profiles(json: bool) {
                 serde_json::json!({"name": profile.name, "description": profile.description, "units": profile.units, "tools": profile.tools, "catalog": "generated-transitional"})
             } else {
                 let mut names: Vec<_> = if *name == "legacy-all" { static_tool_names().iter().copied().collect() } else { profile_allowed_tool_names(name).unwrap().to_vec() };
+                names.retain(|name| !is_operator_only(name));
                 names.sort_unstable();
                 serde_json::json!({"name": name, "catalog": "compatibility", "tools": names})
             }

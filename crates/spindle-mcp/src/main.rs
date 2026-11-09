@@ -20,6 +20,10 @@ use rmcp::ServiceExt;
 use spindle_adapters::SqlitePool;
 use spindle_adapters::sqlite::Repository as SpindleRepository;
 use spindle_adapters::sqlite::SqliteSpindleService as SpindleService;
+use spindle_core::models::{
+    BackfillSceneSourceOffsetsInput, OperatorDeleteSceneInput, RebuildSearchIndexInput,
+    TestAgentInput,
+};
 use tracing_subscriber::EnvFilter;
 
 use crate::proxy::ProxyHandler;
@@ -29,6 +33,12 @@ use crate::tools::run_init_grok_skills;
 #[derive(Parser, Debug)]
 #[command(name = "spindle-mcp", about = "Spindle MCP server + helper commands", after_help = tools::profile_help())]
 struct McpCli {
+    /// Override the Spindle data directory (same as SPINDLE_DATA_DIR).
+    #[arg(long, global = true)]
+    data_dir: Option<PathBuf>,
+    /// Override the agent configuration file (same as SPINDLE_CONFIG).
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<McpCommand>,
 }
@@ -60,6 +70,91 @@ enum McpCommand {
         #[arg(long, default_value_t = true)]
         global: bool,
     },
+    /// Validate and report an agent configuration file (operator CLI).
+    ///
+    /// This loads the file into this process so operators can check agents,
+    /// routes, health checks, and lint warnings. To apply it to a server, point
+    /// SPINDLE_CONFIG or the workspace config.toml at the file and restart.
+    ConfigureAgents {
+        /// Print the full structured result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send one test prompt through a configured agent or route (operator CLI).
+    TestAgent {
+        /// Configured agent id to test.
+        #[arg(long)]
+        agent: String,
+        /// Prompt text to send; omit to use the configured default.
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Optional logical route to force.
+        #[arg(long)]
+        route: Option<String>,
+        /// Optional content rating for route resolution.
+        #[arg(long)]
+        rating: Option<String>,
+        /// Optional project context id.
+        #[arg(long)]
+        project_id: Option<String>,
+        /// Optional book context id.
+        #[arg(long)]
+        book_id: Option<String>,
+        /// Optional chapter context id.
+        #[arg(long)]
+        chapter_id: Option<String>,
+        /// Optional scene context id.
+        #[arg(long)]
+        scene_id: Option<String>,
+        /// Optional authoring run context id.
+        #[arg(long)]
+        run_id: Option<String>,
+        /// Print the full structured result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rebuild the FTS and embedding search index for one project (operator CLI).
+    RebuildSearchIndex {
+        /// Project identifier.
+        #[arg(long)]
+        project: String,
+        /// Print the full structured result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Backfill scene source offsets for one project branch (operator CLI).
+    BackfillSceneSourceOffsets {
+        /// Project identifier.
+        #[arg(long)]
+        project: String,
+        /// Branch identifier.
+        #[arg(long)]
+        branch: String,
+        /// Print the full structured result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a scene with the operator bypass after dependency cleanup (operator CLI).
+    OperatorDeleteScene {
+        /// Project identifier.
+        #[arg(long)]
+        project: String,
+        /// Scene identifier; preferred over placement fields.
+        #[arg(long)]
+        scene_id: Option<String>,
+        /// Book number when addressing by placement.
+        #[arg(long)]
+        book_number: Option<i32>,
+        /// Chapter number when addressing by placement.
+        #[arg(long)]
+        chapter_number: Option<i32>,
+        /// Scene order when addressing by placement.
+        #[arg(long)]
+        scene_order: Option<i32>,
+        /// Print the full structured result as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Initialize a local workspace (.spindle/) and install the global Codex skill.
     Init,
 }
@@ -70,6 +165,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Fast path: subcommands (e.g. `spindle-mcp init-grok-skills`)
     let cli = McpCli::parse();
+    let server_data_dir = cli.data_dir.clone();
+    let server_config = cli.config.clone();
     if let Some(cmd) = cli.command {
         match cmd {
             McpCommand::Profiles { json } => {
@@ -89,6 +186,84 @@ async fn main() -> anyhow::Result<()> {
                 for f in output.files_written {
                     println!("  wrote {f}");
                 }
+                return Ok(());
+            }
+            McpCommand::ConfigureAgents { json } => {
+                run_configure_agents(server_data_dir, server_config, json)?;
+                return Ok(());
+            }
+            McpCommand::TestAgent {
+                agent,
+                prompt,
+                route,
+                rating,
+                project_id,
+                book_id,
+                chapter_id,
+                scene_id,
+                run_id,
+                json,
+            } => {
+                run_test_agent(
+                    server_data_dir,
+                    server_config,
+                    TestAgentInput {
+                        agent_id: agent,
+                        test_prompt: prompt,
+                        route,
+                        rating,
+                        project_id,
+                        book_id,
+                        chapter_id,
+                        scene_id,
+                        run_id,
+                        prompt_template_id: None,
+                        prompt_version: None,
+                        context_packet_hash: None,
+                    },
+                    json,
+                )
+                .await?;
+                return Ok(());
+            }
+            McpCommand::RebuildSearchIndex { project, json } => {
+                run_rebuild_search_index(server_data_dir, server_config, project, json).await?;
+                return Ok(());
+            }
+            McpCommand::BackfillSceneSourceOffsets {
+                project,
+                branch,
+                json,
+            } => {
+                run_backfill_scene_source_offsets(
+                    server_data_dir,
+                    server_config,
+                    project,
+                    branch,
+                    json,
+                )
+                .await?;
+                return Ok(());
+            }
+            McpCommand::OperatorDeleteScene {
+                project,
+                scene_id,
+                book_number,
+                chapter_number,
+                scene_order,
+                json,
+            } => {
+                run_operator_delete_scene(
+                    server_data_dir,
+                    server_config,
+                    project,
+                    scene_id,
+                    book_number,
+                    chapter_number,
+                    scene_order,
+                    json,
+                )
+                .await?;
                 return Ok(());
             }
             McpCommand::Init => {
@@ -113,8 +288,10 @@ async fn main() -> anyhow::Result<()> {
     tools::validate_tool_profile(tool_profile.as_deref())?;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let env_data_dir = std::env::var_os("SPINDLE_DATA_DIR").map(PathBuf::from);
-    let env_config = std::env::var_os("SPINDLE_CONFIG").map(PathBuf::from);
+    let env_data_dir =
+        server_data_dir.or_else(|| std::env::var_os("SPINDLE_DATA_DIR").map(PathBuf::from));
+    let env_config =
+        server_config.or_else(|| std::env::var_os("SPINDLE_CONFIG").map(PathBuf::from));
     let ws = spindle_adapters::workspace::resolve_workspace(&cwd, env_data_dir, env_config);
 
     let data_dir = ws.data_dir;
@@ -241,6 +418,230 @@ pub fn build_service(
         );
     }
     service
+}
+
+/// Resolve the CLI workspace, honoring `--data-dir`/`--config` before the
+/// equivalent environment variables.
+fn resolve_cli_workspace(
+    data_dir: Option<PathBuf>,
+    config: Option<PathBuf>,
+) -> spindle_adapters::workspace::Workspace {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let env_data_dir = data_dir.or_else(|| std::env::var_os("SPINDLE_DATA_DIR").map(PathBuf::from));
+    let env_config = config.or_else(|| std::env::var_os("SPINDLE_CONFIG").map(PathBuf::from));
+    spindle_adapters::workspace::resolve_workspace(&cwd, env_data_dir, env_config)
+}
+
+/// Validate an agent config file without opening the project database. The
+/// configuration is process-local; apply it by pointing the server config at
+/// the file and reconnecting.
+fn run_configure_agents(
+    data_dir: Option<PathBuf>,
+    config: Option<PathBuf>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let ws = resolve_cli_workspace(data_dir, config);
+    let output = load_agent_config_for_cli(ws.config_path.as_deref())?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!(
+            "Loaded {} agent(s) and {} routing rule(s) from {}",
+            output.agents_loaded,
+            output.routing_rules_loaded,
+            output
+                .source_path
+                .as_deref()
+                .unwrap_or("<built-in defaults>")
+        );
+        println!(
+            "Health checks: {}",
+            if output.health_checks_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+        for warning in &output.warnings {
+            println!("warning: {warning}");
+        }
+        println!(
+            "To apply this configuration to a server, point SPINDLE_CONFIG or the workspace config.toml at it and restart."
+        );
+    }
+    Ok(())
+}
+
+fn load_agent_config_for_cli(
+    config: Option<&Path>,
+) -> anyhow::Result<spindle_core::models::ConfigureAgentsOutput> {
+    let router = spindle_adapters::ModelRouter::local_only();
+    router.configure(config.and_then(|path| path.to_str()))
+}
+
+/// Acquire the workspace primary lock and open the service used by DB-mutating
+/// operator commands. Holding the lock keeps a running server from writing the
+/// same database concurrently; drop it when the command finishes.
+async fn open_operator_service(
+    data_dir: Option<PathBuf>,
+    config: Option<PathBuf>,
+) -> anyhow::Result<(PrimaryLock, SpindleService)> {
+    let ws = resolve_cli_workspace(data_dir, config);
+    let lock = try_acquire_primary_lock(&ws.data_dir)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "another Spindle process holds the workspace at {}; stop it before running operator commands, or use the running server for model-facing operations",
+            ws.data_dir.display()
+        )
+    })?;
+    let db = init_sqlite(&ws.db_path).await?;
+    let service = build_service(
+        db,
+        &ws.data_dir,
+        ws.config_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
+    );
+    Ok((lock, service))
+}
+
+async fn run_test_agent(
+    data_dir: Option<PathBuf>,
+    config: Option<PathBuf>,
+    input: TestAgentInput,
+    json: bool,
+) -> anyhow::Result<()> {
+    let (_lock, service) = open_operator_service(data_dir, config).await?;
+    let output = service.test_agent(input).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!(
+            "agent: {} route: {} adapter: {} model: {} health_checked: {}",
+            output.agent_id,
+            output.route_name,
+            output.adapter_kind,
+            output.model_name,
+            output.health_checked
+        );
+        if output.truncated {
+            println!("warning: output was truncated by the model limit");
+        }
+        if let Some(id) = output.generation_id.as_deref() {
+            println!("generation receipt: {id}");
+        }
+        println!();
+        println!("{}", output.output);
+    }
+    Ok(())
+}
+
+async fn run_rebuild_search_index(
+    data_dir: Option<PathBuf>,
+    config: Option<PathBuf>,
+    project_id: String,
+    json: bool,
+) -> anyhow::Result<()> {
+    let (_lock, service) = open_operator_service(data_dir, config).await?;
+    let output = service
+        .rebuild_search_index(RebuildSearchIndexInput { project_id })
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!(
+            "Indexed {} record(s) with embedding version {}.",
+            output.indexed_records, output.embedding_version
+        );
+    }
+    Ok(())
+}
+
+async fn run_backfill_scene_source_offsets(
+    data_dir: Option<PathBuf>,
+    config: Option<PathBuf>,
+    project_id: String,
+    branch_id: String,
+    json: bool,
+) -> anyhow::Result<()> {
+    let (_lock, service) = open_operator_service(data_dir, config).await?;
+    let output = service
+        .backfill_scene_source_offsets(BackfillSceneSourceOffsetsInput {
+            project_id,
+            branch_id,
+        })
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!(
+            "Scanned {} link(s): {} updated, {} unresolved, {} skipped.",
+            output.scanned_links,
+            output.updated_links,
+            output.unresolved_links,
+            output.skipped_links
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_operator_delete_scene(
+    data_dir: Option<PathBuf>,
+    config: Option<PathBuf>,
+    project_id: String,
+    scene_id: Option<String>,
+    book_number: Option<i32>,
+    chapter_number: Option<i32>,
+    scene_order: Option<i32>,
+    json: bool,
+) -> anyhow::Result<()> {
+    if scene_id.is_none()
+        && (book_number.is_none() || chapter_number.is_none() || scene_order.is_none())
+    {
+        anyhow::bail!(
+            "provide --scene-id, or all of --book-number, --chapter-number, and --scene-order"
+        );
+    }
+    let (_lock, service) = open_operator_service(data_dir, config).await?;
+    let output = service
+        .operator_delete_scene(OperatorDeleteSceneInput {
+            project_id,
+            scene_id,
+            book_number: book_number.unwrap_or(0),
+            chapter_number: chapter_number.unwrap_or(0),
+            scene_order: scene_order.unwrap_or(0),
+        })
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!(
+            "Deleted scene {} on branch {} (status: {}).",
+            output.scene_id, output.branch_id, output.status
+        );
+        if output.left_scene_order_gap {
+            println!("note: this left a gap in the chapter's scene order");
+        }
+        if !output.removed_scene_source_link_ids.is_empty() {
+            println!(
+                "removed scene source links: {}",
+                output.removed_scene_source_link_ids.join(", ")
+            );
+        }
+        if !output.invalidated_chapter_plan_ids.is_empty() {
+            println!(
+                "invalidated chapter plans: {}",
+                output.invalidated_chapter_plan_ids.join(", ")
+            );
+        }
+        if !output.invalidated_chapter_summary_ids.is_empty() {
+            println!(
+                "invalidated chapter summaries: {}",
+                output.invalidated_chapter_summary_ids.join(", ")
+            );
+        }
+    }
+    Ok(())
 }
 
 fn init_project_workspace(cwd: &Path) -> anyhow::Result<PathBuf> {
@@ -866,6 +1267,187 @@ mod tests {
                 .unwrap();
         assert!(
             matches!(cli.command, Some(McpCommand::InitCodexSkills { target_dir: Some(path) }) if path == Path::new("/tmp/book"))
+        );
+    }
+
+    #[test]
+    fn operator_cli_commands_parse() {
+        let cli = McpCli::try_parse_from([
+            "spindle-mcp",
+            "--data-dir",
+            "/tmp/spindle-data",
+            "rebuild-search-index",
+            "--project",
+            "project:abc",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.data_dir.as_deref(),
+            Some(Path::new("/tmp/spindle-data"))
+        );
+        assert!(matches!(
+            cli.command,
+            Some(McpCommand::RebuildSearchIndex { project, json: false }) if project == "project:abc"
+        ));
+
+        let cli = McpCli::try_parse_from([
+            "spindle-mcp",
+            "test-agent",
+            "--agent",
+            "local",
+            "--prompt",
+            "hello",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(McpCommand::TestAgent { agent, .. }) if agent == "local"
+        ));
+
+        let cli = McpCli::try_parse_from([
+            "spindle-mcp",
+            "backfill-scene-source-offsets",
+            "--project",
+            "project:abc",
+            "--branch",
+            "branch:main",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(McpCommand::BackfillSceneSourceOffsets { project, branch, .. })
+                if project == "project:abc" && branch == "branch:main"
+        ));
+
+        let cli = McpCli::try_parse_from([
+            "spindle-mcp",
+            "operator-delete-scene",
+            "--project",
+            "project:abc",
+            "--scene-id",
+            "scene:1",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(McpCommand::OperatorDeleteScene { scene_id: Some(id), .. }) if id == "scene:1"
+        ));
+
+        let cli = McpCli::try_parse_from(["spindle-mcp", "configure-agents"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(McpCommand::ConfigureAgents { json: false })
+        ));
+    }
+
+    #[test]
+    fn operator_tools_are_denied_in_every_model_profile() {
+        for profile in [None, Some("legacy-all"), Some("write"), Some("authoring")] {
+            for tool in crate::tools::OPERATOR_ONLY_TOOLS {
+                assert!(
+                    !crate::tools::profile_has_tool(profile, tool),
+                    "{profile:?} must deny operator tool {tool}"
+                );
+            }
+        }
+        assert!(crate::tools::profile_has_tool(
+            Some("write"),
+            "save_scene_draft"
+        ));
+    }
+
+    #[test]
+    fn configure_agents_cli_loads_explicit_config() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config = temp.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "[health_check]\nenabled = false\n\n[[agents]]\nid = \"local\"\nname = \"Local\"\nprovider = \"local\"\nendpoint = \"local\"\nmodel = \"local\"\nratings = [\"general\"]\n\n[[routing]]\nroute = \"draft\"\nagent = \"local\"\n",
+        )
+        .unwrap();
+        let output = load_agent_config_for_cli(Some(&config)).expect("load config");
+        assert_eq!(output.agents_loaded, 1);
+        assert_eq!(output.routing_rules_loaded, 1);
+        assert_eq!(
+            output.source_path.as_deref(),
+            Some(config.to_str().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn operator_cli_rebuilds_index_and_deletes_scene() {
+        use spindle_core::models::{
+            ContentRating, CreateProjectInput, ReaderContract, SaveSceneDraftInput,
+        };
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let data_dir = temp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let config = temp.path().join("config.toml");
+        std::fs::write(&config, "[health_check]\nenabled = false\n").unwrap();
+
+        let db = init_sqlite(&data_dir.join("spindle.db")).await.unwrap();
+        let setup = build_service(db, &data_dir, Some(config.display().to_string()));
+        let project = setup
+            .create_project(CreateProjectInput {
+                name: "Operator CLI".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "operator commands".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let scene = setup
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Operator CLI test scene.".to_string(),
+                summary: "operator test".to_string(),
+                content_rating: ContentRating::General,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        drop(setup);
+
+        run_rebuild_search_index(
+            Some(data_dir.clone()),
+            Some(config.clone()),
+            project.project_id.clone(),
+            true,
+        )
+        .await
+        .expect("rebuild index");
+
+        run_operator_delete_scene(
+            Some(data_dir.clone()),
+            Some(config.clone()),
+            project.project_id.clone(),
+            Some(scene.scene_id.clone()),
+            None,
+            None,
+            None,
+            true,
+        )
+        .await
+        .expect("operator delete");
+
+        let db = init_sqlite(&data_dir.join("spindle.db")).await.unwrap();
+        let verify = build_service(db, &data_dir, Some(config.display().to_string()));
+        assert!(
+            verify
+                .repository()
+                .get_scene(&scene.scene_id)
+                .await
+                .is_err(),
+            "operator CLI deletion must remove the scene"
         );
     }
 
