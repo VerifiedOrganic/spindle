@@ -12,11 +12,14 @@ use crate::models::{TextByteRange, WorldRuleHit, WorldRuleSeverity};
 ///   inside "statement"); stem matching is explicit ("resurrect\\w*").
 /// * v4 — plain verb alternations match common inflections ("invoked",
 ///   "channeled") and explicit cost-omission prose promotes a hit to Likely.
+/// * v5 — required cost/effect nouns are derived from rule descriptions, and
+///   their explicit absence promotes a hit to Likely even when the prose does
+///   not repeat the rule's scan label.
 ///
 /// The adapters layer mixes this into the `world_rule_semantic_drift` cache
 /// context hash, so deploying new scanner semantics invalidates cached
 /// findings computed by the old logic instead of serving them forever.
-pub const SCANNER_SEMANTICS_VERSION: u32 = 4;
+pub const SCANNER_SEMANTICS_VERSION: u32 = 5;
 
 pub struct ScanRule {
     pub rule_id: String,
@@ -169,6 +172,7 @@ pub fn scan_prose_for_world_rules(prose: &str, rules: &[ScanRule]) -> Vec<WorldR
         if secrecy_class && dialogue_spans.is_none() {
             dialogue_spans = Some(compute_dialogue_spans(prose));
         }
+        let mut rule_hits = Vec::new();
         match build_regex(pattern) {
             Some(re) => {
                 for mat in re.find_iter(prose) {
@@ -185,7 +189,7 @@ pub fn scan_prose_for_world_rules(prose: &str, rules: &[ScanRule]) -> Vec<WorldR
                     }
                     let severity =
                         severity_for_hit(prose, mat.start(), mat.end(), &rule.description);
-                    hits.push(build_hit(
+                    rule_hits.push(build_hit(
                         &rule.rule_id,
                         mat.start(),
                         mat.end(),
@@ -196,6 +200,21 @@ pub fn scan_prose_for_world_rules(prose: &str, rules: &[ScanRule]) -> Vec<WorldR
             }
             None => continue,
         }
+        if !secrecy_class
+            && !rule_hits
+                .iter()
+                .any(|hit| hit.severity == WorldRuleSeverity::Likely)
+            && let Some((start, end)) = derived_cost_omission_hit(prose, &rule.description)
+        {
+            rule_hits.push(build_hit(
+                &rule.rule_id,
+                start,
+                end,
+                prose,
+                WorldRuleSeverity::Likely,
+            ));
+        }
+        hits.extend(rule_hits);
     }
     hits
 }
@@ -235,6 +254,342 @@ fn compute_dialogue_spans(prose: &str) -> Vec<(usize, usize)> {
     spans
 }
 
+/// Extract required cost/effect noun phrases from a rule description.
+///
+/// These are general syntactic cues ("opens only when X is fed", "costs the
+/// scribe one memory", "requires X", "without X"), not corpus-specific words.
+fn cost_requirement_phrases(description: &str) -> Vec<String> {
+    let mut phrases = Vec::new();
+    let lower = description.to_ascii_lowercase();
+    let patterns = [
+        r"only when (?:a |an |the )?(?:fed |given |paid |spent )?(?:a |an |the )?([a-z][a-z ' -]{1,45})",
+        r"(?:requires?|needs?|drains?|spends?|consumes?|sacrifices?|pays?) (?:a |an |the |one |[0-9]+ )?([a-z][a-z ' -]{1,45})",
+        r"(?:costs?|costing) (?:the )?[a-z][a-z' -]{0,25} (?:one|a|an|the|[0-9]+) ([a-z][a-z ' -]{1,35})",
+        r"(?:costs?|costing) (?:one|a|an|[0-9]+) ([a-z][a-z ' -]{1,35})",
+        r"must (?:pay|spend|feed|use|sacrifice|give up) (?:a |an |the |one |[0-9]+ )?([a-z][a-z ' -]{1,35})",
+        r"without (?:a |an |the )?([a-z][a-z ' -]{1,40})",
+    ];
+    for pattern in patterns {
+        let Ok(regex) = regex::RegexBuilder::new(pattern)
+            .case_insensitive(true)
+            .size_limit(1 << 16)
+            .build()
+        else {
+            continue;
+        };
+        for capture in regex.captures_iter(&lower) {
+            let Some(raw) = capture.get(1).map(|m| m.as_str()) else {
+                continue;
+            };
+            if let Some(phrase) = truncate_cost_phrase(raw)
+                && !phrases.contains(&phrase)
+            {
+                phrases.push(phrase);
+            }
+        }
+    }
+    phrases
+}
+
+fn truncate_cost_phrase(raw: &str) -> Option<String> {
+    const STOP: &[&str] = &[
+        "is", "are", "was", "were", "be", "been", "being", "to", "for", "from", "that", "which",
+        "when", "if", "and", "but", "or", "with", "without", "as", "at", "by", "of", "on", "in",
+        "the", "a", "an", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+        "ten", "hundred", "thousand", "percent", "its", "his", "her", "their", "cannot", "can",
+        "must", "should",
+    ];
+    let mut words = Vec::new();
+    for word in raw.split_whitespace() {
+        let word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+        if word.is_empty() || STOP.contains(&word) {
+            break;
+        }
+        words.push(word);
+        if words.len() == 4 {
+            break;
+        }
+    }
+    if words.is_empty() {
+        return None;
+    }
+    Some(words.join(" "))
+}
+
+fn cost_head_noun(phrase: &str) -> Option<&str> {
+    phrase
+        .split_whitespace()
+        .last()
+        .filter(|word| word.len() >= 3)
+}
+
+fn sentence_window(prose: &str, start: usize, end: usize) -> &str {
+    let bytes = prose.as_bytes();
+    let mut begin = start;
+    while begin > 0 && !matches!(bytes[begin - 1], b'.' | b'!' | b'?' | b';' | b'\n') {
+        begin -= 1;
+    }
+    let mut finish = end.min(prose.len());
+    while finish < prose.len() && !matches!(bytes[finish], b'.' | b'!' | b'?' | b';' | b'\n') {
+        finish += 1;
+    }
+    &prose[begin..finish]
+}
+
+fn has_negated_absence(sentence: &str, absence_start: usize) -> bool {
+    const NEGATIONS: &[&str] = &[
+        "not",
+        "never",
+        "cannot",
+        "can't",
+        "didn't",
+        "doesn't",
+        "isn't",
+        "wasn't",
+        "wouldn't",
+        "won't",
+        "no longer",
+    ];
+    let lower = sentence.to_ascii_lowercase();
+    let before_start = absence_start.saturating_sub(48);
+    let before = &lower[before_start..absence_start];
+    NEGATIONS.iter().any(|negation| before.contains(negation))
+}
+
+fn has_deferred_requirement(sentence: &str, absence_end: usize) -> bool {
+    let lower = sentence.to_ascii_lowercase();
+    let after_end = (absence_end + 36).min(lower.len());
+    let after = &lower[absence_end..after_end];
+    [
+        "required",
+        "needed",
+        "necessary",
+        "allowed",
+        "permitted",
+        "lost",
+        "forgotten",
+    ]
+    .iter()
+    .any(|word| after.contains(word))
+}
+
+/// Absence pattern for one marker. `without` may have a gerund between it and
+/// the cost noun ("without giving up a memory"); `no` stays close to the noun
+/// so an unrelated earlier "no" cannot span a whole clause.
+fn cost_absence_patterns(variant: &str) -> [String; 2] {
+    let escaped = regex::escape(variant);
+    [
+        format!(r"\bwithout\b[^.!?;]{{0,60}}\b{escaped}\b"),
+        format!(r"\bno\b(?:\s+[a-z][a-z'-]*){{0,2}}\s+\b{escaped}\b"),
+    ]
+}
+
+/// Content words from the rule description that identify its domain. Cost
+/// words themselves are excluded so "no memory" alone cannot trigger a rule
+/// whose description happens to mention memory.
+fn cost_anchor_tokens(description: &str, phrases: &[String]) -> Vec<String> {
+    const STOP: &[&str] = &[
+        "only",
+        "when",
+        "with",
+        "without",
+        "from",
+        "that",
+        "which",
+        "this",
+        "these",
+        "those",
+        "into",
+        "onto",
+        "over",
+        "under",
+        "than",
+        "then",
+        "there",
+        "their",
+        "them",
+        "they",
+        "cost",
+        "costs",
+        "costing",
+        "require",
+        "requires",
+        "required",
+        "need",
+        "needs",
+        "needed",
+        "must",
+        "should",
+        "cannot",
+        "can",
+        "will",
+        "would",
+        "could",
+        "have",
+        "has",
+        "had",
+        "been",
+        "being",
+        "each",
+        "every",
+        "some",
+        "more",
+        "most",
+        "less",
+        "least",
+        "opens",
+        "open",
+        "fed",
+        "feed",
+        "given",
+        "give",
+        "paid",
+        "pay",
+        "spends",
+        "spend",
+        "consumes",
+        "consume",
+        "sacrifices",
+        "sacrifice",
+        "uses",
+        "use",
+        "rings",
+        "ring",
+    ];
+    let cost_tokens: Vec<String> = phrases
+        .iter()
+        .flat_map(|phrase| phrase.split_whitespace())
+        .map(|word| word.to_ascii_lowercase())
+        .collect();
+    let mut anchors = Vec::new();
+    for raw in description.split(|c: char| !c.is_alphanumeric() && c != '\'') {
+        let word = raw.trim_matches('\'').to_ascii_lowercase();
+        if word.len() < 4
+            || STOP.contains(&word.as_str())
+            || cost_tokens.contains(&word)
+            || anchors.contains(&word)
+        {
+            continue;
+        }
+        anchors.push(word);
+    }
+    anchors
+}
+
+fn contains_anchor(sentence: &str, anchors: &[String]) -> bool {
+    if anchors.is_empty() {
+        return true;
+    }
+    let words: Vec<String> = sentence
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .map(|word| word.trim_matches('\'').to_ascii_lowercase())
+        .filter(|word| !word.is_empty())
+        .collect();
+    anchors.iter().any(|anchor| words.contains(anchor))
+}
+
+fn sentence_ranges(prose: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    for (index, ch) in prose.char_indices() {
+        if matches!(ch, '.' | '!' | '?' | ';' | '\n') {
+            ranges.push((start, index));
+            start = index + ch.len_utf8();
+        }
+    }
+    if start < prose.len() {
+        ranges.push((start, prose.len()));
+    }
+    ranges
+}
+
+/// Find the first cost-omission phrase anywhere in the prose, independent of
+/// whether the rule's scan pattern appears. The rule must still be active and
+/// declared with a scan pattern; this only closes the gap where prose names
+/// the omitted cost without repeating the rule's label.
+fn match_cost_omission(sentence: &str, phrases: &[String]) -> Option<(usize, usize)> {
+    let lower = sentence.to_ascii_lowercase();
+    for phrase in phrases {
+        let mut variants = vec![phrase.clone()];
+        if let Some(head) = cost_head_noun(phrase)
+            && head != phrase
+        {
+            variants.push(head.to_string());
+        }
+        for variant in variants {
+            for pattern in cost_absence_patterns(&variant) {
+                let Ok(regex) = regex::RegexBuilder::new(&pattern)
+                    .case_insensitive(true)
+                    .size_limit(1 << 20)
+                    .build()
+                else {
+                    continue;
+                };
+                for capture in regex.find_iter(&lower) {
+                    let matched = capture.as_str().to_ascii_lowercase();
+                    if matched.starts_with("no one")
+                        || matched.starts_with("no body")
+                        || matched.starts_with("no thing")
+                    {
+                        continue;
+                    }
+                    let absence_marker = if matched.starts_with("without") {
+                        "without"
+                    } else {
+                        "no"
+                    };
+                    if has_negated_absence(&lower, capture.start()) {
+                        continue;
+                    }
+                    if absence_marker == "no" && has_deferred_requirement(&lower, capture.end()) {
+                        continue;
+                    }
+                    return Some((capture.start(), capture.end()));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find the first cost-omission phrase anywhere in the prose, independent of
+/// whether the rule's scan pattern appears. The rule must still be active and
+/// declared with a scan pattern; this only closes the gap where prose names
+/// the omitted cost without repeating the rule's label.
+fn derived_cost_omission_hit(prose: &str, description: &str) -> Option<(usize, usize)> {
+    let phrases = cost_requirement_phrases(description);
+    if phrases.is_empty() {
+        return None;
+    }
+    let anchors = cost_anchor_tokens(description, &phrases);
+    for (range_start, range_end) in sentence_ranges(prose) {
+        let sentence = &prose[range_start..range_end];
+        if !contains_anchor(sentence, &anchors) {
+            continue;
+        }
+        if let Some((start, end)) = match_cost_omission(sentence, &phrases) {
+            return Some((range_start + start, range_start + end));
+        }
+    }
+    None
+}
+
+/// True when the prose names a required cost/effect noun as absent. Handles
+/// "without a/the <cost>", "without <cost>", "no <cost>", and an intervening
+/// gerund ("without giving up a memory"). Negated requirements stay neutral.
+fn has_derived_cost_omission(
+    prose: &str,
+    hit_start: usize,
+    hit_end: usize,
+    description: &str,
+) -> bool {
+    let phrases = cost_requirement_phrases(description);
+    if phrases.is_empty() {
+        return false;
+    }
+    match_cost_omission(sentence_window(prose, hit_start, hit_end), &phrases).is_some()
+}
+
 fn severity_for_hit(
     prose: &str,
     hit_start: usize,
@@ -248,6 +603,10 @@ fn severity_for_hit(
     let window_start = floor_char_boundary(prose, raw_start);
     let window_end = ceil_char_boundary(prose, raw_end);
     let window = prose[window_start..window_end].to_ascii_lowercase();
+
+    if has_derived_cost_omission(prose, hit_start, hit_end, rule_description) {
+        return WorldRuleSeverity::Likely;
+    }
 
     if VIOLATION_CONTEXT_MARKERS
         .iter()
@@ -597,6 +956,151 @@ mod tests {
         let hits = scan_prose_for_world_rules(prose, &rules);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].severity, WorldRuleSeverity::Likely);
+    }
+
+    #[test]
+    fn cost_absence_without_rule_anchor_is_ignored() {
+        let rules = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Cost",
+            "The moon gate opens only when a silver key is fed to the lock.",
+        )];
+        let prose = "The door opened without a key and the hall stayed quiet.";
+        assert!(scan_prose_for_world_rules(prose, &rules).is_empty());
+    }
+
+    #[test]
+    fn no_pronoun_and_negated_loss_are_not_cost_omissions() {
+        let ink = vec![make_rule(
+            "world_rule:ink",
+            "ink binding",
+            "Ink Binding Cost",
+            "Ink bindings cost the scribe one remembered word.",
+        )];
+        let prose = "No one spoke the missing word.";
+        assert!(scan_prose_for_world_rules(prose, &ink).is_empty());
+
+        let song = vec![make_rule(
+            "world_rule:song",
+            "bell-song",
+            "Bell Song Cost",
+            "A bell-song costs the singer one recollection.",
+        )];
+        let prose = "No hymn was sung, and no recollection was lost.";
+        assert!(scan_prose_for_world_rules(prose, &song).is_empty());
+    }
+
+    #[test]
+    fn derived_cost_omission_without_rule_label_is_likely() {
+        let rules = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Cost",
+            "The moon gate opens only when a silver key is fed to the lock.",
+        )];
+        let prose = "The lock opened without a key and the keeper shrugged.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Likely);
+    }
+
+    #[test]
+    fn derived_cost_noun_without_head_is_likely() {
+        let rules = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Cost",
+            "The moon gate opens only when a silver key is fed to the lock.",
+        )];
+        let prose = "The moon gate opened without a key and nobody noticed.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Likely);
+    }
+
+    #[test]
+    fn derived_cost_noun_with_intervening_gerund_is_likely() {
+        let rules = vec![make_rule(
+            "world_rule:ash",
+            "ash-ink",
+            "Ash Ink Cost",
+            "Ash-ink bindings cost the scribe one memory.",
+        )];
+        let prose = "She bound the map with ash-ink without surrendering a memory.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Likely);
+    }
+
+    #[test]
+    fn derived_cost_noun_from_without_clause_is_likely() {
+        let rules = vec![make_rule(
+            "world_rule:signal",
+            "signal",
+            "Signal Relay",
+            "The signal cannot cross the marsh without a living relay.",
+        )];
+        let prose = "The signal crossed the marsh without a relay and arrived clear.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Likely);
+    }
+
+    #[test]
+    fn negated_requirement_is_not_cost_omission() {
+        let rules = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Cost",
+            "The moon gate opens only when a silver key is fed to the lock.",
+        )];
+        let prose = "The moon gate did not open without a key.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Possible);
+    }
+
+    #[test]
+    fn stated_requirement_is_not_cost_omission() {
+        let rules = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Cost",
+            "The moon gate opens only when a silver key is fed to the lock.",
+        )];
+        let prose = "No silver key was required to open the moon gate.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Possible);
+    }
+
+    #[test]
+    fn paid_cost_is_not_cost_omission() {
+        let rules = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Cost",
+            "The moon gate opens only when a silver key is fed to the lock.",
+        )];
+        let prose = "The moon gate opened with a silver key.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Possible);
+    }
+
+    #[test]
+    fn unrelated_without_phrase_is_not_cost_omission() {
+        let rules = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Cost",
+            "The moon gate opens only when a silver key is fed to the lock.",
+        )];
+        let prose = "The moon gate opened without delay.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Possible);
     }
 
     #[test]

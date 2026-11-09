@@ -108,6 +108,13 @@ removal plan.
 
 ### Added
 
+- World-rule prose scanning derives required cost/effect nouns from rule
+  descriptions and promotes explicit omissions ("without a/the <cost>",
+  "without <cost>", "no <cost>") to warning-level `world_rule_semantic_drift`
+  findings, including when the prose does not repeat the rule's scan label.
+  Vague rule mentions remain advisory. Scanner semantics version is now v5 so
+  cached findings are recomputed.
+
 - Held-out-2 continuity scoring now follows the detector contract: attribute
   coverage accepts `canonical_fact_prose_drift`, world-rule expectations use
   `world_rule_semantic_drift`, and a broad finding localizes by planted scene
