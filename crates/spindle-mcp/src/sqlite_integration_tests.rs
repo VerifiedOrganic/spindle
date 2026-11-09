@@ -9915,3 +9915,431 @@ async fn planning_status_reconnects_to_active_and_stale_sessions_through_mcp_too
         serde_json::Value::String(other.project_id)
     );
 }
+
+/// Phase F disposable release smoke. Uses a temporary database/data directory
+/// and deterministic fixture artifacts: blank project, human-accepted roots,
+/// explicitly delegated chapter/scene detail, a real readiness report, and a
+/// host-authored scene 1.1 draft through the MCP tool boundary. Fixture drafting
+/// proves wiring, not prose or plan quality.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn phase_f_disposable_smoke_blank_project_to_scene_one_one_draft() {
+    use crate::tools::{ToolRouter, ToolSerializationState};
+    use std::sync::Arc;
+
+    let (_tmp, svc) = fresh_service().await;
+    let router = ToolRouter::with_tool_profile_and_serialization(
+        svc.clone(),
+        None,
+        Arc::new(ToolSerializationState::default()),
+    );
+    let range = serde_json::json!({
+        "book_number": 1,
+        "chapter_start": 1,
+        "chapter_end": 1,
+        "scenes_per_chapter": 1
+    });
+    let begun = planning_call(
+        &router,
+        "planning_begin",
+        serde_json::json!({
+            "premise": "A night archivist discovers the harbor bell rings only when a promise is broken.",
+            "horizon": range,
+            "rating_ceiling": "teen"
+        }),
+    )
+    .await;
+    let session_id = begun["session"]["session_id"].as_str().unwrap().to_string();
+
+    // Staging the contract must not create a project or any bible row.
+    let contract = planning_call(
+        &router,
+        "planning_advance",
+        serde_json::json!({
+            "session_id": session_id,
+            "action": "stage_host_artifact",
+            "level": "contract",
+            "host_artifact": {
+                "schema_version": 1,
+                "level": "contract",
+                "rationale": "A human must approve the premise before any project is created.",
+                "operations": [{
+                    "output_ref": "project:root",
+                    "operation": {"operation": "create_project", "input": {
+                        "name": "The Bell Archive",
+                        "project_type": "novel",
+                        "genre": "mystery",
+                        "reader_contract": {
+                            "promise": "A fair-play mystery about promises the harbor cannot keep.",
+                            "style_notes": ["Close third person", "Coastal sensory detail"],
+                            "boundaries": ["No harm to children"]
+                        }
+                    }}
+                }]
+            },
+            "retry_key": "phase-f-contract"
+        }),
+    )
+    .await;
+    assert_eq!(contract["advance"]["proposal"]["status"], "staged");
+    assert!(
+        svc.list_projects().await.unwrap().projects.is_empty(),
+        "staging must not create a project"
+    );
+    let contract_id = contract["advance"]["proposal"]["proposal_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let contract_hash = contract["advance"]["proposal"]["payload_hash"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    planning_call(
+        &router,
+        "planning_decide",
+        serde_json::json!({
+            "session_id": session_id,
+            "action": "decide",
+            "decision": "accept",
+            "expected_hashes": {contract_id: contract_hash},
+            "actor": "author:test",
+            "note": "Approve the premise and reader contract."
+        }),
+    )
+    .await;
+
+    planning_advance_and_accept(
+        &router,
+        &session_id,
+        "cast_world",
+        serde_json::json!({
+            "schema_version": 1,
+            "level": "cast_world",
+            "rationale": "Minimal cast and place for the opening chapter.",
+            "operations": [
+                {"output_ref": "cast:mara", "operation": {"operation": "create_character", "input": {
+                    "name": "Mara", "summary": "Night archivist", "role": "protagonist"
+                }}},
+                {"output_ref": "loc:watchtower", "operation": {"operation": "create_location", "input": {
+                    "name": "Watchtower", "kind": "building", "summary": "Tidal signal tower"
+                }}}
+            ]
+        }),
+        "phase-f-cast",
+        None,
+    )
+    .await;
+
+    planning_advance_and_accept(
+        &router,
+        &session_id,
+        "series_arc",
+        serde_json::json!({
+            "schema_version": 1,
+            "level": "series_arc",
+            "rationale": "One causal arc and pacing promise for the opening horizon.",
+            "target_range": range,
+            "operations": [
+                {"output_ref": "theme:truth", "operation": {"operation": "create_theme", "input": {
+                    "theme_statement": "Truth requires risk",
+                    "thesis_antithesis": "Safety versus honesty",
+                    "introduction_point": {"book_number": 1, "chapter_number": 1, "scene_order": 1},
+                    "resolution_point": {"book_number": 1, "chapter_number": 1, "scene_order": 1}
+                }}},
+                {"output_ref": "conflict:bell", "operation": {"operation": "create_conflict", "input": {
+                    "name": "The broken promise bell",
+                    "conflict_type": "mystery",
+                    "stakes": "The harbor's evacuation"
+                }}},
+                {"output_ref": "plot:bell", "operation": {"operation": "create_plot_line", "input": {
+                    "name": "Find who broke the promise",
+                    "plot_type": "main",
+                    "summary": "Trace the bell rope and the missing promise",
+                    "connected_theme_ids": [{"kind": "proposal_ref", "value": "theme:truth"}],
+                    "connected_conflict_ids": [{"kind": "proposal_ref", "value": "conflict:bell"}]
+                }}},
+                {"output_ref": "arc:mara", "operation": {"operation": "create_character_arc", "input": {
+                    "character_id": {"kind": "proposal_ref", "value": "cast:mara"},
+                    "arc_type": "growth",
+                    "starting_state": "Guarded",
+                    "ending_state": "Committed",
+                    "thematic_purpose": "Risk the truth",
+                    "connected_theme_ids": [{"kind": "proposal_ref", "value": "theme:truth"}],
+                    "milestones": [{
+                        "label": "Ring the bell",
+                        "description": "Mara rings the signal knowingly",
+                        "placement": {"book_number": 1, "chapter_number": 1, "scene_order": 1}
+                    }]
+                }}},
+                {"output_ref": "pacing:series", "operation": {"operation": "create_pacing_config", "input": {
+                    "total_planned_books": 1,
+                    "avg_chapters_per_book": 1,
+                    "avg_scenes_per_chapter": 1,
+                    "tension_model": "rising"
+                }}},
+                {"output_ref": "pacing:curve", "operation": {"operation": "create_pacing_curve", "input": {
+                    "book_number": 1,
+                    "act_breakpoints": {"first": 0.5},
+                    "scene_type_density": {"action": 1.0},
+                    "intensity_points": [{"position": 0.0, "intensity": 0.6}]
+                }}}
+            ],
+            "schedule": {
+                "pov_plan": [{
+                    "book_number": 1,
+                    "chapter_number": 1,
+                    "pov_character_id": {"kind": "proposal_ref", "value": "cast:mara"}
+                }],
+                "intensity_targets": [{
+                    "book_number": 1,
+                    "chapter_number": 1,
+                    "target_intensity": 0.6
+                }]
+            }
+        }),
+        "phase-f-series",
+        Some(range.clone()),
+    )
+    .await;
+
+    planning_advance_and_accept(
+        &router,
+        &session_id,
+        "book",
+        serde_json::json!({
+            "schema_version": 1,
+            "level": "book",
+            "rationale": "Coarse book destination for the opening horizon.",
+            "operations": [{
+                "output_ref": "outline:book",
+                "operation": {"operation": "set_book_outline", "input": {
+                    "book_id": {"kind": "proposal_ref", "value": "project:root:book"},
+                    "book_number": 1,
+                    "content": "Mara traces the broken promise to the watchtower bell."
+                }}
+            }]
+        }),
+        "phase-f-book",
+        None,
+    )
+    .await;
+
+    // Explicitly delegate chapter and scene detail only after every root is
+    // human-accepted. Zero findings and zero author questions are required.
+    let policy = planning_call(
+        &router,
+        "planning_advance",
+        serde_json::json!({
+            "session_id": session_id,
+            "action": "set_policy",
+            "policy": {
+                "gates": {"chapter": "delegate_if_valid", "scene": "delegate_if_valid"},
+                "policy_id": "phase-f-detail",
+                "policy_version": 1,
+                "max_advisory_findings": 0
+            },
+            "policy_actor": "author:test",
+            "policy_note": "Delegate only structural chapter and scene acceptance after the roots."
+        }),
+    )
+    .await;
+    let delegated_actor = policy["session"]["policy"]["policy_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(delegated_actor, "phase-f-detail");
+
+    let chapter = planning_call(
+        &router,
+        "planning_advance",
+        serde_json::json!({
+            "session_id": session_id,
+            "action": "stage_host_artifact",
+            "level": "chapter",
+            "host_artifact": {
+                "schema_version": 1,
+                "level": "chapter",
+                "rationale": "One opening chapter with a causal turn.",
+                "target_range": range,
+                "operations": [
+                    {"output_ref": "chapter:1", "operation": {"operation": "create_chapter", "input": {
+                        "book_id": {"kind": "proposal_ref", "value": "project:root:book"},
+                        "book_number": 1, "chapter_number": 1, "title": "The Broken Promise"
+                    }}},
+                    {"output_ref": "outline:chapter:1", "operation": {"operation": "set_chapter_outline", "input": {
+                        "entity_id": {"kind": "proposal_ref", "value": "chapter:1"},
+                        "book_number": 1, "chapter_number": 1,
+                        "content": "Mara hears the bell and finds the cut rope.",
+                        "beats": [{"order": 1, "summary": "Hear the bell", "status": "planned"}]
+                    }}}
+                ]
+            },
+            "retry_key": "phase-f-chapter",
+            "target_range": range
+        }),
+    )
+    .await;
+    assert_eq!(
+        chapter["advance"]["proposal"]["status"], "applied",
+        "delegated chapter detail must apply only after validation: {chapter}"
+    );
+    assert_eq!(
+        chapter["advance"]["proposal"]["decided_by"],
+        "policy:phase-f-detail:1"
+    );
+
+    let scene = planning_call(
+        &router,
+        "planning_advance",
+        serde_json::json!({
+            "session_id": session_id,
+            "action": "stage_host_artifact",
+            "level": "scene",
+            "host_artifact": {
+                "schema_version": 1,
+                "level": "scene",
+                "rationale": "A complete opening scene packet.",
+                "target_range": range,
+                "operations": [{
+                    "output_ref": "plan:ch1",
+                    "operation": {"operation": "plan_chapter", "input": {
+                        "book_number": 1,
+                        "chapter_number": 1,
+                        "pov_character_id": {"kind": "proposal_ref", "value": "cast:mara"},
+                        "synopsis": "Mara hears the broken-promise bell and finds the cut rope.",
+                        "target_theme_ids": [{"kind": "proposal_ref", "value": "theme:truth"}],
+                        "target_conflict_ids": [{"kind": "proposal_ref", "value": "conflict:bell"}],
+                        "target_plot_line_ids": [{"kind": "proposal_ref", "value": "plot:bell"}],
+                        "scenes": [{
+                            "scene_order": 1,
+                            "summary": "Mara hears the bronze bell and finds fresh salt on the cut rope.",
+                            "purpose": "Force Mara to choose between the archive and the harbor warning.",
+                            "beat_structure": ["hook", "turn"],
+                            "character_ids": [{"kind": "proposal_ref", "value": "cast:mara"}],
+                            "location_id": {"kind": "proposal_ref", "value": "loc:watchtower"},
+                            "content_rating": "general"
+                        }]
+                    }}
+                }]
+            },
+            "retry_key": "phase-f-scene",
+            "target_range": range
+        }),
+    )
+    .await;
+    assert_eq!(
+        scene["advance"]["proposal"]["status"], "applied",
+        "delegated scene detail must apply only after validation: {scene}"
+    );
+    assert_eq!(
+        scene["advance"]["proposal"]["decided_by"],
+        "policy:phase-f-detail:1"
+    );
+
+    let readiness = planning_call(
+        &router,
+        "planning_decide",
+        serde_json::json!({
+            "session_id": session_id,
+            "action": "prepare_authoring_run",
+            "target_range": range
+        }),
+    )
+    .await;
+    assert_eq!(
+        readiness["readiness"]["ready_to_draft"], true,
+        "{readiness}"
+    );
+    assert_eq!(
+        readiness["readiness"]["prepare_run"]["missing_requirements"],
+        serde_json::json!([]),
+        "{readiness}"
+    );
+
+    let start = planning_call(
+        &router,
+        "authoring_start_run",
+        serde_json::json!({
+            "project_id": readiness["session"]["project_id"],
+            "book_number": 1,
+            "start_chapter": 1,
+            "end_chapter": 1,
+            "checkpoint_interval": 1,
+            "mode": "hybrid",
+            "checkpoint_policy": "manual"
+        }),
+    )
+    .await;
+    let run_id = start["run_id"].as_str().unwrap().to_string();
+    assert!(run_id.starts_with("authoring_run:"), "{start}");
+
+    let host_step = planning_call(
+        &router,
+        "authoring_execute_next",
+        serde_json::json!({"project_id": readiness["session"]["project_id"], "run_id": run_id}),
+    )
+    .await;
+    assert_eq!(host_step["executed_action"], "none");
+    assert!(
+        host_step["message"]
+            .as_str()
+            .unwrap()
+            .contains("Host draft required for non-explicit scene 1.1"),
+        "{host_step}"
+    );
+
+    let saved = planning_call(
+        &router,
+        "authoring_save_scene_draft",
+        serde_json::json!({
+            "project_id": readiness["session"]["project_id"],
+            "run_id": run_id,
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1,
+            "full_text": "Mara heard the bronze bell before she saw the cut rope. The harbor kept its promises in salt and rope; tonight both were gone.",
+            "summary": "Mara hears the bell and finds the cut rope.",
+            "content_rating": "general",
+            "tone": "hushed",
+            "beats": [{"beat_type": "hook", "summary": "The bell rings without a ringer."}],
+            "continuity_notes": ["The bell rope is cut and salted."]
+        }),
+    )
+    .await;
+    assert_eq!(saved["status"], "saved");
+    let scene_id = saved["scene_id"].as_str().unwrap().to_string();
+    let stored = svc.repository().get_scene(&scene_id).await.unwrap();
+    assert!(stored.full_text.contains("bronze bell"));
+    assert_eq!(
+        stored.summary,
+        "Mara hears the bell and finds the cut rope."
+    );
+
+    let commit = planning_call(
+        &router,
+        "authoring_execute_next",
+        serde_json::json!({"project_id": readiness["session"]["project_id"], "run_id": run_id}),
+    )
+    .await;
+    assert!(
+        commit["executed_action"]
+            .as_str()
+            .unwrap()
+            .contains("commit scene changes"),
+        "{commit}"
+    );
+
+    let status = planning_call(
+        &router,
+        "authoring_status",
+        serde_json::json!({"project_id": readiness["session"]["project_id"], "run_id": run_id}),
+    )
+    .await;
+    assert_eq!(status["status"], "active", "{status}");
+    assert!(
+        status["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("annotate beats"),
+        "{status}"
+    );
+}

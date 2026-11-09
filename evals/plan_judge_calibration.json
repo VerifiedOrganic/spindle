@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "description": "Synthetic 20-pair calibration pilot fixture for plan_judge. The labels exercise the calibration and agreement mechanics only; replace human_preference with blinded author labels before making a live judge-human quality claim.",
+  "synthetic_fixture": true,
+  "recommended_pairs": 20,
+  "reviewer": "synthetic-fixture-calibrator",
+  "pairs": [
+    {
+      "brief_id": "PJG01",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJC01",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJR01",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJG02",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJC02",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJR02",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJG03",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJC03",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJR03",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJG04",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJC04",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJR04",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJG05",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJC05",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJR05",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJG06",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJC06",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJR06",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJG07",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    },
+    {
+      "brief_id": "PJC07",
+      "human_preference": "candidate",
+      "reviewer": "synthetic-fixture-calibrator"
+    }
+  ]
+}
