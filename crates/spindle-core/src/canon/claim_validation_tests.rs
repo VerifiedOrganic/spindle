@@ -573,3 +573,101 @@ fn height_parser_handles_word_digit_apostrophe_and_metric_forms() {
         assert!((got - expected).abs() < 0.01, "{text}: {got} vs {expected}");
     }
 }
+
+#[test]
+fn generic_secret_disclosure_covers_roles_notices_and_reported_speech() {
+    let value = "Lord Vale forged the harbor tide charts.";
+    let holder = vec!["Lord Vale".to_string(), "Vale".to_string()];
+    let in_circle = holder.clone();
+    for text in [
+        "A dockworker shouted that Vale's charts were false.",
+        "The broadsheet printed the forged charts in full.",
+        "Everyone on the quay already knew that Lord Vale had forged the charts.",
+        "The clerk announced that Vale forged the charts.",
+        "The broadsheet printed that Lord Vale forged the charts.",
+        "The clerk read the letter aloud: Vale forged the charts.",
+    ] {
+        assert!(
+            detect_secret_generic_disclosure(
+                &scene(text),
+                "canonical_fact:secret",
+                value,
+                &holder,
+                &in_circle
+            )
+            .is_some(),
+            "expected generic disclosure: {text}"
+        );
+    }
+    for text in [
+        "Lord Vale said that the charts were forged.",
+        "Vale's charts lay on the table.",
+        "In a dream, a dockworker shouted that Vale's charts were false.",
+        "A rumor claimed that Vale forged the charts.",
+        "Mara read the harbor notices and found Vale's name beside new charts.",
+        "The clerk never announced that Vale forged the charts.",
+        "If the clerk announced that Vale forged the charts, everyone would panic.",
+    ] {
+        assert!(
+            detect_secret_generic_disclosure(
+                &scene(text),
+                "canonical_fact:secret",
+                value,
+                &holder,
+                &in_circle
+            )
+            .is_none(),
+            "unexpected generic disclosure: {text}"
+        );
+    }
+}
+
+#[test]
+fn generic_secret_disclosure_handles_orchard_content_and_role_notice() {
+    let value = "Cassian Reed cut the orchard roots and sold the copper.";
+    let holder = vec!["Cassian Reed".to_string(), "Cassian".to_string()];
+    let in_circle = holder.clone();
+    for text in [
+        "A picker says Cassian cut the roots.",
+        "The pickers' notice board says Cassian cut the roots and sold the copper.",
+        "The carrier says Cassian cut the roots.",
+        "Everyone at the south wall already knew that Cassian had cut the roots.",
+    ] {
+        assert!(
+            detect_secret_generic_disclosure(
+                &scene(text),
+                "canonical_fact:secret",
+                value,
+                &holder,
+                &in_circle
+            )
+            .is_some(),
+            "expected orchard disclosure: {text}"
+        );
+    }
+}
+
+#[test]
+fn named_secret_narration_accepts_paraphrased_content() {
+    let candidate = SecretValidationCandidateV1 {
+        fact_id: "canonical_fact:secret".into(),
+        predicate: "root_cause".into(),
+        value: "Lord Vale forged the harbor tide charts.".into(),
+        character_id: "character:soren".into(),
+        character_name: "Soren Pike".into(),
+        character_aliases: vec!["Soren".into()],
+        other_present_character_names: Vec::new(),
+        other_present_character_aliases: Vec::new(),
+    };
+    assert!(
+        detect_secret_narration_leak(
+            &scene("Soren said the tide charts were forged."),
+            &candidate,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_secret_narration_leak(&scene("Soren said the weather was fine."), &candidate,)
+            .is_none()
+    );
+}

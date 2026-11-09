@@ -4243,6 +4243,55 @@ mod secret_leak_audit {
         .collect()
     }
 
+    #[tokio::test]
+    async fn holder_first_name_suppresses_generic_written_disclosure() {
+        let (_tmp, svc, project_id, _mara, _bran, _location, _fact) = fixture().await;
+        let cassian = make_character(&svc, &project_id, "Cassian Reed").await;
+        svc.register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project_id.clone(),
+            scene_id: None,
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: Some("secret".into()),
+            key: Some("Cassian:root_cut".into()),
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(cassian.clone()),
+            predicate: Some("root_cause".into()),
+            value_kind: Some("text".into()),
+            value_text: Some("Cassian Reed cut the orchard roots and sold the copper.".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: Some(SecrecyScope {
+                holder_ids: vec![cassian],
+                concealment_note: None,
+            }),
+        })
+        .await
+        .unwrap();
+        save_dialogue_scene(
+            &svc,
+            &project_id,
+            2,
+            1,
+            "Cassian wrote in his private letter that he cut the orchard roots and sold the copper.",
+        )
+        .await;
+        let hits = run_secret_leak(&svc, &project_id).await;
+        assert!(
+            hits.is_empty(),
+            "holder first-name disclosure must stay silent: {hits:?}"
+        );
+    }
+
     /// Firing: Bran (out of circle) speaks the secret's value in attributed
     /// dialogue → one warning naming the fact, the character, and the scene.
     #[tokio::test]

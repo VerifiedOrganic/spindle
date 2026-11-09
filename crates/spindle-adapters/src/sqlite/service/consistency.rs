@@ -1,7 +1,8 @@
 use super::*;
 use spindle_core::canon::{
     KnowledgeValidationFactV1, SceneValidationInputV1, SecretValidationCandidateV1,
-    detect_knowledge_paraphrase_leak, detect_secret_narration_leak,
+    detect_knowledge_paraphrase_leak, detect_secret_generic_disclosure,
+    detect_secret_narration_leak,
 };
 
 impl SqliteSpindleService {
@@ -2336,6 +2337,69 @@ impl SqliteSpindleService {
                                     message: finding.message,
                                     entity_ids: finding.entity_ids,
                                     suggested_action: Some(suggested_action("narration")),
+                                });
+                            }
+                        }
+                        let already_disclosed = issues.iter().any(|issue| {
+                            issue.check_type == "secret_leak"
+                                && issue.entity_ids.contains(&fact.id)
+                                && issue.entity_ids.contains(&scene.id)
+                        });
+                        if !already_disclosed {
+                            let holder_names: Vec<String> = fact
+                                .subject_id
+                                .as_ref()
+                                .and_then(|holder_id| {
+                                    characters
+                                        .iter()
+                                        .find(|character| &character.id == holder_id)
+                                })
+                                .map(|holder| {
+                                    let mut names =
+                                        mention_resolver.aliases_for(&holder.id).to_vec();
+                                    if names.is_empty() {
+                                        names.push(holder.name.clone());
+                                    }
+                                    names
+                                })
+                                .unwrap_or_default();
+                            let in_circle_names: Vec<String> = characters
+                                .iter()
+                                .filter(|character| {
+                                    circle_at_cursor.contains(character.id.as_str())
+                                })
+                                .flat_map(|character| {
+                                    let mut names =
+                                        mention_resolver.aliases_for(&character.id).to_vec();
+                                    if names.is_empty() {
+                                        names.push(character.name.clone());
+                                    }
+                                    names
+                                })
+                                .collect();
+                            let generic_scene = SceneValidationInputV1 {
+                                scene_id: &scene.id,
+                                book_number: scene.book_number,
+                                chapter_number: scene.chapter_number,
+                                scene_order: scene.scene_order,
+                                text: &scene.full_text,
+                            };
+                            if let Some(finding) = detect_secret_generic_disclosure(
+                                &generic_scene,
+                                &fact.id,
+                                &value,
+                                &holder_names,
+                                &in_circle_names,
+                            ) {
+                                issues.push(ConsistencyIssue {
+                                    severity: finding.severity.as_str().to_string(),
+                                    check_type: finding.check_type,
+                                    message: finding.message,
+                                    entity_ids: finding.entity_ids,
+                                    suggested_action: Some(
+                                        "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
+                                            .to_string(),
+                                    ),
                                 });
                             }
                         }
