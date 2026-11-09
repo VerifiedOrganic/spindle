@@ -673,7 +673,7 @@ Nell rings the bell at dusk. She tears a strip from her apron. The note goes out
             "expected_check_types": ("knowledge_timing", "knowledge_leak_before_learned"),
             "match_tokens": ("bran", "scuttled"),
             "clean": "\"Let them circle,\" I say.",
-            "planted": "\"Let them circle,\" I say. \"Maren scuttled the boat herself. That is why the lamp went out.\" Bran's billhook stops moving. \"Who told you that?\" he asks. \"Nobody,\" I say. \"I just know.\"",
+            "planted": "\"Let them circle,\" I say. \"Maren scuttled the boat herself,\" Bran says. \"That is why the lamp went out.\" I stop walking. \"Who told you that?\" I ask. \"Nobody,\" he says. \"I just know.\"",
         },
         {
             "plant_id": "SO-KNOW-OFFER",
@@ -1047,7 +1047,7 @@ Orin stood at the edge of the yard with a lens ring in his hand. He said nothing
             "summary": "Sava shows Kestrel the payment sheet.",
             "prose": """Kestrel sat vigil in the empty warehouse on the twenty-third day. The crates were stacked to the roof, and the lens in its brass ring threw a weak yellow light across the floor.
 
-He counted the crates on the fingers of his right hand, the two missing ones folded into his palm. He got to twelve and started again.
+He counted the crates on the fingers of his right hand, all five of them. He got to twelve and started again.
 
 That night Sava showed him the payment sheet. He had sold the eastern survey. The signature was his. The date was eleven years old.
 
@@ -1433,7 +1433,7 @@ They sealed the hall at dusk. The second bell rang while they were still inside,
             "description": "Kestrel counts on all five fingers of his maimed left hand.",
             "expected_check_types": ("canonical_fact_prose_drift", "character_attribute"),
             "match_tokens": ("left hand", "five"),
-            "clean": "He counted the crates on the fingers of his right hand, the two missing ones folded into his palm.",
+            "clean": "He counted the crates on the fingers of his right hand, all five of them.",
             "planted": "He counted the crates on the fingers of his left hand, all five of them.",
         },
         {
@@ -1764,7 +1764,7 @@ def planted_contradictions(
     for plant in manuscript["plants"]:
         chapter_number = int(plant["chapter_number"])
         scene_id = scene_ids[chapter_number]
-        tokens = tuple(plant["match_tokens"]) + (scene_id, f"chapter {chapter_number}")
+        tokens = tuple(plant["match_tokens"]) + (scene_id,)
         items.append(
             PlantedContradiction(
                 contradiction_id=plant["plant_id"],
@@ -2258,8 +2258,13 @@ def held_out_3_self_test() -> None:
     wrong_chapter = dict(good_issue)
     wrong_chapter["message"] = "book 1 chapter 99 scene 1: " + sample_plant["match_tokens"][0]
     wrong_chapter["entity_ids"] = ["scene:OTHER"]
+    wrong_content = dict(good_issue)
+    wrong_content["message"] = (
+        f"book 1 chapter {sample_plant['chapter_number']} scene 1: unrelated content"
+    )
     assert issue_matches_contradiction(good_issue, sample_item)
     assert not issue_matches_contradiction(wrong_chapter, sample_item)
+    assert not issue_matches_contradiction(wrong_content, sample_item)
 
     scored = score_manuscript(
         "offline",
