@@ -46,6 +46,7 @@ BRIEFS_PATH = HERE / "prose_judge" / "briefs.json"
 FIXTURE_PAIRS_PATH = HERE / "prose_judge" / "fixture_pairs.json"
 JUDGES_PATH = HERE / "prose_judge" / "judges.json"
 VARIANTS_PATH = HERE / "prose_judge" / "prompt_variants.json"
+SHARED_VERDICT_FIXTURES_PATH = HERE / "prose_judge" / "shared_verdict_fixtures.json"
 RESULTS_DIR = HERE / "results"
 
 SCENE_TYPES = (
@@ -247,7 +248,7 @@ def normalize_preference_token(token: str) -> str:
         return "passage_1"
     if t in ("passage_2", "passage2", "2", "b", "option_2", "second"):
         return "passage_2"
-    if t in ("tie", "tied", "equal", "neither", "draw"):
+    if t in ("tie", "tied", "equal", "neither", "draw", "both"):
         return "tie"
     raise ValueError(f"Invalid preference token: {token!r}; expected passage_1, passage_2, or tie")
 
@@ -1316,7 +1317,7 @@ def call_rust_bridge_for_brief(
     proc = None
     elapsed = 0.0
     for attempt in range(max_attempts):
-        if context_mode == "drafting_packet_v1":
+        if context_mode in ("drafting_packet_v1", "drafting_packet_v1_critic_loop"):
             packet = brief_to_drafting_packet_v1(brief)
             packet_path = artifact_root / "packets" / f"{brief['id']}_{fp_tag}.packet.json"
             # Namespace artifact paths by the effective generation fingerprint (including recovery
@@ -1335,16 +1336,35 @@ def call_rust_bridge_for_brief(
                 )
             artifact_path = candidate_art_path
             write_json(packet_path, packet)
-            cmd = [
-                str(bin_path),
-                "draft-packet",
-                str(rust_config),
-                str(rust_db),
-                str(packet_path),
-                str(artifact_path),
-            ]
-            if generation_seed is not None:
-                cmd.append(str(generation_seed))
+            if context_mode == "drafting_packet_v1_critic_loop":
+                loop_artifact_path = (
+                    artifact_root
+                    / "revision_loops"
+                    / f"{brief['id']}_{seed_tag}_{fp_tag}_attempt{attempt_idx}.loop.json"
+                )
+                max_rounds = int(variant_cfg.get("max_rounds", generator_cfg.get("max_rounds", 1)))
+                cmd = [
+                    str(bin_path),
+                    "revise-packet",
+                    str(rust_config),
+                    str(rust_db),
+                    str(packet_path),
+                    str(artifact_path),
+                    str(loop_artifact_path),
+                    str(generation_seed) if generation_seed is not None else "",
+                    str(max_rounds),
+                ]
+            else:
+                cmd = [
+                    str(bin_path),
+                    "draft-packet",
+                    str(rust_config),
+                    str(rust_db),
+                    str(packet_path),
+                    str(artifact_path),
+                ]
+                if generation_seed is not None:
+                    cmd.append(str(generation_seed))
         else:
             sys_prompt, user_prompt = render_variant_prompt(brief, variant_cfg)
             messages_path = (
@@ -1404,7 +1424,7 @@ def call_rust_bridge_for_brief(
             f"Empty Rust bridge output for {brief['id']} ({variant_id}, seed={generation_seed})"
         )
     computed_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    if context_mode == "drafting_packet_v1":
+    if context_mode in ("drafting_packet_v1", "drafting_packet_v1_critic_loop"):
         accepted_sha = bridge_out.get("accepted_text_sha256")
         if not accepted_sha:
             raise RuntimeError(
@@ -1440,7 +1460,7 @@ def call_rust_bridge_for_brief(
         or receipt.get("call_id")
     )
 
-    return {
+    result_item = {
         "case_id": brief["id"],
         "brief_id": brief["id"],
         "condition": condition_label,
@@ -1467,6 +1487,21 @@ def call_rust_bridge_for_brief(
         "output_tokens": bridge_out.get("output_tokens"),
         "elapsed_seconds": elapsed,
     }
+    if context_mode == "drafting_packet_v1_critic_loop":
+        result_item.update({
+            "loop_artifact_id": bridge_out.get("loop_artifact_id"),
+            "loop_artifact_path": bridge_out.get("loop_artifact_path"),
+            "initial_text_sha256": bridge_out.get("initial_text_sha256"),
+            "current_stage": bridge_out.get("current_stage"),
+            "revision_promoted": bool(bridge_out.get("revision_promoted", False)),
+            "retention_reason": bridge_out.get("retention_reason"),
+            "parked_for_review": bool(bridge_out.get("parked_for_review", False)),
+            "broad_edit_flagged_for_review": bool(bridge_out.get("broad_edit_flagged_for_review", False)),
+            "total_calls_used": bridge_out.get("total_calls_used"),
+            "total_tokens_used": bridge_out.get("total_tokens_used"),
+            "rounds": bridge_out.get("rounds"),
+        })
+    return result_item
 
 
 def generate_candidate_for_brief(
@@ -1504,7 +1539,11 @@ def generate_candidate_for_brief(
     sys_prompt, user_prompt = render_variant_prompt(brief, variant_cfg)
     variant_id = variant_cfg.get("id", "custom_variant")
     context_mode = variant_cfg.get("context_mode", "full_drafter_context")
-    packet_obj = brief_to_drafting_packet_v1(brief) if context_mode == "drafting_packet_v1" else None
+    packet_obj = (
+        brief_to_drafting_packet_v1(brief)
+        if context_mode in ("drafting_packet_v1", "drafting_packet_v1_critic_loop")
+        else None
+    )
     source_packet_sha256 = digest(packet_obj) if packet_obj is not None else None
     prompt_hash = digest({"system": sys_prompt, "user": json.dumps(packet_obj, sort_keys=True) if packet_obj else user_prompt})
     packet_hash = prompt_hash if packet_obj is not None else None
@@ -1534,7 +1573,7 @@ def generate_candidate_for_brief(
             )
         clean_text = text.strip()
         text_sha = digest(clean_text)
-        return {
+        out_item = {
             "case_id": brief["id"],
             "brief_id": brief["id"],
             "condition": condition_label,
@@ -1560,6 +1599,32 @@ def generate_candidate_for_brief(
             "output_tokens": len(clean_text.split()),
             "elapsed_seconds": 0.001,
         }
+        if context_mode == "drafting_packet_v1_critic_loop":
+            out_item.update({
+                "initial_text_sha256": text_sha,
+                "current_stage": "accepted_revision",
+                "revision_promoted": True,
+                "retention_reason": None,
+                "parked_for_review": False,
+                "broad_edit_flagged_for_review": False,
+                "total_calls_used": 4,
+                "total_tokens_used": len(user_prompt.split()) + len(clean_text.split()),
+                "rounds": [
+                    {
+                        "round_index": 0,
+                        "promoted_to_incumbent": True,
+                        "edit_span_summary": {
+                            "base_paragraph_count": 3,
+                            "candidate_paragraph_count": 3,
+                            "changed_paragraph_count": 1,
+                            "changed_paragraph_ratio_bps": 3333,
+                            "changed_byte_ratio_bps": 2800,
+                            "flagged_for_broad_edit_review": False,
+                        },
+                    }
+                ],
+            })
+        return out_item
 
     gen_call_cfg = {**generator_cfg, "json_mode": False}
     if effective_seed is not None:
@@ -2615,6 +2680,17 @@ def run_evaluation(
                 "settings": arm.get("settings"),
                 "artifact_id": arm.get("artifact_id"),
                 "artifact_path": arm.get("artifact_path"),
+                "loop_artifact_id": arm.get("loop_artifact_id"),
+                "loop_artifact_path": arm.get("loop_artifact_path"),
+                "initial_text_sha256": arm.get("initial_text_sha256"),
+                "current_stage": arm.get("current_stage"),
+                "revision_promoted": arm.get("revision_promoted"),
+                "retention_reason": arm.get("retention_reason"),
+                "parked_for_review": arm.get("parked_for_review"),
+                "broad_edit_flagged_for_review": arm.get("broad_edit_flagged_for_review"),
+                "total_calls_used": arm.get("total_calls_used"),
+                "total_tokens_used": arm.get("total_tokens_used"),
+                "rounds": arm.get("rounds"),
                 "input_tokens": arm.get("input_tokens"),
                 "output_tokens": arm.get("output_tokens"),
             }
@@ -2744,7 +2820,323 @@ def run_evaluation(
     if calibration_key and calibration_ratings:
         report["calibration"] = compute_calibration_agreement(calibration_key, calibration_ratings, report)
 
+    candidate_loop_items = [
+        p["candidate"]
+        for p in pairs
+        if isinstance(p.get("candidate"), dict)
+        and (
+            "revision_promoted" in p["candidate"]
+            or "loop_artifact_path" in p["candidate"]
+            or "rounds" in p["candidate"]
+        )
+    ]
+    if candidate_loop_items:
+        report["revision_loop_summary"] = summarize_revision_loop_distributions(
+            candidate_loop_items,
+            seed=seed,
+        )
+
     return report
+
+
+def validate_online_single_judge_pass(payload: dict) -> dict:
+    """Validate and normalize a single-pass online judge payload (shared contract with Rust parse_and_validate_single_judge_pass)."""
+    if not isinstance(payload, dict):
+        raise ValueError("Judge payload must be a JSON object")
+    raw_rubric = payload.get("rubric")
+    if not isinstance(raw_rubric, dict):
+        raise ValueError("Judge payload missing 'rubric' object")
+
+    normalized_rubric = {}
+    for dim in RUBRIC_DIMENSIONS:
+        if dim not in raw_rubric:
+            raise ValueError(f"Judge rubric missing dimension {dim!r}")
+        entry = raw_rubric[dim]
+        if not isinstance(entry, dict):
+            raise ValueError(f"Rubric dimension {dim!r} must be an object")
+        raw_score = entry.get("score")
+        dialogue_na = False
+        if raw_score is None or (
+            isinstance(raw_score, str) and raw_score.strip().upper() in ("N/A", "NA", "NONE", "NULL")
+        ):
+            if dim == "dialogue":
+                score = 3
+                dialogue_na = True
+            else:
+                raise ValueError(f"Non-dialogue dimension {dim!r} cannot have N/A score")
+        elif isinstance(raw_score, bool):
+            raise ValueError(f"Dimension {dim!r} score cannot be bool")
+        elif isinstance(raw_score, (int, float)):
+            score = max(1, min(5, int(round(float(raw_score)))))
+        elif isinstance(raw_score, str):
+            try:
+                score = max(1, min(5, int(round(float(raw_score.strip())))))
+            except ValueError as exc:
+                raise ValueError(f"Dimension {dim!r} has unparseable score {raw_score!r}") from exc
+        else:
+            raise ValueError(f"Dimension {dim!r} has invalid score {raw_score!r}")
+
+        rationale = str(entry.get("rationale", "")).strip()
+        if not rationale:
+            raise ValueError(f"Dimension {dim!r} rationale must be non-empty")
+        normalized_rubric[dim] = {
+            "score": score,
+            "dialogue_na": dialogue_na,
+            "rationale": rationale,
+        }
+
+    raw_pref = payload.get("overall_preference")
+    if raw_pref is None:
+        raise ValueError("Judge payload missing 'overall_preference'")
+    overall_pref = normalize_preference_token(raw_pref)
+    deciding_factor = str(payload.get("deciding_factor", "")).strip()
+    if not deciding_factor:
+        raise ValueError("Judge payload missing non-empty 'deciding_factor'")
+
+    return {
+        "rubric": normalized_rubric,
+        "overall_preference": overall_pref,
+        "deciding_factor": deciding_factor,
+        "strengths_passage_1": list(payload.get("strengths_passage_1") or []),
+        "strengths_passage_2": list(payload.get("strengths_passage_2") or []),
+    }
+
+
+def resolve_double_order_verdict(pass_1: dict, pass_2: dict) -> tuple[str, str | None, str | None]:
+    """Resolve two swapped-order judge passes into (verdict, position_bias_kind, retention_reason)."""
+    w1 = pass_1["deblinded_preference"]
+    w2 = pass_2["deblinded_preference"]
+    raw1 = pass_1["raw_preference"]
+    raw2 = pass_2["raw_preference"]
+
+    if w1 == "candidate" and w2 == "candidate":
+        return "candidate", None, None
+    if w1 == "baseline" and w2 == "baseline":
+        return "baseline", None, "judge_preferred_incumbent"
+    if w1 == "tie" and w2 == "tie":
+        return "tie", None, "judge_tie"
+
+    if raw1 == "passage_1" and raw2 == "passage_1":
+        bias = "first_position"
+    elif raw1 == "passage_2" and raw2 == "passage_2":
+        bias = "second_position"
+    else:
+        bias = "tie_flip"
+    return "tie", bias, "judge_order_disagreement_tie"
+
+
+def verify_shared_verdict_fixtures(
+    fixture_path: Path | str = SHARED_VERDICT_FIXTURES_PATH,
+) -> dict:
+    """Verify 100% parity between Python prose_judge.py and Rust revision.rs on shared_verdict_fixtures.json."""
+    fx = read_json(fixture_path)
+    if list(fx["rubric_dimensions"]) != list(RUBRIC_DIMENSIONS):
+        raise ValueError(
+            f"Shared rubric_dimensions mismatch: {fx['rubric_dimensions']} != {list(RUBRIC_DIMENSIONS)}"
+        )
+
+    for case in fx["preference_normalization_cases"]:
+        raw = case["raw"]
+        expected = case["expected"]
+        try:
+            actual = normalize_preference_token(raw) if raw not in ("a", "b") else None
+        except ValueError:
+            actual = None
+        if actual != expected:
+            raise ValueError(
+                f"Shared preference normalization mismatch for {raw!r}: actual={actual!r}, expected={expected!r}"
+            )
+
+    for case in fx["single_pass_validation_cases"]:
+        cid = case["id"]
+        p1_arm = case["passage_1_arm"]
+        p2_arm = case["passage_2_arm"]
+        payload = case["payload"]
+        expect_valid = bool(case["expect_valid"])
+        try:
+            norm = validate_online_single_judge_pass(payload)
+            is_valid = True
+        except Exception:
+            norm = None
+            is_valid = False
+        if is_valid != expect_valid:
+            raise ValueError(
+                f"Shared single-pass case {cid!r} validity mismatch: is_valid={is_valid}, expected={expect_valid}"
+            )
+        if is_valid and norm is not None:
+            raw_pref = norm["overall_preference"]
+            if raw_pref == "passage_1":
+                deb_pref = p1_arm
+            elif raw_pref == "passage_2":
+                deb_pref = p2_arm
+            else:
+                deb_pref = "tie"
+            if raw_pref != case["expected_raw_preference"]:
+                raise ValueError(f"Case {cid!r} raw_preference mismatch: {raw_pref}")
+            if deb_pref != case["expected_deblinded_preference"]:
+                raise ValueError(f"Case {cid!r} deblinded_preference mismatch: {deb_pref}")
+            if "expected_dialogue_score" in case:
+                if norm["rubric"]["dialogue"]["score"] != case["expected_dialogue_score"]:
+                    raise ValueError(f"Case {cid!r} dialogue score mismatch")
+                if bool(norm["rubric"]["dialogue"].get("dialogue_na", False)) != bool(
+                    case["expected_dialogue_na"]
+                ):
+                    raise ValueError(f"Case {cid!r} dialogue_na mismatch")
+            for dim_key, exp_score in (case.get("expected_clamped_scores") or {}).items():
+                if norm["rubric"][dim_key]["score"] != exp_score:
+                    raise ValueError(
+                        f"Case {cid!r} clamped score mismatch on {dim_key}: {norm['rubric'][dim_key]['score']} != {exp_score}"
+                    )
+
+    for case in fx["double_order_resolution_cases"]:
+        cid = case["id"]
+        p1 = case["pass_1"]
+        p2 = case["pass_2"]
+        verdict, bias, retention_reason = resolve_double_order_verdict(p1, p2)
+        accepted = verdict == "candidate"
+        if verdict != case["expected_verdict"]:
+            raise ValueError(f"Double-order case {cid!r} verdict mismatch: {verdict}")
+        if accepted != bool(case["expected_accepted"]):
+            raise ValueError(f"Double-order case {cid!r} accepted mismatch: {accepted}")
+        if bias != case["expected_position_bias"]:
+            raise ValueError(f"Double-order case {cid!r} position_bias mismatch: {bias} != {case['expected_position_bias']}")
+        if retention_reason != case.get("expected_retention_reason"):
+            raise ValueError(
+                f"Double-order case {cid!r} retention_reason mismatch: {retention_reason} != {case.get('expected_retention_reason')}"
+            )
+
+    return {
+        "schema_version": fx["schema_version"],
+        "preference_cases_verified": len(fx["preference_normalization_cases"]),
+        "single_pass_cases_verified": len(fx["single_pass_validation_cases"]),
+        "double_order_cases_verified": len(fx["double_order_resolution_cases"]),
+    }
+
+
+def _quantile_summary(values: list[float]) -> dict:
+    if not values:
+        return {
+            "count": 0,
+            "mean": 0.0,
+            "min": 0.0,
+            "p25": 0.0,
+            "median": 0.0,
+            "p75": 0.0,
+            "max": 0.0,
+        }
+    sv = sorted(float(x) for x in values)
+    n = len(sv)
+
+    def _pct(q: float) -> float:
+        idx = q * (n - 1)
+        lo = int(math.floor(idx))
+        hi = int(math.ceil(idx))
+        w = idx - lo
+        return round(sv[lo] * (1.0 - w) + sv[hi] * w, 4)
+
+    return {
+        "count": n,
+        "mean": round(statistics.mean(sv), 4),
+        "min": round(sv[0], 4),
+        "p25": _pct(0.25),
+        "median": _pct(0.50),
+        "p75": _pct(0.75),
+        "max": round(sv[-1], 4),
+    }
+
+
+def summarize_revision_loop_distributions(
+    items_or_paths: list[dict | Path | str],
+    seed: int = 20261108,
+) -> dict:
+    """Summarize revision promotion, rejection/retention reasons, and edit-span distributions."""
+    records: list[dict] = []
+    for entry in items_or_paths:
+        if isinstance(entry, (str, Path)):
+            loaded = read_json(entry)
+            if isinstance(loaded, list):
+                records.extend(x for x in loaded if isinstance(x, dict))
+            elif isinstance(loaded, dict):
+                records.append(loaded)
+        elif isinstance(entry, dict):
+            records.append(entry)
+
+    total = len(records)
+    promoted_flags: list[float] = []
+    cluster_ids: list[str] = []
+    retention_counts: dict[str, int] = {}
+    broad_flagged_count = 0
+    parked_count = 0
+    changed_para_ratios_bps: list[float] = []
+    changed_byte_ratios_bps: list[float] = []
+    changed_para_counts: list[float] = []
+    total_calls_list: list[float] = []
+
+    for idx, rec in enumerate(records):
+        loop_obj = rec
+        if not rec.get("rounds") and rec.get("loop_artifact_path") and Path(rec["loop_artifact_path"]).exists():
+            try:
+                loop_obj = read_json(rec["loop_artifact_path"])
+            except Exception:
+                loop_obj = rec
+
+        promoted = bool(loop_obj.get("revision_promoted", rec.get("revision_promoted", False)))
+        promoted_flags.append(1.0 if promoted else 0.0)
+        cid = str(rec.get("brief_id") or rec.get("case_id") or loop_obj.get("scene_id") or f"item_{idx}")
+        cluster_ids.append(cid)
+
+        if not promoted:
+            reason = str(
+                loop_obj.get("retention_reason")
+                or rec.get("retention_reason")
+                or "retained_unspecified"
+            )
+            retention_counts[reason] = retention_counts.get(reason, 0) + 1
+
+        if bool(loop_obj.get("broad_edit_flagged_for_review", rec.get("broad_edit_flagged_for_review", False))):
+            broad_flagged_count += 1
+        if bool(loop_obj.get("parked_for_review", rec.get("parked_for_review", False))):
+            parked_count += 1
+        if loop_obj.get("total_calls_used") is not None:
+            total_calls_list.append(float(loop_obj["total_calls_used"]))
+
+        for rnd in loop_obj.get("rounds") or []:
+            if not isinstance(rnd, dict):
+                continue
+            es = rnd.get("edit_span_summary")
+            if isinstance(es, dict):
+                if es.get("changed_paragraph_ratio_bps") is not None:
+                    changed_para_ratios_bps.append(float(es["changed_paragraph_ratio_bps"]))
+                if es.get("changed_byte_ratio_bps") is not None:
+                    changed_byte_ratios_bps.append(float(es["changed_byte_ratio_bps"]))
+                if es.get("changed_paragraph_count") is not None:
+                    changed_para_counts.append(float(es["changed_paragraph_count"]))
+
+    promoted_count = int(sum(promoted_flags))
+    retained_count = total - promoted_count
+    retention_rates = {
+        k: round(v / total, 4) if total > 0 else 0.0
+        for k, v in sorted(retention_counts.items())
+    }
+
+    return {
+        "schema_version": "revision_loop_distribution_summary_v1",
+        "total_scenes": total,
+        "promoted_count": promoted_count,
+        "retained_incumbent_count": retained_count,
+        "promotion_rate": cluster_bootstrap_ci(promoted_flags, cluster_ids=cluster_ids, seed=seed),
+        "retention_reason_counts": dict(sorted(retention_counts.items())),
+        "retention_reason_rates": retention_rates,
+        "broad_edit_flagged_count": broad_flagged_count,
+        "broad_edit_flagged_rate": round(broad_flagged_count / total, 4) if total > 0 else 0.0,
+        "parked_for_review_count": parked_count,
+        "calls_per_scene_distribution": _quantile_summary(total_calls_list),
+        "edit_span_distribution": {
+            "changed_paragraph_ratio_bps": _quantile_summary(changed_para_ratios_bps),
+            "changed_byte_ratio_bps": _quantile_summary(changed_byte_ratios_bps),
+            "changed_paragraph_count": _quantile_summary(changed_para_counts),
+        },
+    }
 
 
 # =============================================================================
@@ -4035,6 +4427,59 @@ def self_test() -> None:
         assert dir_score["worth_revising_rate"]["estimate"] == 0.5
         assert dir_score["all_three_useful_rate"]["estimate"] == 0.5
 
+        # 4h. Verify shared Python/Rust verdict fixtures and revision loop distribution summary
+        shared_fx_res = verify_shared_verdict_fixtures()
+        assert shared_fx_res["preference_cases_verified"] >= 20
+        assert shared_fx_res["single_pass_cases_verified"] >= 5
+        assert shared_fx_res["double_order_cases_verified"] >= 9
+
+        loop_dist = summarize_revision_loop_distributions(
+            [
+                {
+                    "brief_id": "PJ01",
+                    "revision_promoted": True,
+                    "retention_reason": None,
+                    "broad_edit_flagged_for_review": False,
+                    "parked_for_review": False,
+                    "total_calls_used": 4,
+                    "rounds": [
+                        {
+                            "round": 1,
+                            "edit_span_summary": {
+                                "changed_paragraph_ratio_bps": 2000,
+                                "changed_byte_ratio_bps": 1800,
+                                "changed_paragraph_count": 1,
+                            },
+                        }
+                    ],
+                },
+                {
+                    "brief_id": "PJ02",
+                    "revision_promoted": False,
+                    "retention_reason": "judge_order_disagreement_tie",
+                    "broad_edit_flagged_for_review": True,
+                    "parked_for_review": False,
+                    "total_calls_used": 4,
+                    "rounds": [
+                        {
+                            "round": 1,
+                            "edit_span_summary": {
+                                "changed_paragraph_ratio_bps": 6000,
+                                "changed_byte_ratio_bps": 5500,
+                                "changed_paragraph_count": 3,
+                            },
+                        }
+                    ],
+                },
+            ]
+        )
+        assert loop_dist["total_scenes"] == 2
+        assert loop_dist["promoted_count"] == 1
+        assert loop_dist["retained_incumbent_count"] == 1
+        assert loop_dist["retention_reason_counts"]["judge_order_disagreement_tie"] == 1
+        assert loop_dist["broad_edit_flagged_count"] == 1
+        assert loop_dist["edit_span_distribution"]["changed_paragraph_ratio_bps"]["mean"] == 4000.0
+
     # 5. Verify secret redaction & key check safety
     os.environ["SPINDLE_TEST_FAKE_SECRET_KEY"] = "super-secret-value-12345"
     try:
@@ -4151,6 +4596,11 @@ def main() -> None:
     sdir.add_argument("--ratings", required=True, help="Path to human-completed directive ratings.json")
     sdir.add_argument("--seed", type=int, default=20261108)
     sdir.add_argument("--out", default=None, help="Optional output path for standalone directive usefulness report JSON")
+
+    sloop = sub.add_parser("summarize-loop", help="Summarize revision promotion, rejection reasons, and edit-span distributions")
+    sloop.add_argument("--inputs", nargs="+", required=True, help="Candidate list JSON or RevisionLoopArtifactV1 JSON paths")
+    sloop.add_argument("--seed", type=int, default=20261108)
+    sloop.add_argument("--out", default=None, help="Optional output JSON path")
 
     args = parser.parse_args()
 
@@ -4331,6 +4781,13 @@ def main() -> None:
 
     if args.command == "score-directives":
         rep = score_directive_usefulness_packet(args.key, args.ratings, seed=args.seed)
+        if args.out:
+            write_json(args.out, rep)
+        print(json.dumps(rep, indent=2))
+        return
+
+    if args.command == "summarize-loop":
+        rep = summarize_revision_loop_distributions(args.inputs, seed=args.seed)
         if args.out:
             write_json(args.out, rep)
         print(json.dumps(rep, indent=2))

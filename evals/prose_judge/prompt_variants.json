@@ -30,6 +30,14 @@
       "context_mode": "drafting_packet_v1",
       "system_prompt": "You are Spindle's scene-writing agent. Draft the requested scene from the supplied drafting packet. Honor every hard constraint, maintain strict POV and voice discipline, fulfill the scene purpose and required beats, and return story prose only without JSON, markdown headers, or commentary.",
       "user_template": "{context_markdown}\n\nTask: {task}"
+    },
+    "drafting_packet_v1_critic_loop": {
+      "id": "drafting_packet_v1_critic_loop",
+      "label": "Typed DraftingPacketV1 + CritiqueV1 prior-draft revision + double-order pairwise acceptance judge",
+      "context_mode": "drafting_packet_v1_critic_loop",
+      "max_rounds": 1,
+      "system_prompt": "You are Spindle's scene-writing and revision agent. Draft the requested scene from the supplied drafting packet, run the anchored CritiqueV1 scene critic and prior-draft revision pass, and promote the revised draft only when it passes deterministic continuity/rating/anti-slop checks and wins both orders of the blinded pairwise acceptance judge.",
+      "user_template": "{context_markdown}\n\nTask: {task}"
     }
   }
 }
