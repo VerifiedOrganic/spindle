@@ -329,6 +329,43 @@ checkpoint rollback, and 3-way branch merge). Migration V0051 and
 append-only store and rebuildable projections (`canon_projection_state`,
 `canon_projection_checkpoint`) without cutting over legacy state tables yet.
 
+## Canon policy and per-project cutover
+
+`spindle_core::canon::policy` is the pure, versioned v1 ratification policy. It
+verifies every claim's UTF-8 evidence spans against the exact accepted revision
+hash/bytes, rejects ambiguous entities and error-level contradictions against
+ratified canon, and only auto-ratifies direct present narration with package and
+independent-extractor agreement plus held-out calibration (minimum sample, ≥99%
+point precision and a reported Wilson lower bound). Deaths/resurrections, secret
+disclosures, promise payoffs/abandonments, invariant retcons, new world laws,
+temporal interventions and ambiguous claims never auto-ratify in v1; they stage
+as provisional for an author decision. Explicit operator declarations may
+ratify ordinary claims without package agreement but remain subject to the same
+safety route. Each evaluation records an audited `CanonDecisionV1` with policy
+version, confidence inputs, precondition summary and idempotency key.
+
+`sqlite::repository::canon_policy` persists policy decisions, events and claim
+status atomically; a supplied `previous_decision_id` is compare-and-appended and
+a stale tip fails without writing. Revocation appends `Withdraw` events for the
+bad batch and its dependents, invalidates affected claim rows, and returns the
+scene/chapter summary keys that later memory layers must recompute. Original
+events and audit decisions are never deleted. Pending provisional work is
+reported explicitly, and a checkpoint cannot claim continuity-clean while
+eligible claims lack a final decision.
+
+Migration V0054 adds per-project `canon_cutover_state`. `legacy` is authoritative
+by default; forward transitions to `dual_write`, `shadow_read` and `canon_read`
+require the compatibility parity/quarantine readiness gate, while rollback is
+always allowed. In cutover modes the existing authoritative write paths
+(`commit_scene_changes`, `commit_character_state`, `register_canonical_fact`,
+`record_knowledge`, `update_relationship*`, `update_promise_status`) append
+audited canon decisions in the same transaction and mark their exact legacy
+snapshots in `canon_source_map`, so a backfill rerun is idempotent. Reads route
+through canon projections in `canon_read`, compare but retain legacy reads in
+`shadow_read`, and default to legacy. Legacy-unverified rows participate in
+compatibility reads and lexical prefilters but remain warning/info-only until an
+evidence-verified claim or operator ratification corroborates them.
+
 ## Staging & ratification (canon deltas + plan amendments)
 
 While a drafter's structured continuity package (`character_states`,

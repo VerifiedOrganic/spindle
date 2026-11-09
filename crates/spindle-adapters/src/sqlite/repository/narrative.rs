@@ -1,4 +1,7 @@
+use super::canon_backfill::mark_legacy_rows_mapped_in_conn;
+use super::canon_policy::{legacy_claim, legacy_snapshot_claim, mirror_legacy_claims_in_tx};
 use super::*;
+use spindle_core::canon::*;
 
 impl Repository {
     pub async fn create_plot_line(&self, input: &CreatePlotLineInput) -> Result<PlotLine> {
@@ -435,6 +438,13 @@ impl Repository {
                             "replacement must name a current event of this promise");
                     }
                     let now = chrono::Utc::now();
+                    let mirror_at = at.clone();
+                    let mirror_project_id = promise.project_id.clone();
+                    let mirror_branch_id = promise.branch_id.clone();
+                    let mirror_promise_id = promise.id.clone();
+                    let mirror_status = input.status.clone();
+                    let mirror_replaces_event_id = input.replaces_event_id.clone();
+                    let mirror_source_scene_id = input.source_scene_id.clone();
                     promise.status_history.push(PromiseStatusEvent {
                         id: mint_id("promise_event"), previous_status: promise.status.clone(),
                         status: input.status.clone(), at, source_scene_id: input.source_scene_id,
@@ -443,6 +453,71 @@ impl Repository {
                     let status = promise.status_at(i64::MAX).unwrap_or(&input.status);
                     tx.execute("UPDATE narrative_promise SET status = ?1, status_history = ?2, updated_at = ?3 WHERE id = ?4",
                         rusqlite::params![status, serde_json::to_string(&promise.status_history)?, timestamp_to_micros(now), &promise.id])?;
+                    let operation = match mirror_status.trim().to_ascii_lowercase().as_str() {
+                        "plant" | "planted" => PromiseOperation::Plant,
+                        "payoff" | "paid" | "paid_off" | "paid-off" | "fulfilled" => {
+                            PromiseOperation::Payoff
+                        }
+                        "abandon" | "abandoned" => PromiseOperation::Abandon,
+                        _ => PromiseOperation::Reinforce,
+                    };
+                    let revision_id = format!(
+                        "legacy:promise:{}:{}:{}:{mirror_replaces_event_id:?}",
+                        mirror_promise_id, mirror_status, mirror_at.is_some()
+                    );
+                    let placement = mirror_at.unwrap_or(StoryPlacement {
+                        book_number: 1,
+                        chapter_number: 1,
+                        scene_order: None,
+                        note: None,
+                    });
+                    let claim = legacy_claim(
+                        &mirror_project_id,
+                        &mirror_branch_id,
+                        &revision_id,
+                        mirror_source_scene_id.as_deref(),
+                        &placement,
+                        ClaimEntity::Resolved {
+                            id: mirror_promise_id.clone(),
+                        },
+                        ClaimAssertion::Promise {
+                            operation,
+                            thread: ClaimEntity::Resolved {
+                                id: mirror_promise_id.clone(),
+                            },
+                        },
+                        None,
+                        1,
+                    );
+                    let snapshot_claim = legacy_snapshot_claim(
+                        &mirror_project_id,
+                        &mirror_branch_id,
+                        &revision_id,
+                        mirror_source_scene_id.as_deref(),
+                        &placement,
+                        &mirror_promise_id,
+                        "legacy.narrative_promise".to_string(),
+                        &promise,
+                        None,
+                        0,
+                    )?;
+                    let mirrored = mirror_legacy_claims_in_tx(
+                        &tx,
+                        &mirror_project_id,
+                        &mirror_branch_id,
+                        &revision_id,
+                        mirror_source_scene_id.as_deref(),
+                        vec![snapshot_claim, claim],
+                    )?;
+                    if mirrored.is_some() {
+                        mark_legacy_rows_mapped_in_conn(
+                            &tx,
+                            &mirror_project_id,
+                            &mirror_branch_id,
+                            &[("narrative_promise".to_string(), promise.id.clone())],
+                            timestamp_to_micros(chrono::Utc::now()),
+                        )?;
+                    }
                     tx.commit()?;
                     Ok(())
                 })())
