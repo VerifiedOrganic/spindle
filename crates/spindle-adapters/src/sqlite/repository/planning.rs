@@ -206,6 +206,179 @@ impl Repository {
         self.pool().read(move |conn| Ok(session(conn, &id))).await?
     }
 
+    /// List recent planning sessions for reconnect discovery. Passing no
+    /// project returns sessions across all projects, newest first.
+    pub async fn list_planning_sessions(
+        &self,
+        project_id: Option<String>,
+        branch_id: Option<String>,
+        limit: usize,
+    ) -> Result<Vec<PlanningSession>> {
+        anyhow::ensure!(
+            limit > 0 && limit <= 100,
+            "planning session limit out of range"
+        );
+        self.pool()
+            .read(move |conn| {
+                Ok((|| -> Result<Vec<PlanningSession>> {
+                    let mut out = Vec::new();
+                    match (project_id, branch_id) {
+                        (Some(project_id), Some(branch_id)) => {
+                            let mut stmt = conn.prepare(
+                                "SELECT data FROM planning_session WHERE project_id=?1 AND branch_id=?2 ORDER BY created_at DESC, id DESC LIMIT ?3",
+                            )?;
+                            let rows = stmt.query_map(
+                                rusqlite::params![project_id, branch_id, limit as i64],
+                                |r| r.get::<_, String>(0),
+                            )?;
+                            for row in rows {
+                                out.push(serde_json::from_str(&row?)?);
+                            }
+                        }
+                        (Some(project_id), None) => {
+                            let mut stmt = conn.prepare(
+                                "SELECT data FROM planning_session WHERE project_id=?1 ORDER BY created_at DESC, id DESC LIMIT ?2",
+                            )?;
+                            let rows = stmt.query_map(
+                                rusqlite::params![project_id, limit as i64],
+                                |r| r.get::<_, String>(0),
+                            )?;
+                            for row in rows {
+                                out.push(serde_json::from_str(&row?)?);
+                            }
+                        }
+                        (None, None) => {
+                            let mut stmt = conn.prepare(
+                                "SELECT data FROM planning_session ORDER BY created_at DESC, id DESC LIMIT ?1",
+                            )?;
+                            let rows = stmt.query_map(rusqlite::params![limit as i64], |r| {
+                                r.get::<_, String>(0)
+                            })?;
+                            for row in rows {
+                                out.push(serde_json::from_str(&row?)?);
+                            }
+                        }
+                        (None, Some(_)) => {
+                            anyhow::bail!("planning branch filter requires a project")
+                        }
+                    }
+                    Ok(out)
+                })())
+            })
+            .await?
+    }
+
+    /// Update session-level horizon, budget and route settings without
+    /// generating a level. Never changes the accepted project scope.
+    pub async fn configure_planning_session(
+        &self,
+        input: ConfigurePlanningSessionInput,
+    ) -> Result<PlanningSession> {
+        if let Some(horizon) = &input.horizon {
+            anyhow::ensure!(
+                horizon.book_number >= 1
+                    && horizon.chapter_start >= 1
+                    && horizon.chapter_end >= horizon.chapter_start
+                    && horizon.scenes_per_chapter >= 1,
+                "invalid planning target_range"
+            );
+        }
+        self.pool()
+            .write(move |conn| {
+                Ok((|| -> Result<PlanningSession> {
+                    let mut s = match input.scope.as_ref() {
+                        Some(scope) => {
+                            check_session(conn, &input.session_id, &Some(scope.clone()))?
+                        }
+                        None => {
+                            let s = session(conn, &input.session_id)?;
+                            check_scope(conn, &s.scope)?;
+                            s
+                        }
+                    };
+                    if let Some(horizon) = input.horizon {
+                        s.horizon = horizon;
+                    }
+                    if let Some(budget) = input.budget {
+                        s.budget = budget;
+                    }
+                    if let Some(rating_ceiling) = input.rating_ceiling {
+                        s.rating_ceiling = Some(rating_ceiling);
+                    }
+                    if let Some(allow_review_backend) = input.allow_review_backend {
+                        s.allow_review_backend = allow_review_backend;
+                    }
+                    conn.execute(
+                        "UPDATE planning_session SET data=?2 WHERE id=?1",
+                        rusqlite::params![s.id, serde_json::to_string(&s)?],
+                    )?;
+                    Ok(s)
+                })())
+            })
+            .await?
+    }
+
+    /// Replace the session premise before anything accepted it. Staged
+    /// proposals become superseded history so a replacement cannot be accepted
+    /// under the old intent hash.
+    pub async fn revise_planning_premise(
+        &self,
+        session_id: String,
+        scope: Option<PlanningScope>,
+        premise: String,
+        actor: String,
+        note: String,
+    ) -> Result<PlanningSession> {
+        anyhow::ensure!(
+            !premise.trim().is_empty() && premise.len() <= 32_000,
+            "premise must contain 1..32000 bytes"
+        );
+        anyhow::ensure!(
+            !actor.trim().is_empty() && !actor.trim_start().starts_with("policy:"),
+            "human actor required to revise the planning premise"
+        );
+        anyhow::ensure!(!note.trim().is_empty(), "premise revision note required");
+        self.pool()
+            .write(move |conn| {
+                Ok((|| -> Result<PlanningSession> {
+                    let tx = conn.transaction()?;
+                    let mut s = match scope.as_ref() {
+                        Some(scope) => check_session(&tx, &session_id, &Some(scope.clone()))?,
+                        None => {
+                            let s = session(&tx, &session_id)?;
+                            check_scope(&tx, &s.scope)?;
+                            s
+                        }
+                    };
+                    let mut all = proposals(&tx, &s.id)?;
+                    anyhow::ensure!(
+                        !all.iter()
+                            .any(|p| p.status == PlanningProposalStatus::Applied),
+                        "cannot revise the premise after a planning level was accepted; start a new session or use a plan amendment"
+                    );
+                    let now = timestamp_to_micros(chrono::Utc::now());
+                    for p in &mut all {
+                        if p.status == PlanningProposalStatus::Staged {
+                            p.status = PlanningProposalStatus::Superseded;
+                            p.decided_by = Some(actor.clone());
+                            p.decision_note = Some(note.clone());
+                            p.decided_at = Some(now);
+                            save(&tx, p)?;
+                        }
+                    }
+                    s.premise = premise;
+                    s.intent_hash = hash(&s.premise)?;
+                    tx.execute(
+                        "UPDATE planning_session SET data=?2 WHERE id=?1",
+                        rusqlite::params![s.id, serde_json::to_string(&s)?],
+                    )?;
+                    tx.commit()?;
+                    Ok(s)
+                })())
+            })
+            .await?
+    }
+
     pub async fn list_planning_proposals(
         &self,
         id: &str,

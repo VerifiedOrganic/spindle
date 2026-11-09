@@ -569,6 +569,30 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.push_chapter_to_file(input))
                     .await
             }
+            "planning_begin" => {
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_planning_begin(input))
+                })
+                .await
+            }
+            "planning_advance" => {
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_planning_advance(input))
+                })
+                .await
+            }
+            "planning_status" => {
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_planning_status(input))
+                })
+                .await
+            }
+            "planning_decide" => {
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_planning_decide(input))
+                })
+                .await
+            }
             "authoring_prepare_run" => {
                 // Box::pin: the authoring handlers' futures are large enough
                 // that un-boxed they push call_tool past the 2MB tokio worker

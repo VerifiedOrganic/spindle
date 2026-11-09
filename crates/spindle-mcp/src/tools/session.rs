@@ -14,6 +14,10 @@ pub(super) fn tool_supports_session_project_default(name: &str) -> bool {
     !matches!(
         name,
         "set_active_project"
+            | "planning_begin"
+            | "planning_advance"
+            | "planning_status"
+            | "planning_decide"
             | "update_entity"
             | "archive_entity"
             | "update_world_rule"
@@ -29,6 +33,10 @@ pub(super) fn tool_requires_project_context(name: &str) -> bool {
         name,
         "create_project"
             | "list_projects"
+            | "planning_begin"
+            | "planning_advance"
+            | "planning_status"
+            | "planning_decide"
             | "get_model_usage"
             | "get_episode_release"
             | "set_active_project"
@@ -67,6 +75,9 @@ pub(super) fn tool_supports_session_branch_default(name: &str) -> bool {
             | "record_knowledge"
             | "record_note"
             | "update_writer_position"
+            | "planning_advance"
+            | "planning_status"
+            | "planning_decide"
     )
 }
 

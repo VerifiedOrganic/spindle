@@ -2,9 +2,14 @@
   "version": 1,
   "compatibility": {
     "default": {
-      "tools": 172,
-      "input_bytes": 144686,
-      "full_bytes": 613420
+      "tools": 176,
+      "input_bytes": 158922,
+      "full_bytes": 687738
+    },
+    "new-book": {
+      "tools": 14,
+      "input_bytes": 20204,
+      "full_bytes": 26534
     },
     "minimal": {
       "tools": 22,
@@ -77,9 +82,9 @@
       "full_bytes": 61514
     },
     "legacy-all": {
-      "tools": 172,
-      "input_bytes": 144686,
-      "full_bytes": 613420
+      "tools": 176,
+      "input_bytes": 158922,
+      "full_bytes": 687738
     }
   },
   "canonical": {

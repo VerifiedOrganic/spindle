@@ -132,6 +132,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Number, Value};
 use spindle_adapters::sqlite::SqliteSpindleService as SpindleService;
 use spindle_core::models::*;
+use spindle_core::planning::*;
 use spindle_core::style::*;
 use spindle_core::subject_snapshot::SubjectSnapshot as EntitySubjectSnapshot;
 use tokio::sync::{Mutex, OwnedMutexGuard, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
@@ -179,6 +180,7 @@ mod schema;
 mod skills;
 use schema::*;
 mod authoring_status;
+mod planning;
 
 pub use catalog::static_tool_names;
 pub use skills::run_init_grok_skills;
