@@ -1,5 +1,5 @@
 -- =============================================================================
--- V0053: Per-project canon cutover mode (P2 PR E).
+-- V0054: Per-project canon cutover mode (P2 PR E).
 --
 -- Legacy is authoritative by default. Dual-write, shadow-read and canon-read
 -- may only be entered after the project's compatibility/quarantine readiness
