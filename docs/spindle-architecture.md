@@ -193,6 +193,21 @@ model-verified tokenizer and is not exposed through authoring runs; legacy
 generation remains unchanged. See
 `docs/drafting-and-revision-design.md` for the staged integration and release gates.
 
+## Editorial controller, host tasks, and budget ledger
+
+`spindle_core::drafting::editorial` defines the opt-in editorial controller
+contract: ordered stages, bounded hybrid host tasks, exact admission
+reservations (per scene and per run), and prose-free attribution events linked
+to `model_call` ids. `spindle-adapters` persists the controller as a locked,
+atomically replaced JSON artifact and exposes hybrid submission/judging plus
+agent-parity draft and bounded-revision service methods. A missing automated
+judge keeps the incumbent and returns `pending_manual_judgment`; host token
+usage that is unknown keeps the configured maximum charged. `spindle-harness`
+persists resolved opt-in settings and reports controller status, remaining
+caps, pending host tasks, and the next action/reservation in `status`/`resume`
+dry runs. Legacy runs and `EditorialPolicy::Legacy` remain byte-compatible and
+are still the default; see `docs/drafting-and-revision-design.md`.
+
 ## The authoring-run editorial loop
 
 The authoring supervisor (`spindle-harness`, driven through the `authoring_*`

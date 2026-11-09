@@ -1,6 +1,7 @@
 //! Pure packet preparation and the local accepted-text artifact lifecycle.
 pub mod artifact;
 pub mod critique;
+pub mod editorial;
 pub mod revision;
 
 use sha2::{Digest, Sha256};

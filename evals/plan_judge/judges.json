@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "description": "Plan-judge panel. Offline fixture judges are deterministic and never call a provider. Live judges share the prose-judge provider path and read keys from the environment only.",
+  "offline_judges": [
+    {
+      "id": "fixture-structural-critic",
+      "family": "fixture-structural",
+      "provider": "fake",
+      "profile": "structural"
+    },
+    {
+      "id": "fixture-thematic-critic",
+      "family": "fixture-thematic",
+      "provider": "fake",
+      "profile": "thematic"
+    }
+  ],
+  "live_judges": [
+    {
+      "id": "ollama-glm-5.2-plan",
+      "family": "zhipu-glm",
+      "provider": "ollama",
+      "endpoint": "https://ollama.com",
+      "model": "glm-5.2",
+      "api_key_env": "OLLAMA_API_KEY",
+      "temperature": 0.0,
+      "max_tokens": 4096
+    },
+    {
+      "id": "ollama-deepseek-v4.1-flash-plan",
+      "family": "deepseek",
+      "provider": "ollama",
+      "endpoint": "https://ollama.com",
+      "model": "deepseek-v4.1-flash",
+      "api_key_env": "OLLAMA_API_KEY",
+      "temperature": 0.0,
+      "max_tokens": 4096
+    }
+  ]
+}

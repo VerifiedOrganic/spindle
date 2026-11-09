@@ -30,6 +30,50 @@ CI runs `self-test`, `drift`, and `report` on every pull request.
 
 ---
 
+# Plan-quality evaluation kit
+
+`evals/plan_judge.py` evaluates planning intent rather than prose. It uses a
+fixed 30-brief suite: 10 greenfield new-book briefs, 10 chapter-horizon
+continuations, and 10 mid-book replans/amendments, spanning single and rotating
+POV, standalone/series/serial modes, and deliberate constraint conflicts.
+
+Layer 1 applies deterministic hard gates to a candidate plan:
+`schema_validity_rate`, `entity_ref_integrity`, `causality_connectivity`,
+`promise_coverage`, `constraint_compliance`, and `idempotent_apply`. A plan is
+not release-eligible while any hard gate fails. Layer 2 runs a blinded pairwise
+rubric with two independent judge families, swapped presentation order,
+per-brief bootstrap confidence intervals, position-bias reporting, and a
+20-pair calibration pilot. Offline judges are deterministic fixtures: they prove
+evaluation plumbing, not literary quality. The checked-in calibration labels are
+synthetic and must be replaced by blinded author labels before making a live
+judge-human claim.
+
+```sh
+python3 evals/plan_judge.py self-test
+python3 evals/plan_judge.py gate
+python3 evals/plan_judge.py judge
+python3 evals/plan_judge.py calibrate
+python3 evals/plan_judge.py report
+```
+
+`gate` returns non-zero when a hard gate fails. `judge` returns non-zero when the
+release gate is not met (candidate wins excluding ties >= 60%, 95% interval lower
+bound above 50%, no contract-fidelity regression). `calibrate` returns non-zero
+below 70% judge-human agreement. `report` combines all three. To judge real
+plans, pass `--plans` with a `{brief_id: {baseline: plan, candidate: plan}}`
+JSON mapping. For a live run, select `--live` with `ai run OLLAMA_API_KEY -- ...`
+and record model IDs, usage and elapsed time; missing credentials stop that
+experiment rather than substituting a fixture.
+
+The disposable release smoke lives in the MCP integration suite
+(`phase_f_disposable_smoke_blank_project_to_scene_one_one_draft`). It creates a
+temporary workspace, stages a contract without writing a project, obtains human
+root acceptance, explicitly delegates chapter/scene detail, reads a real
+readiness report, starts a bounded authoring run, and saves/commits scene 1.1
+through the MCP tools. Fixture prose proves wiring only.
+
+---
+
 # Serial-fiction comparison kit
 
 Twelve original synthetic cases compare three conditions: compact context,

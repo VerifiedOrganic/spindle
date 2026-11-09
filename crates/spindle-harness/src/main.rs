@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use spindle_harness::editorial;
 use spindle_harness::execution::execute_one;
 use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
 use spindle_harness::operator::{render_status, resolve_scene_block, review_checkpoint};
@@ -69,6 +70,11 @@ struct ResumeCommand {
         help = "Execute exactly one continuity-safe action instead of a dry run"
     )]
     execute_one: bool,
+    #[arg(
+        long,
+        help = "Path to a hybrid host-draft submission JSON ({task_id, packet_hash, text, usage?, truncated?})"
+    )]
+    host_submission: Option<PathBuf>,
     #[command(flatten)]
     transport: TransportArgs,
 }
@@ -178,6 +184,9 @@ async fn init(command: InitCommand) -> Result<()> {
     outcome.state.save(&command.state)?;
     println!("Initialized harness state at {}", command.state.display());
     println!("Active branch: {}", outcome.state.active_branch_id);
+    if outcome.state.resolved_editorial.is_some() {
+        println!("Editorial settings persisted (opt-in critique_v1 controller).");
+    }
     println!("Next action: {}", outcome.next_action);
     Ok(())
 }
@@ -185,11 +194,18 @@ async fn init(command: InitCommand) -> Result<()> {
 fn status(command: StatusCommand) -> Result<()> {
     let state = HarnessState::load(&command.state)?;
     print!("{}", render_status(&state, &command.state, command.verbose));
+    if state.resolved_editorial.is_some() {
+        print!(
+            "{}",
+            editorial::render_editorial_status(&state, command.verbose)
+        );
+    }
     Ok(())
 }
 
 async fn verify(command: VerifyCommand) -> Result<()> {
     let state = HarnessState::load(&command.state)?;
+    verify_editorial_state(&state)?;
     let client = McpHarnessClient::connect(&command.transport.to_config()).await?;
     let snapshot = client.project_snapshot(&state).await?;
     let outcome = reconcile_state(state, &snapshot);
@@ -220,6 +236,12 @@ async fn resume(command: ResumeCommand) -> Result<()> {
     let outcome = reconcile_state(state, &snapshot);
 
     print_findings(&outcome.findings);
+    if outcome.state.resolved_editorial.is_some() {
+        print!(
+            "{}",
+            editorial::render_editorial_status(&outcome.state, false)
+        );
+    }
 
     if command.writeback {
         if outcome.has_errors() {
@@ -237,6 +259,9 @@ async fn resume(command: ResumeCommand) -> Result<()> {
     }
 
     if command.execute_one {
+        if outcome.state.resolved_editorial.is_some() {
+            return execute_one_editorial(&command, &outcome.state);
+        }
         if let Some(code) = execute_one_completion_exit_code(&outcome.next_action) {
             println!("Harness range is complete.");
             std::process::exit(code);
@@ -270,9 +295,120 @@ async fn resume(command: ResumeCommand) -> Result<()> {
             );
         }
         _ => {
-            println!("Execution is not implemented yet; this is a continuity-safe dry run.");
+            if outcome.state.resolved_editorial.is_some() {
+                println!(
+                    "Dry run: editorial action reported above; pass --execute-one to advance one persisted action."
+                );
+            } else {
+                println!("Execution is not implemented yet; this is a continuity-safe dry run.");
+            }
             Ok(())
         }
+    }
+}
+
+fn verify_editorial_state(state: &HarnessState) -> Result<()> {
+    if state.resolved_editorial.is_none() {
+        return Ok(());
+    }
+    let Some(path) = editorial::controller_path(state) else {
+        return Ok(());
+    };
+    if !path.exists() {
+        println!("Editorial controller: not prepared at {}", path.display());
+        return Ok(());
+    }
+    editorial::load_editorial_controller(&path)?;
+    println!("Editorial controller verified: {}", path.display());
+    Ok(())
+}
+
+fn execute_one_editorial(command: &ResumeCommand, state: &HarnessState) -> Result<()> {
+    let Some(settings) = &state.resolved_editorial else {
+        anyhow::bail!("editorial execution requires resolved editorial settings");
+    };
+    let Some(path) = editorial::controller_path(state) else {
+        anyhow::bail!(
+            "editorial controller is not prepared; the server-side prepare step must create the controller artifact first"
+        );
+    };
+    let mut controller = editorial::load_editorial_controller(&path)?;
+    if let Some(submission_path) = &command.host_submission {
+        let submission = editorial::parse_host_submission(submission_path)?;
+        let (outcome, _key) = editorial::accept_host_draft_submission(
+            &mut controller,
+            &submission,
+            editorial::now_millis(),
+        )?;
+        match &outcome {
+            spindle_core::drafting::HostSubmissionOutcomeV1::DraftAccepted { receipt, .. } => {
+                let text_path =
+                    editorial::write_host_submission_artifacts(&path, &submission, receipt)?;
+                editorial::save_editorial_controller(&path, &controller)?;
+                println!(
+                    "Accepted host draft for task {}; exact prose retained at {}.",
+                    receipt.task_id,
+                    text_path.display()
+                );
+                Ok(())
+            }
+            spindle_core::drafting::HostSubmissionOutcomeV1::Rejected { rejection, message } => {
+                anyhow::bail!(
+                    "host submission rejected ({}): {message}",
+                    rejection.as_str()
+                )
+            }
+            _ => anyhow::bail!(
+                "revision host submissions require server-side deterministic checks and judging"
+            ),
+        }
+    } else {
+        let Some(scene) = controller
+            .scenes
+            .iter()
+            .find(|scene| spindle_core::drafting::editorial_next_action(scene, settings).is_some())
+        else {
+            println!("Editorial controller has no pending action.");
+            return Ok(());
+        };
+        if let Some(task) = scene.find_pending_task() {
+            println!(
+                "Awaiting host submission for task {} ({:?}).",
+                task.task_id, task.kind
+            );
+            println!("Submit a plain-text draft with --execute-one --host-submission <json>.");
+            return Ok(());
+        }
+        if let Some(action) = spindle_core::drafting::editorial_next_action(scene, settings) {
+            println!(
+                "Editorial next action: {} (stage={}, reserve calls={} tokens={} millis={})",
+                action.action.as_str(),
+                action.stage.as_str(),
+                action.reservation.calls,
+                action.reservation.tokens,
+                action.reservation.millis
+            );
+            if let Some(route) = &action.missing_route {
+                println!("Missing route: {route}");
+            }
+            if action.missing_tokenizer {
+                println!("Missing verified tokenizer: yes");
+            }
+            if action.pending_manual_judgment {
+                println!(
+                    "Editorial action parked for author review; no automated judge preference was applied."
+                );
+                return Ok(());
+            }
+            if action.action.is_model_pass() {
+                anyhow::bail!(
+                    "editorial action '{}' requires server-side dispatch; the CLI does not hold model routes",
+                    action.action.as_str()
+                );
+            }
+        }
+        println!("Editorial controller has no locally executable action.");
+        Ok(())
     }
 }
 
@@ -342,6 +478,71 @@ fn execute_one_completion_exit_code(next_action: &NextAction) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spindle_harness::state::HarnessSeed;
+
+    #[test]
+    fn editorial_execute_one_without_prepared_controller_is_honest() {
+        let seed = HarnessSeed {
+            project_id: "project:test".into(),
+            book_number: 1,
+            range: spindle_harness::state::ChapterRange {
+                start_chapter: 1,
+                end_chapter: 1,
+            },
+            checkpoint_interval: 1,
+            editorial_directives: Vec::new(),
+            mining_policy: None,
+            max_revise_attempts: None,
+            checkpoint_policy: None,
+            replan_policy: None,
+            editorial: Some(spindle_core::drafting::EditorialRunConfig {
+                editorial_policy: Some(spindle_core::drafting::EditorialPolicy::CritiqueV1),
+                ..Default::default()
+            }),
+            editorial_controller_path: None,
+            chapters: Vec::new(),
+        };
+        let state = HarnessState::from_seed(seed, "branch:test".into());
+        let command = ResumeCommand {
+            state: PathBuf::from("state.json"),
+            writeback: false,
+            execute_one: true,
+            host_submission: None,
+            transport: TransportArgs {
+                server_url: None,
+                server_data_dir: None,
+                server_config: None,
+            },
+        };
+        let error = execute_one_editorial(&command, &state).expect_err("no controller");
+        assert!(
+            error.to_string().contains("not prepared"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn legacy_state_still_skips_editorial_execution() {
+        let seed = HarnessSeed {
+            project_id: "project:test".into(),
+            book_number: 1,
+            range: spindle_harness::state::ChapterRange {
+                start_chapter: 1,
+                end_chapter: 1,
+            },
+            checkpoint_interval: 1,
+            editorial_directives: Vec::new(),
+            mining_policy: None,
+            max_revise_attempts: None,
+            checkpoint_policy: None,
+            replan_policy: None,
+            editorial: None,
+            editorial_controller_path: None,
+            chapters: Vec::new(),
+        };
+        let state = HarnessState::from_seed(seed, "branch:test".into());
+        assert!(state.resolved_editorial.is_none());
+    }
 
     #[test]
     fn execute_one_completion_exit_code_returns_distinct_non_zero_code_for_complete() {

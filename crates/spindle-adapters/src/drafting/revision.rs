@@ -78,6 +78,44 @@ impl JudgeBudget {
     }
 }
 
+/// One durable admission for a revision-loop model pass.
+#[derive(Debug, Clone)]
+pub struct RevisionBudgetAdmission {
+    pub admission_id: String,
+    pub action: EditorialActionKind,
+    pub reserved: EditorialBudgetUsage,
+}
+
+/// Usage reported by one revision-loop pass. `input_tokens`/`output_tokens`
+/// are optional because the critic result exposes only a total; a gate can
+/// price a known split exactly and fall back to a conservative total otherwise.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RevisionPassUsage {
+    pub calls: u32,
+    pub input_tokens: Option<usize>,
+    pub output_tokens: Option<usize>,
+    pub total_tokens: usize,
+    pub millis: u64,
+}
+
+/// Durable admission hook for the bounded revision loop. Implementations must
+/// persist the reservation before the pass and reconcile it afterwards; a
+/// failed pass reconciles with `None` so the maximum remains charged.
+pub trait RevisionBudgetGate: Send + Sync {
+    fn admit(
+        &self,
+        action: EditorialActionKind,
+        attempt: u32,
+        claim: &str,
+    ) -> Result<RevisionBudgetAdmission, String>;
+    fn reconcile(
+        &self,
+        admission: &RevisionBudgetAdmission,
+        usage: Option<RevisionPassUsage>,
+        model_call_ids: Vec<String>,
+    ) -> Result<(), String>;
+}
+
 /// Optional boundary failpoint for deterministic crash/recovery testing at every
 /// stage boundary of the revision loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
