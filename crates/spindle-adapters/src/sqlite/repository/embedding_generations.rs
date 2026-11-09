@@ -195,15 +195,51 @@ impl Repository {
             .ok_or_else(|| anyhow!("embedding generation vanished after create"))
     }
 
-    pub async fn resume_embedding_generation(&self, generation_id: &str) -> Result<()> {
+    pub async fn project_generation_status(
+        &self,
+        project_id: &str,
+        generation_id: &str,
+    ) -> Result<Option<EmbeddingGenerationStatusV1>> {
+        let project_id = project_id.to_string();
         let generation_id = generation_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let status: Option<String> = conn
+                    .query_row(
+                        "SELECT status FROM embedding_generation_project \
+                         WHERE project_id = ?1 AND generation_id = ?2",
+                        rusqlite::params![&project_id, &generation_id],
+                        |row| row.get(0),
+                    )
+                    .optional_inner()?;
+                Ok(status.map(|status| match status.as_str() {
+                    "building" => EmbeddingGenerationStatusV1::Building,
+                    "active" => EmbeddingGenerationStatusV1::Active,
+                    "retired" => EmbeddingGenerationStatusV1::Retired,
+                    _ => EmbeddingGenerationStatusV1::Failed,
+                }))
+            })
+            .await
+    }
+
+    pub async fn ensure_project_generation(
+        &self,
+        project_id: &str,
+        generation_id: &str,
+    ) -> Result<()> {
+        let project_id = project_id.to_string();
+        let generation_id = generation_id.to_string();
+        let now = timestamp_to_micros(chrono::Utc::now());
         self.inner
             .pool
             .write(move |conn| {
                 conn.execute(
-                    "UPDATE embedding_generation SET status = 'building' \
-                     WHERE generation_id = ?1 AND status = 'failed'",
-                    rusqlite::params![&generation_id],
+                    "INSERT INTO embedding_generation_project (
+                        project_id, generation_id, status, created_at
+                     ) VALUES (?1, ?2, 'building', ?3)
+                     ON CONFLICT(project_id, generation_id) DO NOTHING",
+                    rusqlite::params![&project_id, &generation_id, now],
                 )?;
                 Ok(())
             })
@@ -211,18 +247,45 @@ impl Repository {
         Ok(())
     }
 
-    pub async fn fail_embedding_generation(&self, generation_id: &str) -> Result<()> {
+    pub async fn resume_embedding_generation(
+        &self,
+        project_id: &str,
+        generation_id: &str,
+    ) -> Result<()> {
+        let project_id = project_id.to_string();
+        let generation_id = generation_id.to_string();
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE embedding_generation_project SET status = 'building', \
+                        failed_at = NULL \
+                     WHERE project_id = ?1 AND generation_id = ?2 \
+                       AND status IN ('failed', 'retired')",
+                    rusqlite::params![&project_id, &generation_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn fail_embedding_generation(
+        &self,
+        project_id: &str,
+        generation_id: &str,
+    ) -> Result<()> {
+        let project_id = project_id.to_string();
         let generation_id = generation_id.to_string();
         let now = timestamp_to_micros(chrono::Utc::now());
         self.inner
             .pool
             .write(move |conn| {
                 conn.execute(
-                    "UPDATE embedding_generation SET status = 'failed' \
-                     WHERE generation_id = ?1 AND status = 'building'",
-                    rusqlite::params![&generation_id],
+                    "UPDATE embedding_generation_project SET status = 'failed', failed_at = ?3 \
+                     WHERE project_id = ?1 AND generation_id = ?2 AND status = 'building'",
+                    rusqlite::params![&project_id, &generation_id, now],
                 )?;
-                let _ = now;
                 Ok(())
             })
             .await?;
@@ -266,14 +329,38 @@ impl Repository {
                 status == "building" || status == "active",
                 "embedding generation {generation_id} is {status}, not buildable"
             );
+            // Lifecycle changes are per project. The shared registry row and
+            // its vec0 table must stay usable by other projects activating the
+            // same spec.
             tx.tx.execute(
-                "UPDATE embedding_generation SET status = 'retired', retired_at = ?2, \
-                    rollback_until = ?3 WHERE generation_id = ?1 AND status = 'active'",
-                rusqlite::params![&current, now, rollback_until_micros],
+                "INSERT INTO embedding_generation_project (
+                    project_id, generation_id, status, created_at, activated_at
+                 ) VALUES (?1, ?2, 'active', ?3, ?3)
+                 ON CONFLICT(project_id, generation_id) DO UPDATE SET
+                    status = 'active', activated_at = excluded.activated_at,
+                    retired_at = NULL, failed_at = NULL",
+                rusqlite::params![&project_id, &generation_id, now],
+            )?;
+            if current != generation_id {
+                tx.tx.execute(
+                    "INSERT INTO embedding_generation_project (
+                        project_id, generation_id, status, created_at, retired_at
+                     ) VALUES (?1, ?2, 'retired', ?3, ?3)
+                     ON CONFLICT(project_id, generation_id) DO UPDATE SET
+                        status = 'retired', retired_at = excluded.retired_at",
+                    rusqlite::params![&project_id, &current, now],
+                )?;
+            }
+            tx.tx.execute(
+                "UPDATE embedding_generation_project SET status = 'retired', retired_at = ?3 \
+                 WHERE project_id = ?1 AND generation_id = ?2 AND status = 'active' \
+                   AND generation_id <> ?4",
+                rusqlite::params![&project_id, &current, now, &generation_id],
             )?;
             tx.tx.execute(
-                "UPDATE embedding_generation SET status = 'active', activated_at = ?2, \
-                    retired_at = NULL, rollback_until = NULL WHERE generation_id = ?1",
+                "UPDATE embedding_generation SET status = 'active', \
+                    activated_at = COALESCE(activated_at, ?2) \
+                 WHERE generation_id = ?1 AND status = 'building'",
                 rusqlite::params![&generation_id, now],
             )?;
             tx.tx.execute(
@@ -344,14 +431,15 @@ impl Repository {
                 EmbeddingValidationError::RollbackWindowClosed
             );
             tx.tx.execute(
-                "UPDATE embedding_generation SET status = 'retired', retired_at = ?2 \
-                 WHERE generation_id = ?1",
-                rusqlite::params![&state.active_generation_id, now],
+                "UPDATE embedding_generation_project SET status = 'retired', retired_at = ?3 \
+                 WHERE project_id = ?1 AND generation_id = ?2",
+                rusqlite::params![&project_id, &state.active_generation_id, now],
             )?;
             tx.tx.execute(
-                "UPDATE embedding_generation SET status = 'active', activated_at = ?2, \
-                    retired_at = NULL, rollback_until = NULL WHERE generation_id = ?1",
-                rusqlite::params![&previous, now],
+                "UPDATE embedding_generation_project SET status = 'active', \
+                    activated_at = ?3, retired_at = NULL, failed_at = NULL \
+                 WHERE project_id = ?1 AND generation_id = ?2",
+                rusqlite::params![&project_id, &previous, now],
             )?;
             tx.tx.execute(
                 "UPDATE embedding_index_state SET active_generation_id = ?2, \
@@ -374,7 +462,7 @@ impl Repository {
         &self,
         project_id: &str,
         generation: &EmbeddingGenerationV1,
-        keep: &BTreeSet<(String, String)>,
+        keep: &BTreeSet<(Option<String>, String, String)>,
     ) -> Result<usize> {
         let table_name = generation.table_name.clone();
         if !safe_identifier(&table_name) {
@@ -387,19 +475,19 @@ impl Repository {
             .pool
             .write(move |conn| {
                 let tx = conn.transaction()?;
-                let rows: Vec<(String, String, String)> = {
+                let rows: Vec<(String, Option<String>, String, String)> = {
                     let mut stmt = tx.prepare(
-                        "SELECT id, entity_table, entity_id FROM search_embedding \
+                        "SELECT id, branch_id, entity_table, entity_id FROM search_embedding \
                          WHERE project_id = ?1 AND generation_id = ?2",
                     )?;
                     stmt.query_map(rusqlite::params![&project_id, &generation_id], |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()?
                 };
                 let mut removed = 0usize;
-                for (id, entity_table, entity_id) in rows {
-                    if keep.contains(&(entity_table, entity_id)) {
+                for (id, branch_id, entity_table, entity_id) in rows {
+                    if keep.contains(&(branch_id, entity_table, entity_id)) {
                         continue;
                     }
                     tx.execute(&format!("DELETE FROM {table_name} WHERE se_id = ?1"), [&id])?;

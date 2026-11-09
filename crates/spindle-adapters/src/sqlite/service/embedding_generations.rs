@@ -46,11 +46,24 @@ impl SqliteSpindleService {
             .repository
             .create_embedding_generation(input.spec.clone())
             .await?;
-        if generation.status == EmbeddingGenerationStatusV1::Active {
-            let state = self
-                .repository
-                .get_embedding_index_state(&input.project_id)
-                .await?;
+        self.repository
+            .ensure_project_generation(&input.project_id, &generation.generation_id)
+            .await?;
+        let state = self
+            .repository
+            .get_embedding_index_state(&input.project_id)
+            .await?;
+        let project_status = self
+            .repository
+            .project_generation_status(&input.project_id, &generation.generation_id)
+            .await?;
+        // Only this project's pointer + lifecycle can short-circuit; the same
+        // spec may still be building or serving for another project.
+        if project_status == Some(EmbeddingGenerationStatusV1::Active)
+            && state
+                .as_ref()
+                .is_some_and(|state| state.active_generation_id == generation.generation_id)
+        {
             let indexed_records = self
                 .repository
                 .embedding_row_count(&input.project_id, &generation.generation_id)
@@ -72,9 +85,12 @@ impl SqliteSpindleService {
                 retry_from_entity_id: None,
             });
         }
-        if generation.status == EmbeddingGenerationStatusV1::Failed {
+        if matches!(
+            project_status,
+            Some(EmbeddingGenerationStatusV1::Failed) | Some(EmbeddingGenerationStatusV1::Retired)
+        ) {
             self.repository
-                .resume_embedding_generation(&generation.generation_id)
+                .resume_embedding_generation(&input.project_id, &generation.generation_id)
                 .await?;
         }
 
@@ -83,23 +99,54 @@ impl SqliteSpindleService {
             .list_embeddings_for_generation(&input.project_id, &previous.generation_id)
             .await?;
         let expected_records = source.len();
-        let source_keys: BTreeSet<(String, String)> = source
+        let source_keys: BTreeSet<(Option<String>, String, String)> = source
             .iter()
-            .map(|row| (row.entity_table.clone(), row.entity_id.clone()))
+            .map(|row| {
+                (
+                    row.branch_id.clone(),
+                    row.entity_table.clone(),
+                    row.entity_id.clone(),
+                )
+            })
             .collect();
-        let existing: BTreeSet<(String, String)> = self
+        // Resume must be branch-aware and content-aware: a partial target row
+        // is reusable only when the source document has not changed since it
+        // was written. Writes normally refresh the active generation, so a
+        // row key alone would silently preserve stale text/vectors.
+        let existing: std::collections::BTreeMap<
+            (Option<String>, String, String),
+            crate::sqlite::records::SearchEmbedding,
+        > = self
             .repository
             .list_embeddings_for_generation(&input.project_id, &generation.generation_id)
             .await?
             .into_iter()
-            .map(|row| (row.entity_table, row.entity_id))
+            .map(|row| {
+                (
+                    (
+                        row.branch_id.clone(),
+                        row.entity_table.clone(),
+                        row.entity_id.clone(),
+                    ),
+                    row,
+                )
+            })
             .collect();
         let mut indexed_records = existing.len();
         let mut retry_from_entity_id = None;
 
         for row in source {
-            let key = (row.entity_table.clone(), row.entity_id.clone());
-            if existing.contains(&key) {
+            let key = (
+                row.branch_id.clone(),
+                row.entity_table.clone(),
+                row.entity_id.clone(),
+            );
+            let was_existing = existing.contains_key(&key);
+            if let Some(target) = existing.get(&key)
+                && target.title == row.title
+                && target.excerpt == row.excerpt
+                && target.content == row.content
+            {
                 continue;
             }
             let document = SearchDocument {
@@ -117,14 +164,14 @@ impl SqliteSpindleService {
                 Ok(embedding) => embedding,
                 Err(error) => {
                     self.repository
-                        .fail_embedding_generation(&generation.generation_id)
+                        .fail_embedding_generation(&input.project_id, &generation.generation_id)
                         .await?;
                     return Err(error);
                 }
             };
             if let Err(error) = validate_embedding_vector(&embedding, input.spec.dimension) {
                 self.repository
-                    .fail_embedding_generation(&generation.generation_id)
+                    .fail_embedding_generation(&input.project_id, &generation.generation_id)
                     .await?;
                 return Err(anyhow::anyhow!(error.to_string()));
             }
@@ -138,7 +185,9 @@ impl SqliteSpindleService {
                     &embedding,
                 )
                 .await?;
-            indexed_records += 1;
+            if !was_existing {
+                indexed_records += 1;
+            }
             retry_from_entity_id = Some(row.entity_id);
         }
 
@@ -172,7 +221,7 @@ impl SqliteSpindleService {
         }
         if !quality_passed {
             self.repository
-                .fail_embedding_generation(&generation.generation_id)
+                .fail_embedding_generation(&input.project_id, &generation.generation_id)
                 .await?;
             return Ok(RebuildEmbeddingGenerationOutputV1 {
                 generation_id: generation.generation_id,

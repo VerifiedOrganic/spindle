@@ -170,6 +170,50 @@ async fn embedding_fixtures_64_384_1536_roundtrip_and_mixed_query_is_rejected() 
 }
 
 #[tokio::test]
+async fn same_spec_migrates_two_projects_independently() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let (a, _seed_a, _) = project_with_scene(&svc, "Embedding Project A").await;
+    let (b, _seed_b, _) = project_with_scene(&svc, "Embedding Project B").await;
+    seed_documents(&svc, &a.project_id).await;
+    seed_documents(&svc, &b.project_id).await;
+
+    let spec = fixture_spec(384);
+    let out_a = svc
+        .rebuild_embedding_generation(rebuild_input(&a.project_id, 384))
+        .await
+        .unwrap();
+    assert!(out_a.activated);
+    assert_eq!(out_a.indexed_records, 2);
+    // Project A now owns an active global registry row for this spec. Project B
+    // must still build its own rows and move its own pointer.
+    let out_b = svc
+        .rebuild_embedding_generation(rebuild_input(&b.project_id, 384))
+        .await
+        .unwrap();
+    assert!(
+        out_b.activated,
+        "second project must not short-circuit: {out_b:?}"
+    );
+    assert_eq!(out_b.indexed_records, 2);
+    assert_eq!(out_b.generation_id, spec.generation_id());
+    for project in [&a.project_id, &b.project_id] {
+        let active = svc.active_embedding_generation(project).await.unwrap();
+        assert_eq!(active.generation_id, spec.generation_id());
+        assert_eq!(
+            svc.repository()
+                .embedding_row_count(project, &spec.generation_id())
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            semantic_first(&svc, project).await[0].entity_id,
+            "character:veyra"
+        );
+    }
+}
+
+#[tokio::test]
 async fn interrupted_rebuild_restart_preserves_active_and_resumes() {
     let (tmp, svc) = fresh_service_local().await;
     let (project, _seed, _) = project_with_scene(&svc, "Embedding Restart").await;
@@ -193,13 +237,21 @@ async fn interrupted_rebuild_restart_preserves_active_and_resumes() {
         .list_embeddings_for_generation(&project.project_id, &active_before.generation_id)
         .await
         .unwrap();
-    let first = rows.first().expect("source row");
+    let first = rows
+        .iter()
+        .find(|row| row.entity_id == "character:veyra")
+        .expect("source row");
     let document = SearchDocument {
         entity_table: first.entity_table.clone(),
         title: first.title.clone(),
         excerpt: first.excerpt.clone(),
         content: first.content.clone(),
     };
+    let active_branch_id = svc
+        .repository()
+        .active_branch_id_public(&project.project_id)
+        .await
+        .unwrap();
     let vector = token_hash_embedding(&first.content, 384);
     svc.repository()
         .upsert_embedding_document_for_generation(
@@ -209,6 +261,24 @@ async fn interrupted_rebuild_restart_preserves_active_and_resumes() {
             &document,
             &target,
             &vector,
+        )
+        .await
+        .unwrap();
+
+    // Edit the partially built entity through the active generation before the
+    // restart. Resume must detect the changed content and re-embed, not keep the
+    // stale target row.
+    svc.repository()
+        .upsert_search_embedding_document(
+            &project.project_id,
+            &active_branch_id,
+            &first.entity_id,
+            &SearchDocument {
+                entity_table: first.entity_table.clone(),
+                title: first.title.clone(),
+                excerpt: "loyal border regiment updated".into(),
+                content: "loyal border regiment updated cavalry garrison".into(),
+            },
         )
         .await
         .unwrap();
@@ -252,7 +322,116 @@ async fn interrupted_rebuild_restart_preserves_active_and_resumes() {
         .await
         .unwrap();
     assert_eq!(active_after.spec.dimension, 384);
+    let rebuilt = restarted
+        .repository()
+        .list_embeddings_for_generation(&project.project_id, &spec.generation_id())
+        .await
+        .unwrap();
+    assert!(
+        rebuilt.iter().any(|row| {
+            row.entity_id == first.entity_id && row.content.contains("updated cavalry")
+        }),
+        "resume must refresh stale target content: {rebuilt:?}"
+    );
     drop(tmp);
+}
+
+#[tokio::test]
+async fn resume_is_branch_aware_for_the_same_entity_id() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, _seed, _) = project_with_scene(&svc, "Embedding Branches").await;
+    seed_documents(&svc, &project.project_id).await;
+    let parent = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let alternate = svc
+        .create_branch(spindle_core::models::CreateBranchInput {
+            project_id: project.project_id.clone(),
+            name: "Alternate".into(),
+            branch_type: "alternate".into(),
+            description: None,
+            parent_branch_id: Some(parent.id.clone()),
+        })
+        .await
+        .unwrap();
+    // Same entity id on another branch with different text. The uniqueness key
+    // includes branch_id, so this row must not be skipped by a partial build on
+    // the parent branch.
+    svc.repository()
+        .upsert_search_embedding_document(
+            &project.project_id,
+            &alternate.branch_id,
+            "character:veyra",
+            &SearchDocument {
+                entity_table: "character".into(),
+                title: "Veyra (alternate)".into(),
+                excerpt: "ballroom".into(),
+                content: "forbidden romance ballroom dance".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let active = svc
+        .active_embedding_generation(&project.project_id)
+        .await
+        .unwrap();
+    let spec = fixture_spec(384);
+    let target = svc
+        .repository()
+        .create_embedding_generation(spec.clone())
+        .await
+        .unwrap();
+    let rows = svc
+        .repository()
+        .list_embeddings_for_generation(&project.project_id, &active.generation_id)
+        .await
+        .unwrap();
+    let parent_row = rows
+        .iter()
+        .find(|row| {
+            row.branch_id.as_deref() == Some(parent.id.as_str())
+                && row.entity_id == "character:veyra"
+        })
+        .expect("parent veyra row");
+    let document = SearchDocument {
+        entity_table: parent_row.entity_table.clone(),
+        title: parent_row.title.clone(),
+        excerpt: parent_row.excerpt.clone(),
+        content: parent_row.content.clone(),
+    };
+    let vector = token_hash_embedding(&parent_row.content, 384);
+    svc.repository()
+        .upsert_embedding_document_for_generation(
+            &project.project_id,
+            parent_row.branch_id.as_deref(),
+            &parent_row.entity_id,
+            &document,
+            &target,
+            &vector,
+        )
+        .await
+        .unwrap();
+    let output = svc
+        .rebuild_embedding_generation(rebuild_input(&project.project_id, 384))
+        .await
+        .unwrap();
+    assert!(output.activated);
+    assert_eq!(output.indexed_records, 3);
+    let rebuilt = svc
+        .repository()
+        .list_embeddings_for_generation(&project.project_id, &spec.generation_id())
+        .await
+        .unwrap();
+    assert!(
+        rebuilt.iter().any(|row| {
+            row.branch_id.as_deref() == Some(alternate.branch_id.as_str())
+                && row.entity_id == "character:veyra"
+                && row.content.contains("ballroom")
+        }),
+        "branch row must be rebuilt: {rebuilt:?}"
+    );
 }
 
 #[tokio::test]

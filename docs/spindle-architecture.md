@@ -538,7 +538,9 @@ from a different provider/model/dimension is rejected rather than compared;
 Rebuilds are resumable and non-destructive: the target generation and its table
 are created first, already-written rows are skipped on restart, and the active
 generation keeps serving until completeness and an optional rank-based retrieval
-quality probe pass. Activation atomically updates the project's
+quality probe pass. Generation build/active/retired/failed lifecycle is tracked per project in
+`embedding_generation_project`, so the same shared spec/table can be migrated by
+different projects independently. Activation atomically updates the project's
 `embedding_index_state` and retires the previous generation with a rollback
 window; rollback replays the previous pointer while its window is open. A
 provider failure or failed quality gate marks the target failed and leaves the

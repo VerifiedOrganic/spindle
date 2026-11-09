@@ -95,6 +95,31 @@ SELECT id, 'token-hash-v1:64', NULL, NULL,
        CAST(strftime('%s','now') AS INTEGER) * 1000000
 FROM project;
 
+-- Per-project lifecycle for a generation. The generation registry/spec and its
+-- vec0 table are shared, but build/active/retired/failed status is per project:
+-- project A activating a spec must not change project B's build or service.
+CREATE TABLE embedding_generation_project (
+    project_id      TEXT    NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+    generation_id   TEXT    NOT NULL REFERENCES embedding_generation(generation_id),
+    status          TEXT    NOT NULL CHECK(status IN ('building', 'active', 'retired', 'failed')),
+    created_at      INTEGER NOT NULL,
+    activated_at    INTEGER,
+    retired_at      INTEGER,
+    failed_at       INTEGER,
+    PRIMARY KEY (project_id, generation_id)
+);
+
+CREATE INDEX idx_embedding_generation_project_status
+    ON embedding_generation_project(project_id, status);
+
+INSERT INTO embedding_generation_project (
+    project_id, generation_id, status, created_at, activated_at
+)
+SELECT id, 'token-hash-v1:64', 'active',
+       CAST(strftime('%s','now') AS INTEGER) * 1000000,
+       CAST(strftime('%s','now') AS INTEGER) * 1000000
+FROM project;
+
 CREATE VIRTUAL TABLE vec_embedding_gen_token_hash_v1_64 USING vec0(
     se_id   TEXT PRIMARY KEY,
     embedding FLOAT[64]
