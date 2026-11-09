@@ -86,6 +86,10 @@ pub struct KnowledgeValidationFactV1 {
     pub fact_id: String,
     pub character_id: String,
     pub character_names: Vec<String>,
+    /// Resolver-approved mention aliases (full name, forename/surname, cast
+    /// nicknames). Empty means use `character_names` only.
+    #[serde(default)]
+    pub character_aliases: Vec<String>,
     pub fact: String,
     pub learned_book_number: i32,
     pub learned_chapter_number: i32,
@@ -100,9 +104,16 @@ pub struct SecretValidationCandidateV1 {
     pub value: String,
     pub character_id: String,
     pub character_name: String,
+    /// Resolver-approved mention aliases (full name, forename/surname, cast
+    /// nicknames). Empty means use `character_name` only.
+    #[serde(default)]
+    pub character_aliases: Vec<String>,
     /// Other present characters used to reject a sentence where the candidate
     /// is merely mentioned and someone else performs the leak action.
     pub other_present_character_names: Vec<String>,
+    /// Resolver-approved aliases for those other characters.
+    #[serde(default)]
+    pub other_present_character_aliases: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -573,6 +584,88 @@ fn finding(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttributeFamily {
+    EyeColor,
+    HairColor,
+    SkinColor,
+    Handedness,
+    Height,
+    Scar,
+    Build,
+}
+
+fn attribute_families(key: &str) -> Vec<AttributeFamily> {
+    let normalized = key
+        .to_ascii_lowercase()
+        .replace(['-', '_'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let has = |word: &str| contains_word(&normalized, word);
+    let mut families = Vec::new();
+    let color_word = has("color") || has("colour") || has("tone") || has("shade");
+    if color_word && (has("eye") || has("eyes") || has("gaze")) {
+        families.push(AttributeFamily::EyeColor);
+    }
+    if color_word && (has("hair") || has("locks") || has("mane")) {
+        families.push(AttributeFamily::HairColor);
+    }
+    if color_word && (has("skin") || has("complexion")) {
+        families.push(AttributeFamily::SkinColor);
+    }
+    if has("handed")
+        || has("handedness")
+        || has("dominant")
+        || (has("hand") && (has("writing") || has("writes") || has("dominant")))
+    {
+        families.push(AttributeFamily::Handedness);
+    }
+    if has("height") || has("stature") {
+        families.push(AttributeFamily::Height);
+    }
+    if has("scar") || has("scars") || has("scarred") || has("scarring") {
+        families.push(AttributeFamily::Scar);
+    }
+    if has("build") || has("physique") || has("frame") || (has("body") && has("type")) {
+        families.push(AttributeFamily::Build);
+    }
+    families
+}
+
+fn family_heads(family: AttributeFamily) -> &'static [&'static str] {
+    match family {
+        AttributeFamily::EyeColor => &["eye", "eyes", "gaze", "irises", "pupils"],
+        AttributeFamily::HairColor => &["hair", "locks", "mane"],
+        AttributeFamily::SkinColor => &["skin", "complexion"],
+        AttributeFamily::Handedness => &["hand", "hands", "handed", "writes", "writing", "grip"],
+        AttributeFamily::Height => &[
+            "height",
+            "stature",
+            "tall",
+            "short",
+            "small",
+            "little",
+            "diminutive",
+            "shoulder",
+            "waist",
+            "knee",
+            "reach",
+            "duck",
+            "stoop",
+            "bend",
+            "crouch",
+        ],
+        AttributeFamily::Scar => &[
+            "scar", "scars", "scarred", "scarring", "skin", "face", "cheek", "jaw",
+        ],
+        AttributeFamily::Build => &[
+            "build", "frame", "physique", "body", "broad", "slender", "wiry", "muscular", "stocky",
+            "heavyset", "thin",
+        ],
+    }
+}
+
 fn attribute_head_tokens(key: &str, subject_names: &[String]) -> Vec<String> {
     let names: Vec<String> = subject_names.iter().flat_map(|name| tokens(name)).collect();
     tokens(key)
@@ -597,40 +690,64 @@ pub fn detect_attribute_prose_contradiction(
         return None;
     }
     let canonical = fact.value.to_ascii_lowercase();
+    let families = attribute_families(&fact.key);
     let canonical_prosthetic = visible_terms(&canonical, PROSTHETIC_TERMS);
     let canonical_organic = visible_terms(&canonical, ORGANIC_TERMS);
     let canonical_colors = visible_terms(&canonical, COLOR_TERMS);
     if canonical_prosthetic.is_empty()
         && canonical_organic.is_empty()
         && canonical_colors.is_empty()
+        && families.is_empty()
     {
         return None;
     }
-    let heads = attribute_head_tokens(&fact.key, &fact.subject_names);
+    let mut heads = attribute_head_tokens(&fact.key, &fact.subject_names);
+    for family in &families {
+        heads.extend(family_heads(*family).iter().map(|head| (*head).to_string()));
+    }
+    heads.sort();
+    heads.dedup();
     if heads.is_empty() {
         return None;
     }
+    let mut subject_mentioned_earlier = false;
     for range in sentence_spans(scene.text) {
         if is_dialogue(scene.text, range) {
             continue;
         }
         let sentence = &scene.text[range.start..range.end];
         let lower = sentence.to_ascii_lowercase();
-        if contains_any(&lower, IRREALIS_MARKERS).is_some()
-            || contains_any(&lower, NEGATION_MARKERS).is_some()
-        {
-            continue;
-        }
-        if !fact
+        let subject_present = fact
             .subject_names
             .iter()
-            .any(|name| contains_phrase(sentence, name))
+            .any(|name| contains_phrase(sentence, name));
+        let pronoun_subject = !subject_present
+            && subject_mentioned_earlier
+            && families.contains(&AttributeFamily::Height)
+            && ["he", "she", "they"]
+                .iter()
+                .any(|pronoun| contains_word(&lower, pronoun));
+        if subject_present {
+            subject_mentioned_earlier = true;
+        }
+        if !subject_present && !pronoun_subject {
+            continue;
+        }
+        if contains_any(&lower, IRREALIS_MARKERS).is_some() {
+            continue;
+        }
+        let negated = contains_any(&lower, NEGATION_MARKERS).is_some();
+        if negated
+            && !families
+                .iter()
+                .any(|family| matches!(family, AttributeFamily::Height | AttributeFamily::Scar))
         {
             continue;
         }
+        let lower_sentence = sentence.to_ascii_lowercase();
         if !heads
             .iter()
-            .any(|head| contains_word(&sentence.to_ascii_lowercase(), head))
+            .any(|head| contains_inflected_word(&lower_sentence, head))
         {
             continue;
         }
@@ -655,6 +772,15 @@ pub fn detect_attribute_prose_contradiction(
         {
             canonical_terms.extend(canonical_colors.clone());
             prose_terms.push(term);
+        }
+        for family in &families {
+            if !canonical_terms.is_empty() {
+                break;
+            }
+            if let Some((expected, found)) = family_contradiction(*family, &canonical, &lower) {
+                canonical_terms.push(expected);
+                prose_terms.push(found);
+            }
         }
         if canonical_terms.is_empty() {
             continue;
@@ -689,6 +815,263 @@ pub fn detect_attribute_prose_contradiction(
         ));
     }
     None
+}
+
+fn earliest_phrase_index(haystack: &str, phrases: &[String]) -> Option<(usize, usize)> {
+    let lower = haystack.to_ascii_lowercase();
+    phrases
+        .iter()
+        .filter_map(|phrase| {
+            let phrase = phrase.trim().to_ascii_lowercase();
+            if phrase.is_empty() {
+                return None;
+            }
+            lower.find(&phrase).map(|index| (index, phrase.len()))
+        })
+        .min_by_key(|(index, _)| *index)
+}
+
+fn contains_inflected_word(haystack: &str, head: &str) -> bool {
+    let head = head.to_ascii_lowercase();
+    if head.is_empty() {
+        return false;
+    }
+    haystack
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            let token = token.to_ascii_lowercase();
+            token == head
+                || stem(&token) == stem(&head)
+                || (token.len() > head.len()
+                    && token.starts_with(&head)
+                    && matches!(
+                        &token[head.len()..],
+                        "s" | "es" | "ed" | "ing" | "er" | "est" | "red" | "ness"
+                    ))
+        })
+}
+
+fn family_contradiction(
+    family: AttributeFamily,
+    canonical: &str,
+    prose: &str,
+) -> Option<(String, String)> {
+    match family {
+        AttributeFamily::EyeColor | AttributeFamily::HairColor | AttributeFamily::SkinColor => {
+            let canonical_colors = visible_terms(canonical, COLOR_TERMS);
+            if canonical_colors.is_empty() {
+                return None;
+            }
+            let term = contains_any(prose, COLOR_TERMS)?;
+            if canonical_colors.contains(&term) {
+                return None;
+            }
+            Some((canonical_colors.join(","), term))
+        }
+        AttributeFamily::Handedness => {
+            let canonical_side = handedness_side(canonical)?;
+            let prose_side = handedness_side(prose)?;
+            (canonical_side != prose_side)
+                .then(|| (canonical_side.to_string(), prose_side.to_string()))
+        }
+        AttributeFamily::Height => {
+            let canonical_height = height_side(canonical)?;
+            let prose_height = height_side(prose)?;
+            (canonical_height != prose_height)
+                .then(|| (canonical_height.to_string(), prose_height.to_string()))
+        }
+        AttributeFamily::Scar => {
+            let canonical_side = body_side(canonical);
+            let prose_side = body_side(prose);
+            if let (Some(canonical_side), Some(prose_side)) = (canonical_side, prose_side)
+                && canonical_side != prose_side
+            {
+                return Some((canonical_side.to_string(), prose_side.to_string()));
+            }
+            let canonical_scarred = scar_state(canonical).or_else(|| {
+                let trimmed = canonical.trim();
+                (!trimmed.is_empty()
+                    && !contains_phrase(trimmed, "no scar")
+                    && !contains_phrase(trimmed, "no scars")
+                    && !["none", "clear", "unscarred", "unblemished"]
+                        .iter()
+                        .any(|word| contains_word(trimmed, word)))
+                .then_some("scarred")
+            })?;
+            let prose_scarred = scar_state(prose)?;
+            (canonical_scarred != prose_scarred)
+                .then(|| (canonical_scarred.to_string(), prose_scarred.to_string()))
+        }
+        AttributeFamily::Build => {
+            let canonical_build = build_side(canonical)?;
+            let prose_build = build_side(prose)?;
+            (canonical_build != prose_build)
+                .then(|| (canonical_build.to_string(), prose_build.to_string()))
+        }
+    }
+}
+
+fn handedness_side(text: &str) -> Option<&'static str> {
+    if contains_word(text, "ambidextrous") {
+        return Some("ambidextrous");
+    }
+    let mentions_hand = ["hand", "handed", "writes", "writing", "grip", "dominant"]
+        .iter()
+        .any(|word| contains_inflected_word(text, word));
+    let left = contains_inflected_word(text, "left");
+    let right = contains_inflected_word(text, "right");
+    // Canonical values are often the bare side ("left"/"right") rather than
+    // "left-handed"; accept that exact shape before requiring a hand word.
+    if contains_word(text, "left") && !mentions_hand {
+        return Some("left");
+    }
+    if contains_word(text, "right") && !mentions_hand {
+        return Some("right");
+    }
+    if !mentions_hand {
+        return None;
+    }
+    match (left, right) {
+        (true, false) => Some("left"),
+        (false, true) => Some("right"),
+        _ => None,
+    }
+}
+
+fn height_side(text: &str) -> Option<&'static str> {
+    let not_tall = [
+        "not tall",
+        "isn't tall",
+        "is not tall",
+        "wasn't tall",
+        "was not tall",
+    ]
+    .iter()
+    .any(|phrase| contains_phrase(text, phrase));
+    let not_short = [
+        "not short",
+        "isn't short",
+        "is not short",
+        "wasn't short",
+        "was not short",
+    ]
+    .iter()
+    .any(|phrase| contains_phrase(text, phrase));
+    if not_tall {
+        return Some("short");
+    }
+    if not_short {
+        return Some("tall");
+    }
+    let relational_short = [
+        "waist-high",
+        "waist high",
+        "knee-high",
+        "knee high",
+        "shoulder-high",
+        "shoulder high",
+        "head shorter",
+        "foot shorter",
+        "came up to",
+        "barely reached",
+        "reached only",
+        "reached barely",
+        "could not reach",
+        "couldn't reach",
+        "needed a stool",
+        "needed a step",
+        "stood on tiptoe",
+        "on her toes",
+        "on his toes",
+        "had to climb",
+    ]
+    .iter()
+    .any(|phrase| contains_phrase(text, phrase));
+    if relational_short {
+        return Some("short");
+    }
+    let relational_tall = [
+        "towered over",
+        "head and shoulders above",
+        "ducked under",
+        "stooped under",
+        "had to duck",
+        "had to stoop",
+    ]
+    .iter()
+    .any(|phrase| contains_phrase(text, phrase));
+    if relational_tall {
+        return Some("tall");
+    }
+    let tall = contains_inflected_word(text, "tall") || contains_word(text, "towering");
+    let short = contains_inflected_word(text, "short")
+        || contains_word(text, "petite")
+        || contains_word(text, "small")
+        || contains_word(text, "little")
+        || contains_word(text, "diminutive")
+        || contains_word(text, "stunted")
+        || contains_word(text, "undersized");
+    match (tall, short) {
+        (true, false) => Some("tall"),
+        (false, true) => Some("short"),
+        _ => None,
+    }
+}
+
+fn body_side(text: &str) -> Option<&'static str> {
+    let left = contains_inflected_word(text, "left");
+    let right = contains_inflected_word(text, "right");
+    match (left, right) {
+        (true, false) => Some("left"),
+        (false, true) => Some("right"),
+        _ => None,
+    }
+}
+
+fn scar_state(text: &str) -> Option<&'static str> {
+    let scarred = [
+        "scar", "scars", "scarred", "scarring", "mark", "seam", "blemish", "pucker", "notch",
+    ]
+    .iter()
+    .any(|word| contains_inflected_word(text, word));
+    let clear = [
+        "unscarred",
+        "unmarred",
+        "unblemished",
+        "unmarked",
+        "smooth",
+        "flawless",
+        "clear",
+    ]
+    .iter()
+    .any(|word| contains_inflected_word(text, word))
+        || contains_phrase(text, "no scar")
+        || contains_phrase(text, "no scars")
+        || contains_phrase(text, "without a scar")
+        || contains_phrase(text, "not scarred")
+        || contains_phrase(text, "never scarred");
+    match (scarred, clear) {
+        (true, false) => Some("scarred"),
+        (false, true) => Some("unscarred"),
+        _ => None,
+    }
+}
+
+fn build_side(text: &str) -> Option<&'static str> {
+    let broad = [
+        "broad", "heavyset", "stocky", "muscular", "bulky", "thickset",
+    ];
+    let slender = ["slender", "thin", "wiry", "lithe", "slight", "lean"];
+    let broad_hit = broad.iter().any(|word| contains_inflected_word(text, word));
+    let slender_hit = slender
+        .iter()
+        .any(|word| contains_inflected_word(text, word));
+    match (broad_hit, slender_hit) {
+        (true, false) => Some("broad"),
+        (false, true) => Some("slender"),
+        _ => None,
+    }
 }
 
 fn visible_terms(haystack: &str, terms: &[&str]) -> Vec<String> {
@@ -730,7 +1113,9 @@ pub fn detect_knowledge_paraphrase_leak(
     scene: &SceneValidationInputV1<'_>,
     fact: &KnowledgeValidationFactV1,
 ) -> Option<ClaimValidationFindingV1> {
-    let fact_tokens = distinctive_tokens(&fact.fact, &fact.character_names);
+    let mut excluded_names = fact.character_names.clone();
+    excluded_names.extend(fact.character_aliases.iter().cloned());
+    let fact_tokens = distinctive_tokens(&fact.fact, &excluded_names);
     if fact_tokens.len() < 3 {
         return None;
     }
@@ -740,8 +1125,12 @@ pub fn detect_knowledge_paraphrase_leak(
         if contains_any(&lower, KNOWLEDGE_IRREALIS).is_some() {
             continue;
         }
-        if !fact
-            .character_names
+        let mention_aliases = if fact.character_aliases.is_empty() {
+            &fact.character_names
+        } else {
+            &fact.character_aliases
+        };
+        if !mention_aliases
             .iter()
             .any(|name| contains_phrase(sentence, name))
         {
@@ -813,24 +1202,26 @@ pub fn detect_secret_narration_leak(
         if contains_any(&lower, NEGATION_MARKERS).is_some() {
             continue;
         }
-        let Some(name_index) = sentence
-            .to_ascii_lowercase()
-            .find(&candidate.character_name.to_ascii_lowercase())
+        let lower_sentence = sentence.to_ascii_lowercase();
+        let mention_aliases = if candidate.character_aliases.is_empty() {
+            std::slice::from_ref(&candidate.character_name)
+        } else {
+            candidate.character_aliases.as_slice()
+        };
+        let Some((name_index, name_len)) = earliest_phrase_index(&lower_sentence, mention_aliases)
         else {
             continue;
         };
-        let Some(value_index) = sentence
-            .to_ascii_lowercase()
-            .find(&candidate.value.to_ascii_lowercase())
-        else {
+        let Some(value_index) = lower_sentence.find(&candidate.value.to_ascii_lowercase()) else {
             continue;
         };
         if name_index >= value_index {
             continue;
         }
-        let actor_window = &sentence[name_index + candidate.character_name.len()..value_index];
-        if candidate
-            .other_present_character_names
+        let actor_window = &sentence[name_index + name_len..value_index];
+        let mut other_names = candidate.other_present_character_names.clone();
+        other_names.extend(candidate.other_present_character_aliases.iter().cloned());
+        if other_names
             .iter()
             .any(|name| contains_phrase(actor_window, name))
         {

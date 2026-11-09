@@ -28,6 +28,7 @@ fn knowledge_fact(fact: &str, names: &[&str], chapter: i32) -> KnowledgeValidati
         fact_id: "knowledge_fact:1".into(),
         character_id: "character:caelen".into(),
         character_names: names.iter().map(|name| (*name).to_string()).collect(),
+        character_aliases: names.iter().map(|name| (*name).to_string()).collect(),
         fact: fact.into(),
         learned_book_number: 1,
         learned_chapter_number: chapter,
@@ -177,7 +178,9 @@ fn secret_narration_leak_is_detected_but_negation_and_dialogue_are_not() {
         value: "obsidiancrown".into(),
         character_id: "character:caelen".into(),
         character_name: "Caelen Dravos".into(),
+        character_aliases: vec!["Caelen Dravos".into()],
         other_present_character_names: vec!["Oren Vale".into()],
+        other_present_character_aliases: vec!["Oren Vale".into()],
     };
     let text = "While Oren Vale turned away, Caelen Dravos quietly copied the vault passphrase obsidiancrown into his personal field notebook.";
     let finding = detect_secret_narration_leak(&scene(text), &candidate).expect("narration leak");
@@ -285,4 +288,134 @@ fn semantic_route_failure_is_degraded_not_clean() {
         }
         other => panic!("expected degraded, got {other:?}"),
     }
+}
+
+#[test]
+fn attribute_eye_color_matches_plural_head_and_rejects_opposite_color() {
+    let fact = attribute_fact("eye_color", "blue", &["Sela Voss"]);
+    let finding = detect_attribute_prose_contradiction(
+        &scene("Sela Voss watched the door, her eyes a warm brown in the lamplight."),
+        &fact,
+    )
+    .expect("eye colour conflict");
+    assert!(finding.message.contains("eye_color"));
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela Voss watched the door, her eyes a pale blue."),
+            &fact,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn attribute_handedness_height_and_scar_families_are_checked() {
+    let handed = attribute_fact("handedness", "right-handed", &["Sela Voss", "Sela", "Voss"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela signed the ledger with her left hand."),
+            &handed,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela signed the ledger with her right hand."),
+            &handed,
+        )
+        .is_none()
+    );
+
+    let height = attribute_fact("height", "tall", &["Sela Voss", "Sela", "Voss"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela was short enough to pass under the low beam."),
+            &height,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela was tall enough to pass over the low beam."),
+            &height,
+        )
+        .is_none()
+    );
+
+    let scar = attribute_fact(
+        "scar",
+        "a scar across her jaw",
+        &["Sela Voss", "Sela", "Voss"],
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela's jaw was smooth and unblemished."),
+            &scar,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("The old scar across Sela's jaw caught the light."),
+            &scar,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn knowledge_and_secret_accept_resolver_approved_forenames() {
+    let knowledge = KnowledgeValidationFactV1 {
+        fact_id: "knowledge_fact:first-name".into(),
+        character_id: "character:caelen".into(),
+        character_names: vec!["Caelen Dravos".into()],
+        character_aliases: vec!["Caelen".into(), "Dravos".into()],
+        fact: "the eastern gate is unlocked".into(),
+        learned_book_number: 1,
+        learned_chapter_number: 12,
+        learned_scene_order: Some(1),
+    };
+    assert!(
+        detect_knowledge_paraphrase_leak(
+            &scene("Caelen told the guard the eastern gate was unlocked."),
+            &knowledge,
+        )
+        .is_some()
+    );
+
+    let secret = SecretValidationCandidateV1 {
+        fact_id: "canonical_fact:secret".into(),
+        predicate: "vault passphrase".into(),
+        value: "obsidiancrown".into(),
+        character_id: "character:caelen".into(),
+        character_name: "Caelen Dravos".into(),
+        character_aliases: vec!["Caelen".into(), "Dravos".into()],
+        other_present_character_names: vec!["Oren Vale".into()],
+        other_present_character_aliases: vec!["Oren".into()],
+    };
+    assert!(
+        detect_secret_narration_leak(
+            &scene("Caelen copied obsidiancrown into the ledger."),
+            &secret,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_secret_narration_leak(
+            &scene("Oren copied obsidiancrown into the ledger while Caelen watched."),
+            &secret,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn attribute_height_accepts_a_pronoun_after_the_subject_is_established() {
+    let fact = attribute_fact("height", "tall", &["Mor Tarn", "Mor"]);
+    let finding = detect_attribute_prose_contradiction(
+        &scene("Mor Tarn entered the hall. He was short."),
+        &fact,
+    )
+    .expect("pronoun height conflict");
+    assert!(finding.message.contains("height"));
 }
