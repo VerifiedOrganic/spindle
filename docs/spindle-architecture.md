@@ -353,7 +353,7 @@ events and audit decisions are never deleted. Pending provisional work is
 reported explicitly, and a checkpoint cannot claim continuity-clean while
 eligible claims lack a final decision.
 
-Migration V0053 adds per-project `canon_cutover_state`. `legacy` is authoritative
+Migration V0054 adds per-project `canon_cutover_state`. `legacy` is authoritative
 by default; forward transitions to `dual_write`, `shadow_read` and `canon_read`
 require the compatibility parity/quarantine readiness gate, while rollback is
 always allowed. In cutover modes the existing authoritative write paths

@@ -74,7 +74,7 @@ safety list always stages provisional for an author decision. Decision rows
 record policy version, confidence inputs, precondition summary, idempotency key
 and projection watermark; stale compare-and-append fails safely; revocation
 appends withdrawals and invalidates dependents instead of deleting history.
-Migration V0053 gates per-project `legacy -> dual_write -> shadow_read ->
+Migration V0054 gates per-project `legacy -> dual_write -> shadow_read ->
 canon_read` transitions on compatibility parity/quarantine readiness while
 keeping rollback reversible. Legacy-unverified rows participate in compatibility
 reads but are warning/info-only until corroborated. Extraction still makes no
