@@ -66,7 +66,10 @@ for the four typed records when a typed tool covers the field.
 `create_terms`, `create_motifs`, `create_narrative_promises`, and
 `set_character_voice_profiles` are the canonical batch operations. They accept
 1-50 `items`, preflight every item, support `dry_run`, and commit all-or-nothing
-in one branch transaction; errors identify the failing item index. The
+in one branch transaction; errors identify the failing item index. Dry-run
+preflight rejects existing and within-batch normalized term/motif collisions.
+Post-commit derived work is best-effort and is reported in `warnings`; the
+rows remain committed. The
 `batch_create_terms`, `batch_create_motifs`,
 `batch_create_narrative_promises`, and `batch_set_character_voice_profiles`
 names delegate to them as one-release compatibility aliases.

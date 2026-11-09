@@ -281,6 +281,9 @@ pub struct SqliteSpindleService {
     /// retry arriving on a different service clone joins the SAME job instead
     /// of launching a duplicate run against the model.
     review_jobs: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, ReviewJob>>>,
+    /// Test-only failure injection for post-commit derived-work tests.
+    #[cfg(test)]
+    batch_index_refresh_failure: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 const STRUCTURED_RESEARCH_PROMPT_INSTRUCTIONS: &str = "\
@@ -489,7 +492,19 @@ impl SqliteSpindleService {
             review_jobs: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::BTreeMap::new(),
             )),
+            #[cfg(test)]
+            batch_index_refresh_failure: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
         }
+    }
+
+    /// Test-only hook: make the next post-commit batch index refresh fail so
+    /// the regression can prove committed rows still return a success receipt.
+    #[cfg(test)]
+    pub fn fail_next_batch_index_refresh(&self) {
+        self.batch_index_refresh_failure
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn repository(&self) -> &Repository {

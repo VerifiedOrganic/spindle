@@ -4,7 +4,7 @@
     "default": {
       "tools": 179,
       "input_bytes": 169614,
-      "full_bytes": 733609
+      "full_bytes": 735193
     },
     "new-book": {
       "tools": 14,
@@ -19,7 +19,7 @@
     "write": {
       "tools": 122,
       "input_bytes": 115290,
-      "full_bytes": 466649
+      "full_bytes": 467441
     },
     "import": {
       "tools": 40,
@@ -34,7 +34,7 @@
     "planning": {
       "tools": 38,
       "input_bytes": 32352,
-      "full_bytes": 62362
+      "full_bytes": 63550
     },
     "release": {
       "tools": 62,
@@ -79,12 +79,12 @@
     "worldbuilding": {
       "tools": 50,
       "input_bytes": 48325,
-      "full_bytes": 82626
+      "full_bytes": 83814
     },
     "legacy-all": {
       "tools": 179,
       "input_bytes": 169614,
-      "full_bytes": 733609
+      "full_bytes": 735193
     }
   },
   "canonical": {

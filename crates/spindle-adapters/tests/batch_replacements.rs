@@ -92,6 +92,32 @@ async fn term_batch_is_atomic_dry_run_safe_and_alias_compatible() {
         2
     );
 
+    let existing_dry = svc
+        .create_terms(CreateTermsInput {
+            project_id: project_id.clone(),
+            items: vec![term("Aether")],
+            dry_run: true,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{existing_dry:#}").contains("already exists"),
+        "dry-run must predict an existing-name collision: {existing_dry:#}"
+    );
+    let within_batch_dry = svc
+        .create_terms(CreateTermsInput {
+            project_id: project_id.clone(),
+            items: vec![term("Twin"), term("twin")],
+            dry_run: true,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{within_batch_dry:#}").contains("item 1")
+            && format!("{within_batch_dry:#}").contains("duplicate normalized"),
+        "dry-run must predict a within-batch normalized collision: {within_batch_dry:#}"
+    );
+
     let too_many: Vec<_> = (0..51).map(|i| term(&format!("Term {i}"))).collect();
     assert!(
         svc.create_terms(CreateTermsInput {
@@ -177,6 +203,50 @@ async fn motif_and_promise_batches_are_atomic() {
             .unwrap()
             .len(),
         2
+    );
+
+    let existing_motif_dry = svc
+        .create_motifs(CreateMotifsInput {
+            project_id: project_id.clone(),
+            items: vec![BatchCreateMotifItem {
+                name: "Salt".to_string(),
+                description: "Duplicate.".to_string(),
+                max_uses_per_chapter: None,
+                connected_theme_ids: Vec::new(),
+            }],
+            dry_run: true,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{existing_motif_dry:#}").contains("already exists"),
+        "dry-run must predict an existing motif: {existing_motif_dry:#}"
+    );
+    let within_motif_dry = svc
+        .create_motifs(CreateMotifsInput {
+            project_id: project_id.clone(),
+            items: vec![
+                BatchCreateMotifItem {
+                    name: "Echo".to_string(),
+                    description: "One.".to_string(),
+                    max_uses_per_chapter: None,
+                    connected_theme_ids: Vec::new(),
+                },
+                BatchCreateMotifItem {
+                    name: "echo".to_string(),
+                    description: "Two.".to_string(),
+                    max_uses_per_chapter: None,
+                    connected_theme_ids: Vec::new(),
+                },
+            ],
+            dry_run: true,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{within_motif_dry:#}").contains("item 1")
+            && format!("{within_motif_dry:#}").contains("duplicate normalized"),
+        "dry-run must predict a within-batch motif collision: {within_motif_dry:#}"
     );
 
     let placement = StoryPlacement {

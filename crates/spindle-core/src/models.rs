@@ -4373,6 +4373,10 @@ pub struct BatchCreateTermsOutput {
     #[serde(default)]
     pub term_ids: Vec<String>,
     pub created: usize,
+    /// Non-fatal post-commit derived-work warnings (for example a search
+    /// index refresh that must be retried). The rows are committed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4728,6 +4732,10 @@ pub struct BatchSetCharacterVoiceProfilesOutput {
     #[serde(default)]
     pub profiles: Vec<SetCharacterVoiceProfileOutput>,
     pub updated: usize,
+    /// Non-fatal post-commit derived-work warnings (for example a search
+    /// index refresh that must be retried). The rows are committed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4836,6 +4844,10 @@ pub struct BatchCreateMotifsOutput {
     #[serde(default)]
     pub motif_ids: Vec<String>,
     pub created: usize,
+    /// Non-fatal post-commit derived-work warnings (for example a search
+    /// index refresh that must be retried). The rows are committed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4879,6 +4891,10 @@ pub struct BatchCreateNarrativePromisesOutput {
     #[serde(default)]
     pub narrative_promise_ids: Vec<String>,
     pub created: usize,
+    /// Non-fatal post-commit derived-work warnings (for example a search
+    /// index refresh that must be retried). The rows are committed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// Canonical batch creation for glossary terms. Items are validated together
@@ -4900,6 +4916,10 @@ pub struct CreateTermsOutput {
     pub created: usize,
     #[serde(default)]
     pub dry_run: bool,
+    /// Non-fatal post-commit derived-work warnings (for example a search
+    /// index refresh that must be retried). The rows are committed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4919,6 +4939,10 @@ pub struct CreateMotifsOutput {
     pub created: usize,
     #[serde(default)]
     pub dry_run: bool,
+    /// Non-fatal post-commit derived-work warnings (for example a search
+    /// index refresh that must be retried). The rows are committed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4938,6 +4962,10 @@ pub struct CreateNarrativePromisesOutput {
     pub created: usize,
     #[serde(default)]
     pub dry_run: bool,
+    /// Non-fatal post-commit derived-work warnings (for example a search
+    /// index refresh that must be retried). The rows are committed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4958,6 +4986,10 @@ pub struct SetCharacterVoiceProfilesOutput {
     pub updated: usize,
     #[serde(default)]
     pub dry_run: bool,
+    /// Non-fatal post-commit derived-work warnings (for example a search
+    /// index refresh that must be retried). The rows are committed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// An actual story event, separate from an author's planned payoff.

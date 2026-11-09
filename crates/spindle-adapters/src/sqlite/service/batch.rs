@@ -13,6 +13,18 @@ impl SqliteSpindleService {
     pub async fn create_terms(&self, input: CreateTermsInput) -> Result<CreateTermsOutput> {
         ensure_batch_len(&input.items)?;
         self.repository.get_project(&input.project_id).await?;
+        let branch_id = self
+            .repository
+            .active_branch_id_public(&input.project_id)
+            .await?;
+        let existing: std::collections::BTreeSet<String> = self
+            .repository
+            .list_terms_by_project_and_branch(&input.project_id, &branch_id)
+            .await?
+            .into_iter()
+            .map(|term| term.normalized_term)
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
         for (index, item) in input.items.iter().enumerate() {
             anyhow::ensure!(
                 !item.term_text.trim().is_empty(),
@@ -22,18 +34,24 @@ impl SqliteSpindleService {
                 !item.definition.trim().is_empty(),
                 "item {index}: definition must not be empty"
             );
+            let normalized = spindle_core::models::normalize_name(&item.term_text);
+            anyhow::ensure!(
+                !existing.contains(&normalized),
+                "item {index}: term already exists on this branch"
+            );
+            anyhow::ensure!(
+                seen.insert(normalized),
+                "item {index}: duplicate normalized term within the batch"
+            );
         }
         if input.dry_run {
             return Ok(CreateTermsOutput {
                 term_ids: Vec::new(),
                 created: 0,
                 dry_run: true,
+                warnings: Vec::new(),
             });
         }
-        let branch_id = self
-            .repository
-            .active_branch_id_public(&input.project_id)
-            .await?;
         let project_id = input.project_id;
         let items = input.items;
         let tx_items = items.clone();
@@ -52,21 +70,37 @@ impl SqliteSpindleService {
                 Ok(ids)
             })
             .await?;
-        for (id, item) in ids.iter().zip(items.iter()) {
-            self.refresh_entity_index(
-                &project_id,
-                &branch_id,
-                id,
-                "term",
-                &item.term_text,
-                &item.definition,
-            )
-            .await?;
+        let mut warnings = Vec::new();
+        for (index, (id, item)) in ids.iter().zip(items.iter()).enumerate() {
+            #[cfg(test)]
+            if self
+                .batch_index_refresh_failure
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                warnings.push(format!("item {index}: search index refresh pending"));
+                continue;
+            }
+            if let Err(error) = self
+                .refresh_entity_index(
+                    &project_id,
+                    &branch_id,
+                    id,
+                    "term",
+                    &item.term_text,
+                    &item.definition,
+                )
+                .await
+            {
+                warnings.push(format!(
+                    "item {index}: search index refresh failed: {error:#}"
+                ));
+            }
         }
         Ok(CreateTermsOutput {
             created: ids.len(),
             term_ids: ids,
             dry_run: false,
+            warnings,
         })
     }
 
@@ -74,10 +108,31 @@ impl SqliteSpindleService {
     pub async fn create_motifs(&self, input: CreateMotifsInput) -> Result<CreateMotifsOutput> {
         ensure_batch_len(&input.items)?;
         self.repository.get_project(&input.project_id).await?;
+        let branch_id = self
+            .repository
+            .active_branch_id_public(&input.project_id)
+            .await?;
+        let existing: std::collections::BTreeSet<String> = self
+            .repository
+            .list_motifs_by_project_and_branch(&input.project_id, &branch_id)
+            .await?
+            .into_iter()
+            .map(|motif| motif.normalized_name)
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
         for (index, item) in input.items.iter().enumerate() {
             anyhow::ensure!(
                 !item.name.trim().is_empty(),
                 "item {index}: name must not be empty"
+            );
+            let normalized = spindle_core::models::normalize_name(&item.name);
+            anyhow::ensure!(
+                !existing.contains(&normalized),
+                "item {index}: motif already exists on this branch"
+            );
+            anyhow::ensure!(
+                seen.insert(normalized),
+                "item {index}: duplicate normalized motif within the batch"
             );
         }
         if input.dry_run {
@@ -85,12 +140,9 @@ impl SqliteSpindleService {
                 motif_ids: Vec::new(),
                 created: 0,
                 dry_run: true,
+                warnings: Vec::new(),
             });
         }
-        let branch_id = self
-            .repository
-            .active_branch_id_public(&input.project_id)
-            .await?;
         let project_id = input.project_id;
         let items = input.items;
         let tx_items = items.clone();
@@ -109,21 +161,29 @@ impl SqliteSpindleService {
                 Ok(ids)
             })
             .await?;
-        for (id, item) in ids.iter().zip(items.iter()) {
-            self.refresh_entity_index(
-                &project_id,
-                &branch_id,
-                id,
-                "motif",
-                &item.name,
-                &item.description,
-            )
-            .await?;
+        let mut warnings = Vec::new();
+        for (index, (id, item)) in ids.iter().zip(items.iter()).enumerate() {
+            if let Err(error) = self
+                .refresh_entity_index(
+                    &project_id,
+                    &branch_id,
+                    id,
+                    "motif",
+                    &item.name,
+                    &item.description,
+                )
+                .await
+            {
+                warnings.push(format!(
+                    "item {index}: search index refresh failed: {error:#}"
+                ));
+            }
         }
         Ok(CreateMotifsOutput {
             created: ids.len(),
             motif_ids: ids,
             dry_run: false,
+            warnings,
         })
     }
 
@@ -149,6 +209,7 @@ impl SqliteSpindleService {
                 narrative_promise_ids: Vec::new(),
                 created: 0,
                 dry_run: true,
+                warnings: Vec::new(),
             });
         }
         let branch_id = self
@@ -181,21 +242,29 @@ impl SqliteSpindleService {
                 Ok(ids)
             })
             .await?;
-        for (id, item) in ids.iter().zip(items.iter()) {
-            self.refresh_entity_index(
-                &project_id,
-                &branch_id,
-                id,
-                "narrative_promise",
-                &item.promise_type,
-                &item.description,
-            )
-            .await?;
+        let mut warnings = Vec::new();
+        for (index, (id, item)) in ids.iter().zip(items.iter()).enumerate() {
+            if let Err(error) = self
+                .refresh_entity_index(
+                    &project_id,
+                    &branch_id,
+                    id,
+                    "narrative_promise",
+                    &item.promise_type,
+                    &item.description,
+                )
+                .await
+            {
+                warnings.push(format!(
+                    "item {index}: search index refresh failed: {error:#}"
+                ));
+            }
         }
         Ok(CreateNarrativePromisesOutput {
             created: ids.len(),
             narrative_promise_ids: ids,
             dry_run: false,
+            warnings,
         })
     }
 
@@ -251,6 +320,7 @@ impl SqliteSpindleService {
                 profiles: Vec::new(),
                 updated: 0,
                 dry_run: true,
+                warnings: Vec::new(),
             });
         }
         let project_id = input.project_id;
@@ -265,12 +335,17 @@ impl SqliteSpindleService {
                 Ok(())
             })
             .await?;
-        self.resolve_phase_four_caches(
-            &project_id,
-            &active_branch_id,
-            &[PhaseFourCacheId::VoiceDrift],
-        )
-        .await?;
+        let mut warnings = Vec::new();
+        if let Err(error) = self
+            .resolve_phase_four_caches(
+                &project_id,
+                &active_branch_id,
+                &[PhaseFourCacheId::VoiceDrift],
+            )
+            .await
+        {
+            warnings.push(format!("voice-drift cache invalidation failed: {error:#}"));
+        }
         let mut profiles = Vec::with_capacity(items.len());
         for item in items {
             let character = self.repository.get_character(&item.character_id).await?;
@@ -308,6 +383,7 @@ impl SqliteSpindleService {
             updated: profiles.len(),
             profiles,
             dry_run: false,
+            warnings,
         })
     }
 
@@ -327,6 +403,7 @@ impl SqliteSpindleService {
         Ok(BatchCreateTermsOutput {
             term_ids: out.term_ids,
             created: out.created,
+            warnings: out.warnings,
         })
     }
 
@@ -344,6 +421,7 @@ impl SqliteSpindleService {
         Ok(BatchCreateMotifsOutput {
             motif_ids: out.motif_ids,
             created: out.created,
+            warnings: out.warnings,
         })
     }
 
@@ -361,6 +439,7 @@ impl SqliteSpindleService {
         Ok(BatchCreateNarrativePromisesOutput {
             narrative_promise_ids: out.narrative_promise_ids,
             created: out.created,
+            warnings: out.warnings,
         })
     }
 
@@ -379,6 +458,89 @@ impl SqliteSpindleService {
         Ok(BatchSetCharacterVoiceProfilesOutput {
             profiles: out.profiles,
             updated: out.updated,
+            warnings: out.warnings,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spindle_core::models::{BatchCreateTermItem, CreateProjectInput, ReaderContract};
+
+    #[tokio::test]
+    async fn injected_index_failure_returns_committed_batch_with_warning() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = crate::sqlite::SqlitePool::open(&tmp.path().join("svc.db"))
+            .await
+            .unwrap();
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let repository = crate::sqlite::Repository::with_model_router(
+            pool,
+            data_dir,
+            crate::ModelRouter::local_only(),
+        );
+        let svc = SqliteSpindleService::new(repository);
+        let project_id = svc
+            .create_project(CreateProjectInput {
+                name: "Injected Batch".to_string(),
+                project_type: "novel".to_string(),
+                genre: "fantasy".to_string(),
+                reader_contract: ReaderContract {
+                    promise: "A test.".to_string(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap()
+            .project_id;
+        let branch_id = svc
+            .repository()
+            .active_branch_id_public(&project_id)
+            .await
+            .unwrap();
+
+        svc.fail_next_batch_index_refresh();
+        let out = svc
+            .create_terms(CreateTermsInput {
+                project_id: project_id.clone(),
+                items: vec![
+                    BatchCreateTermItem {
+                        term_text: "First".to_string(),
+                        pronunciation: None,
+                        definition: "One.".to_string(),
+                        usage_context: None,
+                        origin: None,
+                    },
+                    BatchCreateTermItem {
+                        term_text: "Second".to_string(),
+                        pronunciation: None,
+                        definition: "Two.".to_string(),
+                        usage_context: None,
+                        origin: None,
+                    },
+                ],
+                dry_run: false,
+            })
+            .await
+            .expect("committed batch must not return an ordinary error");
+        assert_eq!(out.created, 2);
+        assert!(
+            out.warnings
+                .iter()
+                .any(|warning| warning.contains("pending")),
+            "expected a pending-index warning, got {:?}",
+            out.warnings
+        );
+        assert_eq!(
+            svc.repository()
+                .list_terms_by_project_and_branch(&project_id, &branch_id)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
     }
 }
