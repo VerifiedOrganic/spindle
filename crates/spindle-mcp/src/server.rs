@@ -297,13 +297,15 @@ mod tests {
         let db = SqlitePool::open(&temp.path().join("server.db"))
             .await
             .expect("db init");
-        let data_dir = temp.keep();
+        let data_dir = temp.path().to_path_buf();
         let service = SpindleService::new(SpindleRepository::with_model_router(
             db,
             data_dir,
             ModelRouter::local_only(),
         ));
-        SpindleMcpServer::with_tool_profile(service, None)
+        let mut server = SpindleMcpServer::with_tool_profile(service, None);
+        server.tool_router.hold_temp_dir(temp);
+        server
     }
 
     #[tokio::test(flavor = "current_thread")]

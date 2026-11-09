@@ -1105,6 +1105,7 @@ def brief_to_drafting_packet_v1(brief: dict) -> dict:
         "story_clock": story_clock,
         "rating": "general",
         "tone": str(brief["contract"]),
+        "scene_type": str(brief["scene_type"]),
         "participants": participants,
         "required_beats": criteria,
         "promises_due": promises_due,

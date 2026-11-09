@@ -27,6 +27,16 @@ workflow profiles for new sessions.
 - Configurable embedding providers and dimensions are tracked by index
   generation, so changing the embedding route no longer silently mixes vector
   spaces.
+- Continuity detectors resolve full names, forenames, surnames, cast aliases and
+  a declared single POV's first-person narration without guessing across
+  ambiguous names. Knowledge paraphrase matching uses two strong stemmed
+  content tokens; dead-character checks read character state and canonical
+  `life_status` and recognize irregular/third-person finite verbs; attribute
+  checks cover numeric heights, sight/vision, handedness, colour, scars and
+  build.
+- Secret-leak detection also catches paraphrased disclosures through reported
+  speech, written notices/broadsheets/letters read aloud, and role or collective
+  actors, while holder/in-circle and framed sentences stay silent.
 
 **Drafting packets, critic, and revision (off by default)**
 
@@ -39,6 +49,12 @@ workflow profiles for new sessions.
   measurement.
 - Optional line edits and bounded chapter passes help revise without turning a
   single instruction into an unbounded rewrite.
+- The scene critic now resolves quote-first anchors, requires a typed
+  `no_change` reason when it proposes nothing, applies action/quiet-interior/
+  dialogue/reveal focus, and uses a compact single repair prompt. Offline replay
+  on the 90 G drafts improved invalid output 22.2% → 4.4%, actionable directives
+  15.6% → 95.6%, and internal-judge promoted revisions 10.0% → 45.6%; a full G
+  remains the activation gate.
 
 **Tool surface**
 
@@ -107,6 +123,25 @@ removal plan.
   the explicit rollback tools.
 
 ### Added
+
+- Quantity affordability now parses English number words alongside digits and
+  resolves the spender name through the shared character-mention resolver
+  (canonical name, first name, alias, conservative sentence-initial pronoun,
+  and first-person POV). A resolved spender whose purchases exceed their
+  tracked balance produces a warning; ambiguous spenders remain advisory info.
+
+- World-rule prose scanning derives required cost/effect nouns from rule
+  descriptions and promotes explicit omissions ("without a/the <cost>",
+  "without <cost>", "no <cost>") to warning-level `world_rule_semantic_drift`
+  findings, including when the prose does not repeat the rule's scan label.
+  Vague rule mentions remain advisory. Scanner semantics version is now v5 so
+  cached findings are recomputed.
+
+- Held-out-2 continuity scoring now follows the detector contract: attribute
+  coverage accepts `canonical_fact_prose_drift`, world-rule expectations use
+  `world_rule_semantic_drift`, and a broad finding localizes by planted scene
+  only when it cites the plant's own subject. Warnings/errors still count;
+  info-level advisories do not.
 
 - Unified history and undo scopes: `list_changes` paginates scene-version,
   checkpoint, and style receipts with explicit undo support; `undo_change`
@@ -227,6 +262,9 @@ removal plan.
 
 ### Fixed
 
+- Test fixtures now drop their temporary SQLite directories instead of calling
+  `TempDir::keep()`, preventing multi-gigabyte temp-dir accumulation across
+  workspace test runs.
 - `reader_contract` is no longer immutable. It was set once at `create_project`
   and could never be changed — `update_entity` rejected `reader_contract`,
   `promise`, `style_notes`, and `boundaries` as "not in the update allowlist"

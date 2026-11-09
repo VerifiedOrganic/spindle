@@ -76,6 +76,10 @@ pub struct AttributeValidationFactV1 {
     pub fact_id: String,
     pub subject_id: Option<String>,
     pub subject_names: Vec<String>,
+    /// True when the caller established that this fact's subject is the
+    /// scene's single POV character and the scene is first-person narration.
+    #[serde(default)]
+    pub first_person_subject: bool,
     pub key: String,
     pub value: String,
 }
@@ -90,6 +94,9 @@ pub struct KnowledgeValidationFactV1 {
     /// nicknames). Empty means use `character_names` only.
     #[serde(default)]
     pub character_aliases: Vec<String>,
+    /// True when the caller established first-person POV for this character.
+    #[serde(default)]
+    pub first_person_subject: bool,
     pub fact: String,
     pub learned_book_number: i32,
     pub learned_chapter_number: i32,
@@ -288,6 +295,10 @@ const LEAK_VERBS: &[&str] = &[
     "says",
     "told",
     "tells",
+    "tell",
+    "repeat",
+    "repeats",
+    "repeated",
     "warned",
     "warns",
     "remarked",
@@ -299,7 +310,6 @@ const LEAK_VERBS: &[&str] = &[
     "logged",
     "logs",
     "recorded",
-    "records",
     "reported",
     "reports",
     "revealed",
@@ -361,6 +371,15 @@ fn stem(word: &str) -> String {
         && (lower.ends_with("ies") || lower.ends_with("ses") || lower.ends_with("xes"))
     {
         return lower[..lower.len() - 2].to_string();
+    }
+    if lower.len() > 5 && lower.ends_with("ing") {
+        return lower[..lower.len() - 3].to_string();
+    }
+    if lower.len() > 4 && lower.ends_with("ed") {
+        return lower[..lower.len() - 2].to_string();
+    }
+    if lower.len() > 5 && lower.ends_with("ery") {
+        return lower[..lower.len() - 3].to_string();
     }
     if lower.len() > 3 && lower.ends_with('s') && !lower.ends_with("ss") {
         return lower[..lower.len() - 1].to_string();
@@ -447,6 +466,13 @@ fn communication_is_negated(sentence_lower: &str, verb_index: usize, verb: &str)
     );
     let suffix = &sentence_lower[verb_index + verb.len()..suffix_end];
     NEGATED_VERB_SUFFIXES.iter().any(|cue| suffix.contains(cue))
+}
+
+fn contains_stemmed_word(haystack: &str, stemmed_needle: &str) -> bool {
+    haystack
+        .split(|ch: char| !ch.is_alphanumeric() && ch != '\'' && ch != '-')
+        .filter(|token| !token.is_empty())
+        .any(|token| stem(token) == stemmed_needle)
 }
 
 fn contains_word(haystack: &str, needle: &str) -> bool {
@@ -593,6 +619,7 @@ enum AttributeFamily {
     Height,
     Scar,
     Build,
+    Sight,
 }
 
 fn attribute_families(key: &str) -> Vec<AttributeFamily> {
@@ -630,6 +657,9 @@ fn attribute_families(key: &str) -> Vec<AttributeFamily> {
     if has("build") || has("physique") || has("frame") || (has("body") && has("type")) {
         families.push(AttributeFamily::Build);
     }
+    if has("sight") || has("vision") || has("eyesight") || has("blind") {
+        families.push(AttributeFamily::Sight);
+    }
     families
 }
 
@@ -655,6 +685,13 @@ fn family_heads(family: AttributeFamily) -> &'static [&'static str] {
             "stoop",
             "bend",
             "crouch",
+            "feet",
+            "foot",
+            "cm",
+            "centimeter",
+            "centimetre",
+            "meter",
+            "metre",
         ],
         AttributeFamily::Scar => &[
             "scar", "scars", "scarred", "scarring", "skin", "face", "cheek", "jaw",
@@ -662,6 +699,10 @@ fn family_heads(family: AttributeFamily) -> &'static [&'static str] {
         AttributeFamily::Build => &[
             "build", "frame", "physique", "body", "broad", "slender", "wiry", "muscular", "stocky",
             "heavyset", "thin",
+        ],
+        AttributeFamily::Sight => &[
+            "sight", "vision", "eyesight", "eye", "eyes", "blind", "sighted", "see", "sees", "saw",
+            "look", "looks",
         ],
     }
 }
@@ -720,7 +761,9 @@ pub fn detect_attribute_prose_contradiction(
         let subject_present = fact
             .subject_names
             .iter()
-            .any(|name| contains_phrase(sentence, name));
+            .any(|name| contains_phrase(sentence, name))
+            || (fact.first_person_subject
+                && crate::character_mentions::first_person_narration(sentence));
         let pronoun_subject = !subject_present
             && subject_mentioned_earlier
             && families.contains(&AttributeFamily::Height)
@@ -751,6 +794,8 @@ pub fn detect_attribute_prose_contradiction(
         {
             continue;
         }
+        let numeric_height_verified = families.contains(&AttributeFamily::Height)
+            && height_measurement_belongs_to_subject(sentence, fact);
         let mut canonical_terms = Vec::new();
         let mut prose_terms = Vec::new();
         if !canonical_prosthetic.is_empty()
@@ -777,7 +822,9 @@ pub fn detect_attribute_prose_contradiction(
             if !canonical_terms.is_empty() {
                 break;
             }
-            if let Some((expected, found)) = family_contradiction(*family, &canonical, &lower) {
+            if let Some((expected, found)) =
+                family_contradiction(*family, &canonical, &lower, numeric_height_verified)
+            {
                 canonical_terms.push(expected);
                 prose_terms.push(found);
             }
@@ -856,6 +903,7 @@ fn family_contradiction(
     family: AttributeFamily,
     canonical: &str,
     prose: &str,
+    numeric_height_verified: bool,
 ) -> Option<(String, String)> {
     match family {
         AttributeFamily::EyeColor | AttributeFamily::HairColor | AttributeFamily::SkinColor => {
@@ -876,6 +924,18 @@ fn family_contradiction(
                 .then(|| (canonical_side.to_string(), prose_side.to_string()))
         }
         AttributeFamily::Height => {
+            if numeric_height_verified
+                && let (Some(canonical_inches), Some(prose_inches)) =
+                    (parse_height_inches(canonical), parse_height_inches(prose))
+            {
+                if (canonical_inches - prose_inches).abs() > 1.0 {
+                    return Some((
+                        format!("{canonical_inches:.0} in"),
+                        format!("{prose_inches:.0} in"),
+                    ));
+                }
+                return None;
+            }
             let canonical_height = height_side(canonical)?;
             let prose_height = height_side(prose)?;
             (canonical_height != prose_height)
@@ -909,6 +969,12 @@ fn family_contradiction(
             (canonical_build != prose_build)
                 .then(|| (canonical_build.to_string(), prose_build.to_string()))
         }
+        AttributeFamily::Sight => {
+            let canonical_sight = sight_state(canonical)?;
+            let prose_sight = sight_state(prose)?;
+            (canonical_sight != prose_sight)
+                .then(|| (canonical_sight.to_string(), prose_sight.to_string()))
+        }
     }
 }
 
@@ -916,13 +982,35 @@ fn handedness_side(text: &str) -> Option<&'static str> {
     if contains_word(text, "ambidextrous") {
         return Some("ambidextrous");
     }
-    let mentions_hand = ["hand", "handed", "writes", "writing", "grip", "dominant"]
+    // Prefer an explicit handedness phrase; then a side directly attached to
+    // "hand". This avoids treating an unrelated "right" elsewhere in the same
+    // sentence (e.g. "left-handed ... right") as ambiguity.
+    for (side, phrases) in [
+        ("left", ["left-handed", "left handed"]),
+        ("right", ["right-handed", "right handed"]),
+    ] {
+        if phrases.iter().any(|phrase| contains_phrase(text, phrase)) {
+            return Some(side);
+        }
+    }
+    let mentions_hand = ["hand", "hands", "writes", "writing", "grip", "dominant"]
         .iter()
         .any(|word| contains_inflected_word(text, word));
+    if mentions_hand {
+        let left_hand = ["left hand", "left-hand", "left hands"]
+            .iter()
+            .any(|phrase| contains_phrase(text, phrase));
+        let right_hand = ["right hand", "right-hand", "right hands"]
+            .iter()
+            .any(|phrase| contains_phrase(text, phrase));
+        match (left_hand, right_hand) {
+            (true, false) => return Some("left"),
+            (false, true) => return Some("right"),
+            _ => {}
+        }
+    }
     let left = contains_inflected_word(text, "left");
     let right = contains_inflected_word(text, "right");
-    // Canonical values are often the bare side ("left"/"right") rather than
-    // "left-handed"; accept that exact shape before requiring a hand word.
     if contains_word(text, "left") && !mentions_hand {
         return Some("left");
     }
@@ -1074,6 +1162,226 @@ fn build_side(text: &str) -> Option<&'static str> {
     }
 }
 
+fn number_word(token: &str) -> Option<f64> {
+    Some(match token {
+        "zero" => 0.0,
+        "one" => 1.0,
+        "two" => 2.0,
+        "three" => 3.0,
+        "four" => 4.0,
+        "five" => 5.0,
+        "six" => 6.0,
+        "seven" => 7.0,
+        "eight" => 8.0,
+        "nine" => 9.0,
+        "ten" => 10.0,
+        "eleven" => 11.0,
+        "twelve" => 12.0,
+        "thirteen" => 13.0,
+        "fourteen" => 14.0,
+        "fifteen" => 15.0,
+        "sixteen" => 16.0,
+        "seventeen" => 17.0,
+        "eighteen" => 18.0,
+        "nineteen" => 19.0,
+        "twenty" => 20.0,
+        "thirty" => 30.0,
+        "forty" => 40.0,
+        "fifty" => 50.0,
+        "sixty" => 60.0,
+        "seventy" => 70.0,
+        "eighty" => 80.0,
+        "ninety" => 90.0,
+        "hundred" => 100.0,
+        _ => return None,
+    })
+}
+
+fn normalize_height_number_words(text: &str) -> String {
+    text.split_whitespace()
+        .map(|token| {
+            let cleaned = token.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '.');
+            number_word(&cleaned.to_ascii_lowercase())
+                .map(|number| number.to_string())
+                .unwrap_or_else(|| token.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn parse_height_measurement(text: &str) -> Option<(f64, usize, usize)> {
+    let normalized = normalize_height_number_words(&text.to_ascii_lowercase());
+    let cm = regex::Regex::new(r"(\d+(?:\.\d+)?)\s*(?:cm|centimet(?:er|re)s?)")
+        .ok()?
+        .captures(&normalized);
+    if let Some(captures) = cm
+        && let Some(value) = captures.get(1).and_then(|m| m.as_str().parse::<f64>().ok())
+        && let Some(full) = captures.get(0)
+    {
+        return Some((value / 2.54, full.start(), full.end()));
+    }
+    let meters = regex::Regex::new(r"(\d+(?:\.\d+)?)\s*(?:m|meters?|metres?)\b")
+        .ok()?
+        .captures(&normalized);
+    if let Some(captures) = meters
+        && let Some(value) = captures.get(1).and_then(|m| m.as_str().parse::<f64>().ok())
+        && let Some(full) = captures.get(0)
+    {
+        return Some((value * 39.370_078_740_157_48, full.start(), full.end()));
+    }
+    let feet = regex::Regex::new(
+        r#"(\d+(?:\.\d+)?)\s*(?:'|ft|feet|foot)\s*(?:(\d+(?:\.\d+)?)\s*(?:"|inch|inches)?)?"#,
+    )
+    .ok()?
+    .captures(&normalized)?;
+    let feet_value = feet.get(1)?.as_str().parse::<f64>().ok()?;
+    let inches_value = feet
+        .get(2)
+        .and_then(|m| m.as_str().parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let full = feet.get(0)?;
+    Some((feet_value * 12.0 + inches_value, full.start(), full.end()))
+}
+
+fn parse_height_inches(text: &str) -> Option<f64> {
+    parse_height_measurement(text).map(|(value, _, _)| value)
+}
+
+fn height_measurement_belongs_to_subject(sentence: &str, fact: &AttributeValidationFactV1) -> bool {
+    let normalized_case = normalize_height_number_words(sentence);
+    let normalized = normalized_case.to_ascii_lowercase();
+    let Some((_, measurement_start, measurement_end)) = parse_height_measurement(&normalized)
+    else {
+        return false;
+    };
+    let Some((subject_start, subject_end)) = subject_position(&normalized, fact) else {
+        return false;
+    };
+    let (between_case, gap) = if measurement_start >= subject_end {
+        (
+            &normalized_case[subject_end..measurement_start],
+            measurement_start - subject_end,
+        )
+    } else if subject_start >= measurement_end {
+        (
+            &normalized_case[measurement_end..subject_start],
+            subject_start - measurement_end,
+        )
+    } else {
+        return false;
+    };
+    if gap > 80 {
+        return false;
+    }
+    // The word immediately before the number must express stature, not merely
+    // appear somewhere before it ("was carrying a five foot ladder").
+    let before_measurement = normalized[..measurement_start]
+        .trim_end_matches(|ch: char| !ch.is_alphanumeric() && !ch.is_whitespace());
+    let relation_word = before_measurement
+        .split_whitespace()
+        .next_back()
+        .unwrap_or_default()
+        .trim_matches(|ch: char| !ch.is_alphanumeric())
+        .to_ascii_lowercase();
+    if !matches!(
+        relation_word.as_str(),
+        "stood"
+            | "stands"
+            | "stand"
+            | "was"
+            | "were"
+            | "is"
+            | "are"
+            | "measured"
+            | "measures"
+            | "height"
+            | "stature"
+    ) {
+        return false;
+    }
+    // A measured object noun after the number ("five foot ladder", "five feet
+    // of rope", "five feet from the door") is not a height assertion. Accept a
+    // sentence boundary or an explicit height qualifier/unit follow-up.
+    let after_measurement = normalized[measurement_end..]
+        .split(|ch: char| ch.is_ascii_punctuation() || ch == '\n')
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if let Some(first) = after_measurement.split_whitespace().next() {
+        let first = first
+            .trim_matches(|ch: char| !ch.is_alphanumeric())
+            .to_ascii_lowercase();
+        if !matches!(
+            first.as_str(),
+            "tall" | "short" | "in" | "inch" | "inches" | "and" | "with"
+        ) {
+            return false;
+        }
+    }
+    // A different capitalized name between the subject and the measurement
+    // means the measurement likely belongs to that person, not the subject.
+    let another_name = between_case.split_whitespace().any(|token| {
+        let token = token.trim_matches(|ch: char| !ch.is_alphanumeric());
+        token.chars().next().is_some_and(char::is_uppercase)
+            && !fact
+                .subject_names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(token))
+    });
+    !another_name
+}
+
+fn subject_position(text: &str, fact: &AttributeValidationFactV1) -> Option<(usize, usize)> {
+    let lower = text.to_ascii_lowercase();
+    for name in &fact.subject_names {
+        let name = name.to_ascii_lowercase();
+        if let Some(start) = lower.find(&name) {
+            return Some((start, start + name.len()));
+        }
+    }
+    if fact.first_person_subject {
+        let mut offset = 0usize;
+        for token in lower.split_inclusive(|ch: char| !ch.is_alphanumeric()) {
+            let cleaned = token.trim_matches(|ch: char| !ch.is_alphanumeric());
+            if matches!(cleaned, "i" | "me" | "my" | "mine" | "myself") {
+                let start = offset + token.find(cleaned).unwrap_or(0);
+                return Some((start, start + cleaned.len()));
+            }
+            offset += token.len();
+        }
+    }
+    None
+}
+
+fn sight_state(text: &str) -> Option<&'static str> {
+    if ["partially sighted", "partial sight", "low vision"]
+        .iter()
+        .any(|phrase| contains_phrase(text, phrase))
+    {
+        return Some("partially sighted");
+    }
+    if [
+        "blind",
+        "no sight",
+        "cannot see",
+        "can't see",
+        "could not see",
+        "couldn't see",
+    ]
+    .iter()
+    .any(|phrase| contains_phrase(text, phrase))
+    {
+        return Some("blind");
+    }
+    if ["sighted", "can see", "could see", "saw", "sees", "see"]
+        .iter()
+        .any(|phrase| contains_phrase(text, phrase))
+    {
+        return Some("sighted");
+    }
+    None
+}
+
 fn visible_terms(haystack: &str, terms: &[&str]) -> Vec<String> {
     terms
         .iter()
@@ -1130,10 +1438,12 @@ pub fn detect_knowledge_paraphrase_leak(
         } else {
             &fact.character_aliases
         };
-        if !mention_aliases
+        let mentioned = mention_aliases
             .iter()
             .any(|name| contains_phrase(sentence, name))
-        {
+            || (fact.first_person_subject
+                && crate::character_mentions::first_person_narration(sentence));
+        if !mentioned {
             continue;
         }
         let leak_verb_present = LEAK_VERBS.iter().any(|verb| {
@@ -1146,10 +1456,12 @@ pub fn detect_knowledge_paraphrase_leak(
         }
         let matched: Vec<String> = fact_tokens
             .iter()
-            .filter(|token| contains_word(&lower, token))
+            .filter(|token| contains_stemmed_word(&lower, token))
             .cloned()
             .collect();
-        if matched.len() < 3 {
+        // Two strong content tokens are enough; a single generic overlap is
+        // not. At least one token must carry substantive length/specificity.
+        if matched.len() < 2 || !matched.iter().any(|token| token.len() >= 5) {
             continue;
         }
         let quote = context_quote(scene.text, range);
@@ -1212,13 +1524,21 @@ pub fn detect_secret_narration_leak(
         else {
             continue;
         };
-        let Some(value_index) = lower_sentence.find(&candidate.value.to_ascii_lowercase()) else {
-            continue;
-        };
-        if name_index >= value_index {
+        let value_index = lower_sentence.find(&candidate.value.to_ascii_lowercase());
+        let paraphrased = value_index.is_none();
+        if !paraphrased {
+            let value_index = value_index.unwrap_or_default();
+            if name_index >= value_index {
+                continue;
+            }
+        }
+        if paraphrased
+            && !secret_content_overlap(sentence, &candidate.value, &candidate.character_name)
+        {
             continue;
         }
-        let actor_window = &sentence[name_index + name_len..value_index];
+        let window_end = value_index.unwrap_or(sentence.len());
+        let actor_window = &sentence[name_index + name_len..window_end];
         let mut other_names = candidate.other_present_character_names.clone();
         other_names.extend(candidate.other_present_character_aliases.iter().cloned());
         if other_names
@@ -1256,6 +1576,236 @@ pub fn detect_secret_narration_leak(
                 "secret-narration:{}:{}:{}",
                 candidate.fact_id, candidate.character_id, scene.scene_id
             ),
+        ));
+    }
+    None
+}
+
+pub fn secret_content_overlap(text: &str, value: &str, excluded_names: &str) -> bool {
+    let excluded = if excluded_names.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![excluded_names.to_string()]
+    };
+    let tokens = distinctive_tokens(value, &excluded);
+    let lower = text.to_ascii_lowercase();
+    let matched: Vec<&String> = tokens
+        .iter()
+        .filter(|token| contains_stemmed_word(&lower, token))
+        .collect();
+    matched.len() >= 2 && matched.iter().any(|token| token.len() >= 5)
+}
+
+const SECRET_DISCLOSURE_VERBS: &[&str] = &[
+    "said",
+    "says",
+    "shouted",
+    "shouts",
+    "announced",
+    "announces",
+    "printed",
+    "prints",
+    "wrote",
+    "writes",
+    "written",
+    "reported",
+    "reports",
+    "claimed",
+    "claims",
+    "spread",
+    "spreads",
+    "told",
+    "tells",
+    "whispered",
+    "whispers",
+    "murmured",
+    "murmurs",
+    "repeated",
+    "repeats",
+    "knew",
+    "knows",
+    "know",
+    "learned",
+    "learns",
+    "disclosed",
+    "discloses",
+    "revealed",
+    "reveals",
+    "published",
+    "publishes",
+    "posted",
+    "posts",
+    "carved",
+    "carves",
+    "sang",
+    "sings",
+];
+
+const SECRET_DISCLOSURE_PHRASES: &[&str] = &["read aloud", "read out"];
+
+const SECRET_GENERIC_ACTORS: &[&str] = &[
+    "everyone",
+    "everybody",
+    "someone",
+    "somebody",
+    "people",
+    "crowd",
+    "town",
+    "village",
+    "dockworker",
+    "dockworkers",
+    "worker",
+    "workers",
+    "clerk",
+    "clerks",
+    "carrier",
+    "carriers",
+    "picker",
+    "pickers",
+    "sailor",
+    "sailors",
+    "guard",
+    "guards",
+    "servant",
+    "servants",
+    "merchant",
+    "merchants",
+    "courier",
+    "couriers",
+    "reader",
+    "readers",
+];
+
+const SECRET_WRITTEN_CHANNELS: &[&str] = &[
+    "broadsheet",
+    "broadsheets",
+    "notice",
+    "noticeboard",
+    "board",
+    "letter",
+    "letters",
+    "headline",
+    "headlines",
+    "gazette",
+    "placard",
+    "placards",
+    "handbill",
+    "handbills",
+    "printed",
+    "posted",
+    "published",
+    "read aloud",
+];
+
+fn contains_any_word(text: &str, words: &[&str]) -> bool {
+    words.iter().any(|word| contains_inflected_word(text, word))
+}
+
+/// Paraphrased secret disclosure through a generic/collective actor, reported
+/// speech or a written notice. Named-character dialogue/narration remains in
+/// the caller's circle-aware lane.
+pub fn detect_secret_generic_disclosure(
+    scene: &SceneValidationInputV1<'_>,
+    fact_id: &str,
+    value: &str,
+    holder_names: &[String],
+    in_circle_names: &[String],
+) -> Option<ClaimValidationFindingV1> {
+    if value.trim().is_empty() || value == "<unset>" {
+        return None;
+    }
+    let tokens = distinctive_tokens(value, &[]);
+    for range in sentence_spans(scene.text) {
+        let sentence = &scene.text[range.start..range.end];
+        let lower = sentence.to_ascii_lowercase();
+        if contains_any(&lower, IRREALIS_MARKERS).is_some()
+            || contains_any(&lower, NEGATION_MARKERS).is_some()
+        {
+            continue;
+        }
+        if [
+            "in a dream",
+            "dreamed",
+            "dream",
+            "remembered",
+            "memory",
+            "flashback",
+            "years ago",
+            "before the death",
+            "before her death",
+            "before his death",
+            "rumor",
+            "rumour",
+            "legend",
+        ]
+        .iter()
+        .any(|marker| contains_phrase(&lower, marker))
+        {
+            continue;
+        }
+        let matched = tokens
+            .iter()
+            .filter(|token| contains_stemmed_word(&lower, token))
+            .count();
+        if matched < 2
+            || !tokens
+                .iter()
+                .any(|token| token.len() >= 5 && contains_stemmed_word(&lower, token))
+        {
+            continue;
+        }
+        let read_aloud = (contains_word(&lower, "read") || contains_word(&lower, "reads"))
+            && (contains_word(&lower, "aloud") || contains_word(&lower, "out"));
+        let verb = contains_any_word(&lower, SECRET_DISCLOSURE_VERBS)
+            || read_aloud
+            || SECRET_DISCLOSURE_PHRASES
+                .iter()
+                .any(|phrase| contains_phrase(&lower, phrase));
+        let written = contains_any_word(&lower, SECRET_WRITTEN_CHANNELS);
+        let generic_actor = contains_any_word(&lower, SECRET_GENERIC_ACTORS);
+        if !(verb && (written || generic_actor)) {
+            continue;
+        }
+        // If an in-circle actor/author appears before the first disclosure verb,
+        // treat the sentence as the holder's own knowledge/private writing.
+        let mut verb_positions: Vec<usize> = SECRET_DISCLOSURE_VERBS
+            .iter()
+            .filter_map(|verb| lower.match_indices(verb).next().map(|(pos, _)| pos))
+            .collect();
+        if read_aloud && let Some(pos) = lower.find("read").or_else(|| lower.find("reads")) {
+            verb_positions.push(pos);
+        }
+        let first_verb_pos = verb_positions.into_iter().min().unwrap_or(lower.len());
+        let in_circle_before = in_circle_names.iter().any(|name| {
+            let name = name.to_ascii_lowercase();
+            lower
+                .match_indices(&name)
+                .next()
+                .is_some_and(|(pos, _)| pos < first_verb_pos)
+        });
+        let holder_before = holder_names.iter().any(|name| {
+            let name = name.to_ascii_lowercase();
+            lower
+                .match_indices(&name)
+                .next()
+                .is_some_and(|(pos, _)| pos < first_verb_pos)
+        });
+        if in_circle_before || holder_before {
+            continue;
+        }
+        let quote = context_quote(scene.text, range);
+        let message = format!(
+            "book {} chapter {} scene {}: paraphrased secret fact '{}' is disclosed through a generic/reported/written channel — no recorded reveal before this scene ({})",
+            scene.book_number, scene.chapter_number, scene.scene_order, fact_id, quote
+        );
+        return Some(finding(
+            "secret_leak",
+            ClaimValidationSeverity::Warning,
+            message,
+            range,
+            vec![fact_id.to_string(), scene.scene_id.to_string()],
+            quote,
+            format!("secret-generic:{}:{}", fact_id, scene.scene_id),
         ));
     }
     None

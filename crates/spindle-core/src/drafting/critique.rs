@@ -182,6 +182,32 @@ pub struct AuthorDecisionItem {
     pub source_finding_ids: Vec<String>,
 }
 
+/// Typed reason for a no-change critic verdict. A generic "looks good" string is
+/// not sufficient: the critic must choose one of these codes and explain it.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NoChangeReason {
+    /// The draft has no material issue worth a revision.
+    NoMaterialIssue,
+    /// The draft already satisfies the scene card and hard constraints.
+    AlreadySatisfiesBrief,
+    /// The critic cannot establish a material issue from the supplied evidence.
+    InsufficientEvidence,
+    /// A potential change would require author judgment (locks, canon, planned outcome).
+    AuthorIntentAmbiguous,
+    /// Hard constraints prevent a safe revision.
+    HardConstraintsPreventChange,
+}
+
+/// Explicit typed no-change verdict, required when `CritiqueV1.directives` is empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct NoChangeV1 {
+    pub reason_code: NoChangeReason,
+    pub explanation: String,
+}
+
 /// Versioned scene-critic output contract (`docs/drafting-and-revision-design.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CritiqueV1 {
@@ -196,8 +222,12 @@ pub struct CritiqueV1 {
     pub strengths_to_preserve: Vec<String>,
     #[serde(default)]
     pub requires_author_decision: Vec<AuthorDecisionItem>,
+    /// Legacy human-readable mirror. New outputs must use `no_change`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_edit_reason: Option<String>,
+    /// Required when `directives` is empty; must be absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_change: Option<NoChangeV1>,
 }
 
 impl CritiqueV1 {

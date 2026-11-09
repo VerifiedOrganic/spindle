@@ -8,6 +8,9 @@ pub struct SceneSnapshot {
     pub scene_order: i32,
     pub full_text: String,
     pub summary: String,
+    /// Single POV character for this scene when the project declares one.
+    #[allow(dead_code)]
+    pub pov_character_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -419,7 +419,17 @@ timing, secret presence/attribution and dead-character detection all use it, so
 first-name prose is visible without guessing across a shared forename. Pronouns
 are only used conservatively (a nearest named antecedent, or a known
 current-scene cast state); the resolver never treats a bare pronoun as a
-character mention.
+character mention. First-person narration (`I`/`me`/`my`/`mine`) resolves only
+when a chapter plan names the scene POV or the cast has exactly one protagonist;
+`mentions_with_pov` is the shared API for knowledge/attribute/quantity-style
+consumers and never guesses a POV.
+
+Knowledge paraphrase matching accepts two strong stemmed content tokens
+(`forged`/`forgery`/`forging` normalize together) while requiring at least one
+substantive token, so thin two-word overlaps do not become findings. The
+dead-action verb check recognizes irregular past and third-person finite forms
+(`met`, `ran`, `counts`, `sees`) in addition to regular `-ed`/`-ing` forms, with
+the same candidate-local memory/letter/dream/flashback framing.
 
 Dead-character detection reads both `character_states.status` and canonical
 `life_status` facts. A canonical death strictly before the scene plus a
@@ -428,9 +438,11 @@ letters, dreams, flashbacks, recordings, corpses and graves are framed out. The
 existing `retcon_reachability` issue is retained and a stable
 `dead_character_acting` alias is emitted for consumers that expect the
 detector's first-class name. Attribute prose drift now covers eye/hair/skin
-colour, handedness, height, scars and build with plural/inflected heads,
-family-specific antonyms and conservative negated forms ("not tall", "no scar"),
-while keeping the subject + head + antonym precision gate.
+colour, handedness, height (numeric feet/inches and centimetres within a
+one-inch tolerance), scars, build and sight/vision with plural/inflected heads,
+family-specific antonyms, first-person subjects for every family and
+conservative negated forms ("not tall", "no scar"), while keeping the subject +
+head + antonym precision gate.
 
 The deterministic lanes are wired into `check_consistency`'s
 `canonical_fact_prose_drift`, `knowledge_timing` and `secret_leak` checks and
@@ -532,9 +544,13 @@ Three enforcement surfaces:
   `knowledge_learned` save-package entry / mined delta) with `secret_of_fact_id`
   set; it expands the circle from that placement forward and never leaks backward.
 - **`secret_leak` audit** — the audience-direction complement to
-  `knowledge_timing`. A deterministic dialogue-attribution tier always runs; a
-  model-backed behavioral tier (`deep_secret_behavioral_leak_issues`) runs under
-  `deep_check`, rating-gated through the chokepoint with honest-skip.
+  `knowledge_timing`. A deterministic tier runs for exact or paraphrased secret
+  content in attributed dialogue/narration, reported speech, written
+  notices/broadsheets/letters read aloud, and role/collective disclosers
+  (`a dockworker`, `the clerk`, `everyone`). Holder/in-circle actors and
+  dream/memory/flashback/rumor frames stay silent. A model-backed behavioral
+  tier (`deep_secret_behavioral_leak_issues`) runs under `deep_check`,
+  rating-gated through the chokepoint with honest-skip.
 - **Reader-visibility rule for reader artifacts** (below) is deliberately stricter
   than the character-facing context gate.
 

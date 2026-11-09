@@ -1,0 +1,288 @@
+{
+  "schema_version": "drafting_critic_quality_v1",
+  "description": "Offline critic/revision replay over the 90 saved initial drafts from the row-6 G run. Before = original G critic; after = branch critic with quote-first anchors, typed no-change, scene focus, and compact repair. No redrafting and no 3-family G judge panel.",
+  "n_scenes": 90,
+  "n_briefs": 30,
+  "generation_seeds": [
+    101,
+    202,
+    303
+  ],
+  "before": {
+    "scenes": 90,
+    "invalid": 20,
+    "actionable": 14,
+    "no_change": 56,
+    "revision_attempted": 14,
+    "revision_promoted": 9,
+    "bridge_failed": 0,
+    "invalid_rate": 0.2222,
+    "actionable_rate": 0.1556,
+    "no_change_rate": 0.6222,
+    "revision_attempted_rate": 0.1556,
+    "revision_promoted_rate": 0.1,
+    "no_change_reason_counts": {
+      "none": 56
+    },
+    "calls": 221,
+    "tokens": 1913780
+  },
+  "after": {
+    "scenes": 90,
+    "invalid": 4,
+    "actionable": 86,
+    "no_change": 0,
+    "revision_attempted": 86,
+    "revision_promoted": 41,
+    "bridge_failed": 0,
+    "invalid_rate": 0.0444,
+    "actionable_rate": 0.9556,
+    "no_change_rate": 0.0,
+    "revision_attempted_rate": 0.9556,
+    "revision_promoted_rate": 0.4556,
+    "no_change_reason_counts": {},
+    "calls": 353,
+    "tokens": 2235882
+  },
+  "delta": {
+    "invalid_rate": -0.1778,
+    "actionable_rate": 0.8,
+    "no_change_rate": -0.6222,
+    "revision_attempted_rate": 0.8,
+    "revision_promoted_rate": 0.3556
+  },
+  "by_scene_type": {
+    "action": {
+      "before": {
+        "scenes": 18,
+        "invalid": 8,
+        "actionable": 3,
+        "no_change": 7,
+        "revision_attempted": 3,
+        "revision_promoted": 2,
+        "bridge_failed": 0,
+        "invalid_rate": 0.4444,
+        "actionable_rate": 0.1667,
+        "no_change_rate": 0.3889,
+        "revision_attempted_rate": 0.1667,
+        "revision_promoted_rate": 0.1111,
+        "no_change_reason_counts": {
+          "none": 7
+        },
+        "calls": 44,
+        "tokens": 389901
+      },
+      "after": {
+        "scenes": 18,
+        "invalid": 1,
+        "actionable": 17,
+        "no_change": 0,
+        "revision_attempted": 17,
+        "revision_promoted": 4,
+        "bridge_failed": 0,
+        "invalid_rate": 0.0556,
+        "actionable_rate": 0.9444,
+        "no_change_rate": 0.0,
+        "revision_attempted_rate": 0.9444,
+        "revision_promoted_rate": 0.2222,
+        "no_change_reason_counts": {},
+        "calls": 70,
+        "tokens": 461011
+      },
+      "delta": {
+        "invalid_rate": -0.3888,
+        "actionable_rate": 0.7777,
+        "no_change_rate": -0.3889,
+        "revision_attempted_rate": 0.7777,
+        "revision_promoted_rate": 0.1111
+      }
+    },
+    "chapter-closer": {
+      "before": {
+        "scenes": 18,
+        "invalid": 2,
+        "actionable": 4,
+        "no_change": 12,
+        "revision_attempted": 4,
+        "revision_promoted": 2,
+        "bridge_failed": 0,
+        "invalid_rate": 0.1111,
+        "actionable_rate": 0.2222,
+        "no_change_rate": 0.6667,
+        "revision_attempted_rate": 0.2222,
+        "revision_promoted_rate": 0.1111,
+        "no_change_reason_counts": {
+          "none": 12
+        },
+        "calls": 48,
+        "tokens": 396543
+      },
+      "after": {
+        "scenes": 18,
+        "invalid": 0,
+        "actionable": 18,
+        "no_change": 0,
+        "revision_attempted": 18,
+        "revision_promoted": 10,
+        "bridge_failed": 0,
+        "invalid_rate": 0.0,
+        "actionable_rate": 1.0,
+        "no_change_rate": 0.0,
+        "revision_attempted_rate": 1.0,
+        "revision_promoted_rate": 0.5556,
+        "no_change_reason_counts": {},
+        "calls": 72,
+        "tokens": 434698
+      },
+      "delta": {
+        "invalid_rate": -0.1111,
+        "actionable_rate": 0.7778,
+        "no_change_rate": -0.6667,
+        "revision_attempted_rate": 0.7778,
+        "revision_promoted_rate": 0.4445
+      }
+    },
+    "dialogue-heavy": {
+      "before": {
+        "scenes": 18,
+        "invalid": 4,
+        "actionable": 1,
+        "no_change": 13,
+        "revision_attempted": 1,
+        "revision_promoted": 1,
+        "bridge_failed": 0,
+        "invalid_rate": 0.2222,
+        "actionable_rate": 0.0556,
+        "no_change_rate": 0.7222,
+        "revision_attempted_rate": 0.0556,
+        "revision_promoted_rate": 0.0556,
+        "no_change_reason_counts": {
+          "none": 13
+        },
+        "calls": 39,
+        "tokens": 374732
+      },
+      "after": {
+        "scenes": 18,
+        "invalid": 1,
+        "actionable": 17,
+        "no_change": 0,
+        "revision_attempted": 17,
+        "revision_promoted": 7,
+        "bridge_failed": 0,
+        "invalid_rate": 0.0556,
+        "actionable_rate": 0.9444,
+        "no_change_rate": 0.0,
+        "revision_attempted_rate": 0.9444,
+        "revision_promoted_rate": 0.3889,
+        "no_change_reason_counts": {},
+        "calls": 70,
+        "tokens": 481874
+      },
+      "delta": {
+        "invalid_rate": -0.1666,
+        "actionable_rate": 0.8888,
+        "no_change_rate": -0.7222,
+        "revision_attempted_rate": 0.8888,
+        "revision_promoted_rate": 0.3333
+      }
+    },
+    "quiet-interior": {
+      "before": {
+        "scenes": 18,
+        "invalid": 4,
+        "actionable": 4,
+        "no_change": 10,
+        "revision_attempted": 4,
+        "revision_promoted": 2,
+        "bridge_failed": 0,
+        "invalid_rate": 0.2222,
+        "actionable_rate": 0.2222,
+        "no_change_rate": 0.5556,
+        "revision_attempted_rate": 0.2222,
+        "revision_promoted_rate": 0.1111,
+        "no_change_reason_counts": {
+          "none": 10
+        },
+        "calls": 48,
+        "tokens": 374877
+      },
+      "after": {
+        "scenes": 18,
+        "invalid": 0,
+        "actionable": 18,
+        "no_change": 0,
+        "revision_attempted": 18,
+        "revision_promoted": 12,
+        "bridge_failed": 0,
+        "invalid_rate": 0.0,
+        "actionable_rate": 1.0,
+        "no_change_rate": 0.0,
+        "revision_attempted_rate": 1.0,
+        "revision_promoted_rate": 0.6667,
+        "no_change_reason_counts": {},
+        "calls": 72,
+        "tokens": 401376
+      },
+      "delta": {
+        "invalid_rate": -0.2222,
+        "actionable_rate": 0.7778,
+        "no_change_rate": -0.5556,
+        "revision_attempted_rate": 0.7778,
+        "revision_promoted_rate": 0.5556
+      }
+    },
+    "reveal": {
+      "before": {
+        "scenes": 18,
+        "invalid": 2,
+        "actionable": 2,
+        "no_change": 14,
+        "revision_attempted": 2,
+        "revision_promoted": 2,
+        "bridge_failed": 0,
+        "invalid_rate": 0.1111,
+        "actionable_rate": 0.1111,
+        "no_change_rate": 0.7778,
+        "revision_attempted_rate": 0.1111,
+        "revision_promoted_rate": 0.1111,
+        "no_change_reason_counts": {
+          "none": 14
+        },
+        "calls": 42,
+        "tokens": 377727
+      },
+      "after": {
+        "scenes": 18,
+        "invalid": 2,
+        "actionable": 16,
+        "no_change": 0,
+        "revision_attempted": 16,
+        "revision_promoted": 8,
+        "bridge_failed": 0,
+        "invalid_rate": 0.1111,
+        "actionable_rate": 0.8889,
+        "no_change_rate": 0.0,
+        "revision_attempted_rate": 0.8889,
+        "revision_promoted_rate": 0.4444,
+        "no_change_reason_counts": {},
+        "calls": 69,
+        "tokens": 456923
+      },
+      "delta": {
+        "invalid_rate": 0.0,
+        "actionable_rate": 0.7778,
+        "no_change_rate": -0.7778,
+        "revision_attempted_rate": 0.7778,
+        "revision_promoted_rate": 0.3333
+      }
+    }
+  },
+  "settings": {
+    "agent_id": "gemma-count",
+    "model": "gemma4:31b",
+    "tokenizer_id": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+    "max_rounds": 1
+  },
+  "failures": []
+}
