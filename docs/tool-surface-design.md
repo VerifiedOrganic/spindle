@@ -684,3 +684,13 @@ Database-mutating commands acquire the workspace primary lock; the authoring
 harness keeps its internal `test_agent` dispatch through a server-issued token.
 The release-R [migration guide](tool-migration-r.md) records the CLI mapping,
 retained compatibility aliases, profile selection, and the R+1 removal plan.
+
+Phase 7 typed updates (first slice) now ship `update_character`,
+`update_location`, `update_conflict`, and `update_character_arc` as typed,
+unknown-field-rejecting replacements for the supported fields of
+`update_entity`. The generic tool remains a one-release compatibility path for
+entity types without a typed replacement, and the MCP catalog/ledger mark it as
+such. Typed inputs reuse the existing service validation, cache invalidation,
+character-rename guard, and cache target resolution; omitted fields are
+unchanged. Batch replacements for the four existing `batch_*` create tools are
+the next Phase 7 slice.

@@ -4396,6 +4396,232 @@ fn any_object_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     .expect("valid schema")
 }
 
+/// Typed replacement for the open `update_entity` path on characters.
+/// Only the fields the row allowlist supports are exposed; omitted fields are
+/// unchanged, and a `name` change still requires `allow_rename` so the
+/// uniqueness key, aliases, search index, and stale-reference report move
+/// together.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateCharacterInput {
+    /// Record id of the character (for example "character:abc123").
+    pub character_id: String,
+    /// New primary name; requires `allow_rename`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<String>,
+    /// Alternate names; replaces the stored list when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<Vec<String>>,
+    /// Opt in to a controlled character rename when `name` is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_rename: Option<bool>,
+}
+
+impl UpdateCharacterInput {
+    pub fn into_update_entity(self) -> UpdateEntityInput {
+        let mut changes = serde_json::Map::new();
+        if let Some(value) = self.name {
+            changes.insert("name".to_string(), value.into());
+        }
+        if let Some(value) = self.summary {
+            changes.insert("summary".to_string(), value.into());
+        }
+        if let Some(value) = self.role {
+            changes.insert("role".to_string(), value.into());
+        }
+        if let Some(value) = self.realm {
+            changes.insert("realm".to_string(), value.into());
+        }
+        if let Some(value) = self.appearance {
+            changes.insert("appearance".to_string(), value.into());
+        }
+        if let Some(value) = self.aliases {
+            changes.insert(
+                "aliases".to_string(),
+                serde_json::to_value(value).expect("aliases serialize"),
+            );
+        }
+        UpdateEntityInput {
+            entity_type: "character".to_string(),
+            entity_id: self.character_id,
+            changes: serde_json::Value::Object(changes),
+            allow_rename: self.allow_rename,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateLocationInput {
+    /// Record id of the location (for example "location:abc123").
+    pub location_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+impl UpdateLocationInput {
+    pub fn into_update_entity(self) -> UpdateEntityInput {
+        let mut changes = serde_json::Map::new();
+        if let Some(value) = self.summary {
+            changes.insert("summary".to_string(), value.into());
+        }
+        if let Some(value) = self.realm {
+            changes.insert("realm".to_string(), value.into());
+        }
+        if let Some(value) = self.kind {
+            changes.insert("kind".to_string(), value.into());
+        }
+        UpdateEntityInput {
+            entity_type: "location".to_string(),
+            entity_id: self.location_id,
+            changes: serde_json::Value::Object(changes),
+            allow_rename: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateConflictInput {
+    /// Record id of the conflict (for example "conflict:abc123").
+    pub conflict_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stakes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_total_cycles: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub try_fail_cycles: Option<Vec<TryFailCycleStep>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalation_stages: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stated_consequences: Option<Vec<StatedConsequence>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Index-aligned with `escalation_stages`; each entry is the placement
+    /// where that stage was demonstrated (or null while pending).
+    pub escalation_demonstrated: Option<Vec<Option<StoryPlacement>>>,
+}
+
+impl UpdateConflictInput {
+    pub fn into_update_entity(self) -> UpdateEntityInput {
+        let mut changes = serde_json::Map::new();
+        if let Some(value) = self.stakes {
+            changes.insert("stakes".to_string(), value.into());
+        }
+        if let Some(value) = self.resolution_summary {
+            changes.insert("resolution_summary".to_string(), value.into());
+        }
+        if let Some(value) = self.conflict_type {
+            changes.insert("conflict_type".to_string(), value.into());
+        }
+        if let Some(value) = self.expected_total_cycles {
+            changes.insert("expected_total_cycles".to_string(), value.into());
+        }
+        for (key, value) in [
+            (
+                "try_fail_cycles",
+                self.try_fail_cycles
+                    .map(|v| serde_json::to_value(v).expect("cycles serialize")),
+            ),
+            (
+                "escalation_stages",
+                self.escalation_stages
+                    .map(|v| serde_json::to_value(v).expect("stages serialize")),
+            ),
+            (
+                "stated_consequences",
+                self.stated_consequences
+                    .map(|v| serde_json::to_value(v).expect("consequences serialize")),
+            ),
+            (
+                "escalation_demonstrated",
+                self.escalation_demonstrated
+                    .map(|v| serde_json::to_value(v).expect("demonstrated serialize")),
+            ),
+        ] {
+            if let Some(value) = value {
+                changes.insert(key.to_string(), value);
+            }
+        }
+        UpdateEntityInput {
+            entity_type: "conflict".to_string(),
+            entity_id: self.conflict_id,
+            changes: serde_json::Value::Object(changes),
+            allow_rename: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateCharacterArcInput {
+    /// Record id of the character arc (for example "character_arc:abc123").
+    pub character_arc_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starting_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ending_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thematic_purpose: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connected_theme_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Replaces the stored milestone list when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub milestones: Option<Vec<CharacterArcMilestone>>,
+}
+
+impl UpdateCharacterArcInput {
+    pub fn into_update_entity(self) -> UpdateEntityInput {
+        let mut changes = serde_json::Map::new();
+        for (key, value) in [
+            ("arc_type", self.arc_type.map(|v| v.into())),
+            ("starting_state", self.starting_state.map(|v| v.into())),
+            ("ending_state", self.ending_state.map(|v| v.into())),
+            ("thematic_purpose", self.thematic_purpose.map(|v| v.into())),
+            ("status", self.status.map(|v| v.into())),
+            (
+                "connected_theme_ids",
+                self.connected_theme_ids
+                    .map(|v| serde_json::to_value(v).expect("themes serialize")),
+            ),
+            (
+                "milestones",
+                self.milestones
+                    .map(|v| serde_json::to_value(v).expect("milestones serialize")),
+            ),
+        ] {
+            if let Some(value) = value {
+                changes.insert(key.to_string(), value);
+            }
+        }
+        UpdateEntityInput {
+            entity_type: "character_arc".to_string(),
+            entity_id: self.character_arc_id,
+            changes: serde_json::Value::Object(changes),
+            allow_rename: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateEntityOutput {
     pub entity_type: String,

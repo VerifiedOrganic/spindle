@@ -4,6 +4,11 @@
 
 ### Added
 
+- Typed entity updates: `update_character`, `update_location`, `update_conflict`,
+  and `update_character_arc` replace the supported fields of the open
+  `update_entity` path with unknown-field-rejecting DTOs. `update_entity`
+  remains a compatibility path for entity types without a typed replacement.
+
 - Operator migration (release R): `configure-agents`, `test-agent`,
   `rebuild-search-index`, `backfill-scene-source-offsets`, and
   `operator-delete-scene` are now `spindle-mcp` CLI commands; the existing

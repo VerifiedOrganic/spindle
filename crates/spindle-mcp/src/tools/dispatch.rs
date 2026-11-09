@@ -393,6 +393,22 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.create_world_rule(input))
                     .await
             }
+            "update_character" => {
+                self.invoke(arguments, |input| self.service.update_character(input))
+                    .await
+            }
+            "update_location" => {
+                self.invoke(arguments, |input| self.service.update_location(input))
+                    .await
+            }
+            "update_conflict" => {
+                self.invoke(arguments, |input| self.service.update_conflict(input))
+                    .await
+            }
+            "update_character_arc" => {
+                self.invoke(arguments, |input| self.service.update_character_arc(input))
+                    .await
+            }
             "update_entity" => {
                 self.invoke(arguments, |input| self.service.update_entity(input))
                     .await
