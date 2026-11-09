@@ -257,9 +257,13 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "Create an economy entity",
         ),
         tool::<CreateTermInput, CreateTermOutput>("create_term", "Create a glossary term"),
+        tool::<CreateTermsInput, CreateTermsOutput>(
+            "create_terms",
+            "Create 1-50 glossary terms atomically; dry_run validates without writing. Use the batch_create_terms alias for one release.",
+        ),
         tool::<BatchCreateTermsInput, BatchCreateTermsOutput>(
             "batch_create_terms",
-            "Create multiple glossary terms in one call",
+            "One-release alias for create_terms. Creates multiple glossary terms in one call.",
         ),
         tool::<CreateRelationshipInput, CreateRelationshipOutput>(
             "create_relationship",
@@ -273,9 +277,13 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "update_world_rule",
             "Update a world rule by record id",
         ),
+        tool::<SetCharacterVoiceProfilesInput, SetCharacterVoiceProfilesOutput>(
+            "set_character_voice_profiles",
+            "Set 1-50 character voice profiles atomically on the active branch; dry_run validates without writing. Use the batch_set_character_voice_profiles alias for one release.",
+        ),
         tool::<BatchSetCharacterVoiceProfilesInput, BatchSetCharacterVoiceProfilesOutput>(
             "batch_set_character_voice_profiles",
-            "Replace multiple character voice profiles in one call",
+            "One-release alias for set_character_voice_profiles. Replaces multiple character voice profiles in one call.",
         ),
         tool::<UpdateCharacterInput, UpdateEntityOutput>(
             "update_character",
@@ -308,17 +316,25 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         ),
         tool::<CreateThemeInput, CreateThemeOutput>("create_theme", "Create a theme record"),
         tool::<CreateMotifInput, CreateMotifOutput>("create_motif", "Create a motif record"),
+        tool::<CreateMotifsInput, CreateMotifsOutput>(
+            "create_motifs",
+            "Create 1-50 motif records atomically; dry_run validates without writing. Use the batch_create_motifs alias for one release.",
+        ),
         tool::<BatchCreateMotifsInput, BatchCreateMotifsOutput>(
             "batch_create_motifs",
-            "Create multiple motif records in one call",
+            "One-release alias for create_motifs. Creates multiple motif records in one call.",
         ),
         tool::<CreateNarrativePromiseInput, CreateNarrativePromiseOutput>(
             "create_narrative_promise",
             "Create a narrative promise",
         ),
+        tool::<CreateNarrativePromisesInput, CreateNarrativePromisesOutput>(
+            "create_narrative_promises",
+            "Create 1-50 narrative promises atomically; dry_run validates without writing. Use the batch_create_narrative_promises alias for one release.",
+        ),
         tool::<BatchCreateNarrativePromisesInput, BatchCreateNarrativePromisesOutput>(
             "batch_create_narrative_promises",
-            "Create multiple narrative promises in one call",
+            "One-release alias for create_narrative_promises. Creates multiple narrative promises in one call.",
         ),
         tool::<UpdatePromiseStatusInput, UpdatePromiseStatusOutput>(
             "update_promise_status",

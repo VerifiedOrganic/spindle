@@ -36,14 +36,15 @@ use spindle_core::models::{
     CreateCharacterOutput, CreateConflictInput, CreateConflictOutput, CreateEconomyInput,
     CreateEconomyOutput, CreateFactionInput, CreateFactionOutput, CreateFutureKnowledgeInput,
     CreateFutureKnowledgeOutput, CreateLocationInput, CreateLocationOutput, CreateMotifInput,
-    CreateMotifOutput, CreateNarrativePromiseInput, CreateNarrativePromiseOutput,
+    CreateMotifOutput, CreateMotifsInput, CreateMotifsOutput, CreateNarrativePromiseInput,
+    CreateNarrativePromiseOutput, CreateNarrativePromisesInput, CreateNarrativePromisesOutput,
     CreatePacingConfigInput, CreatePacingConfigOutput, CreatePacingCurveInput,
     CreatePacingCurveOutput, CreatePlotLineInput, CreatePlotLineOutput, CreateProjectInput,
     CreateProjectOutput, CreateRelationshipInput, CreateRelationshipOutput, CreateReligionInput,
     CreateReligionOutput, CreateSavePointInput, CreateSavePointOutput, CreateSystemOverlayInput,
     CreateSystemOverlayOutput, CreateTemporalInterventionInput, CreateTemporalInterventionOutput,
-    CreateTermInput, CreateTermOutput, CreateThemeInput, CreateThemeOutput,
-    CreateTimelineEventInput, CreateTimelineEventOutput, CreateWorldRuleInput,
+    CreateTermInput, CreateTermOutput, CreateTermsInput, CreateTermsOutput, CreateThemeInput,
+    CreateThemeOutput, CreateTimelineEventInput, CreateTimelineEventOutput, CreateWorldRuleInput,
     CreateWorldRuleOutput, DeleteSceneInput, DeleteSceneOutput, EntityResolutionConfidence,
     FindEntityInput, FindEntityMatch, FindEntityOutput, FindScenesReferencingInput,
     FindScenesReferencingOutput, GetSceneDeleteImpactInput, GetSceneDeleteImpactOutput,
@@ -61,11 +62,11 @@ use spindle_core::models::{
     SceneVersionSummary, SearchBibleInput, SearchBibleMode, SearchBibleOutput,
     SearchBibleResultItem, SetArcPacingConstraintsInput, SetArcPacingConstraintsOutput,
     SetBookOutlineInput, SetBookOutlineOutput, SetChapterOutlineInput, SetChapterOutlineOutput,
-    SetCharacterVoiceProfileInput, SetCharacterVoiceProfileOutput, StoryPlacement,
-    SwitchBranchInput, SwitchBranchOutput, TestAgentInput, TestAgentOutput,
-    UpdateArcMilestoneInput, UpdateArcMilestoneOutput, UpdateEntityInput, UpdateEntityOutput,
-    UpdatePromiseStatusInput, UpdatePromiseStatusOutput, UpdateRelationshipInput,
-    UpdateRelationshipOutput, UpdateWorldRuleInput, UpdateWorldRuleOutput,
+    SetCharacterVoiceProfileInput, SetCharacterVoiceProfileOutput, SetCharacterVoiceProfilesInput,
+    SetCharacterVoiceProfilesOutput, StoryPlacement, SwitchBranchInput, SwitchBranchOutput,
+    TestAgentInput, TestAgentOutput, UpdateArcMilestoneInput, UpdateArcMilestoneOutput,
+    UpdateEntityInput, UpdateEntityOutput, UpdatePromiseStatusInput, UpdatePromiseStatusOutput,
+    UpdateRelationshipInput, UpdateRelationshipOutput, UpdateWorldRuleInput, UpdateWorldRuleOutput,
     UpdateWriterPositionInput,
 };
 
@@ -438,6 +439,7 @@ struct ResearchQueryOutputJson {
 }
 
 mod agents;
+mod batch;
 mod branch_snapshots;
 mod branches;
 mod canon_events;

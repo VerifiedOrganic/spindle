@@ -61,6 +61,16 @@ validation/cache behavior. `update_entity` remains available as a compatibility
 path for entity types that do not have a typed replacement yet; do not use it
 for the four typed records when a typed tool covers the field.
 
+### Batch creates
+
+`create_terms`, `create_motifs`, `create_narrative_promises`, and
+`set_character_voice_profiles` are the canonical batch operations. They accept
+1-50 `items`, preflight every item, support `dry_run`, and commit all-or-nothing
+in one branch transaction; errors identify the failing item index. The
+`batch_create_terms`, `batch_create_motifs`,
+`batch_create_narrative_promises`, and `batch_set_character_voice_profiles`
+names delegate to them as one-release compatibility aliases.
+
 ### Profiles
 
 Unset and `legacy-all` keep the full compatibility catalog except the

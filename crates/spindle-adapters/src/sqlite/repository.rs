@@ -746,6 +746,7 @@ mod branches;
 mod canon;
 pub mod canon_backfill;
 pub use canon_backfill::*;
+mod batch;
 mod canon_cutover;
 mod canon_events;
 mod canon_policy;

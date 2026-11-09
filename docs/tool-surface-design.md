@@ -694,3 +694,12 @@ such. Typed inputs reuse the existing service validation, cache invalidation,
 character-rename guard, and cache target resolution; omitted fields are
 unchanged. Batch replacements for the four existing `batch_*` create tools are
 the next Phase 7 slice.
+
+Phase 7 batch replacements now ship canonical `create_terms`, `create_motifs`,
+`create_narrative_promises`, and `set_character_voice_profiles`. Each accepts
+1-50 items, preflights every item, supports `dry_run`, and commits the batch in
+one branch transaction so a failing item rolls the whole batch back; failures
+name the item index. The four existing `batch_*` names remain one-release
+compatibility aliases that delegate to the canonical operation. Cross-branch
+voice batches are rejected by requiring the active branch. Durable idempotency
+receipts are not part of this slice; per-item IDs are returned as receipts.

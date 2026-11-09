@@ -3,26 +3,6 @@ use crate::sqlite::repository::{legacy_claim, legacy_snapshot_claim};
 use spindle_core::canon::*;
 
 impl SqliteSpindleService {
-    pub async fn batch_set_character_voice_profiles(
-        &self,
-        input: BatchSetCharacterVoiceProfilesInput,
-    ) -> Result<BatchSetCharacterVoiceProfilesOutput> {
-        let mut profiles = Vec::with_capacity(input.items.len());
-        for item in input.items {
-            let updated = self
-                .set_character_voice_profile(SetCharacterVoiceProfileInput {
-                    project_id: input.project_id.clone(),
-                    character_id: item.character_id,
-                    branch_id: input.branch_id.clone(),
-                    profile: item.profile,
-                })
-                .await?;
-            profiles.push(updated);
-        }
-        let updated = profiles.len();
-        Ok(BatchSetCharacterVoiceProfilesOutput { profiles, updated })
-    }
-
     pub async fn record_knowledge(
         &self,
         input: RecordKnowledgeInput,

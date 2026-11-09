@@ -26,8 +26,8 @@ generated profiles are opt-in:
 | workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 74 | 85,869 | 181,002 |
 | workflow-import | Manuscript importer and source sync | 20 | 12,306 | 30,747 |
 | revision | Branch/revision/history workflow | 32 | 20,950 | 54,185 |
-| worldbuilding | Worldbuilder + character creator | 47 | 45,321 | 77,759 |
-| planning | Plot architect | 35 | 29,333 | 58,389 |
+| worldbuilding | Worldbuilder + character creator | 50 | 48,325 | 82,626 |
+| planning | Plot architect | 38 | 32,352 | 62,362 |
 | new-book | New-book entry: planning sessions, human gates and handoff | 14 | 20,204 | 26,534 |
 | research | Researcher | 15 | 7,584 | 20,051 |
 | style | Editor core + style reference | 43 | 34,159 | 94,206 |

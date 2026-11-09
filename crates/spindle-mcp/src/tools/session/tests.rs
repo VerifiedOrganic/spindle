@@ -82,6 +82,7 @@ async fn create_project_sets_session_defaults_for_follow_up_tools() {
                 updated_at: None,
             },
         }],
+        dry_run: None,
     })
     .expect("batch voice args");
     let batch_voice_profile_args = batch_voice_profile_args

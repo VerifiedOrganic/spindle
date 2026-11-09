@@ -16,7 +16,7 @@ Design narrative structure that builds tension, maintains momentum, and delivers
 2. Call `get_writer_state` to inspect the current cursor, overdue promises (`open_promises_due_now`), recent activity, and active overlays before restructuring.
 3. Call `list_book_chapters` and `list_chapter_scenes` to map the existing spine.
 4. For long-running webserials, inspect `get_series_status` and `get_editorial_queue` to separate published episodes from drafted backlog before extending the outline.
-5. Use batch tools (`batch_create_motifs`, `batch_create_narrative_promises`, `batch_create_terms`) for bulk seeding. Revise conflicts and arcs with `update_conflict` and `update_character_arc`; reserve `update_entity` for unsupported fields.
+5. Use `create_motifs`, `create_narrative_promises`, and `create_terms` for atomic bulk seeding; the `batch_create_*` names remain one-release aliases. Revise conflicts and arcs with `update_conflict` and `update_character_arc`; reserve `update_entity` for unsupported fields.
 6. Persist prose outlines with `set_book_outline` and `set_chapter_outline`; build structured scene plans with `plan_chapter` (first-class `location_id` and `content_rating` on every planned scene so `authoring_prepare_run` can validate).
 7. Call `get_chapter_briefing` before handing a chapter off to drafting, `annotate_scene_beats` after scenes are written, `move_scene` for reordering, and `check_consistency` after structural changes.
 
@@ -58,8 +58,11 @@ Staged planning artifacts and bounded `plan`/`outline` route proposals (ADR 0004
 <!-- tool: annotate_scene_beats -->
 <!-- tool: authoring_prepare_run -->
 <!-- tool: batch_create_motifs -->
+<!-- tool: create_motifs -->
 <!-- tool: batch_create_narrative_promises -->
+<!-- tool: create_narrative_promises -->
 <!-- tool: batch_create_terms -->
+<!-- tool: create_terms -->
 <!-- tool: check_consistency -->
 <!-- tool: create_book -->
 <!-- tool: create_chapter -->

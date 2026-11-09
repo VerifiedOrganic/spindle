@@ -381,6 +381,10 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.create_term(input))
                     .await
             }
+            "create_terms" => {
+                self.invoke(arguments, |input| self.service.create_terms(input))
+                    .await
+            }
             "batch_create_terms" => {
                 self.invoke(arguments, |input| self.service.batch_create_terms(input))
                     .await
@@ -433,6 +437,10 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.create_motif(input))
                     .await
             }
+            "create_motifs" => {
+                self.invoke(arguments, |input| self.service.create_motifs(input))
+                    .await
+            }
             "batch_create_motifs" => {
                 self.invoke(arguments, |input| self.service.batch_create_motifs(input))
                     .await
@@ -440,6 +448,12 @@ impl ToolRouter {
             "create_narrative_promise" => {
                 self.invoke(arguments, |input| {
                     self.service.create_narrative_promise(input)
+                })
+                .await
+            }
+            "create_narrative_promises" => {
+                self.invoke(arguments, |input| {
+                    self.service.create_narrative_promises(input)
                 })
                 .await
             }
@@ -556,6 +570,12 @@ impl ToolRouter {
             "set_character_voice_profile" => {
                 self.invoke(arguments, |input| {
                     self.service.set_character_voice_profile(input)
+                })
+                .await
+            }
+            "set_character_voice_profiles" => {
+                self.invoke(arguments, |input| {
+                    self.service.set_character_voice_profiles(input)
                 })
                 .await
             }

@@ -4363,6 +4363,9 @@ pub struct BatchCreateTermsInput {
     pub project_id: String,
     #[serde(default)]
     pub items: Vec<BatchCreateTermItem>,
+    /// Validate and report the batch without persisting.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4715,6 +4718,9 @@ pub struct BatchSetCharacterVoiceProfilesInput {
     pub branch_id: String,
     #[serde(default)]
     pub items: Vec<BatchSetCharacterVoiceProfileItem>,
+    /// Validate and report the batch without persisting.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4820,6 +4826,9 @@ pub struct BatchCreateMotifsInput {
     pub project_id: String,
     #[serde(default)]
     pub items: Vec<BatchCreateMotifItem>,
+    /// Validate and report the batch without persisting.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4860,6 +4869,9 @@ pub struct BatchCreateNarrativePromisesInput {
     pub project_id: String,
     #[serde(default)]
     pub items: Vec<BatchCreateNarrativePromiseItem>,
+    /// Validate and report the batch without persisting.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4867,6 +4879,85 @@ pub struct BatchCreateNarrativePromisesOutput {
     #[serde(default)]
     pub narrative_promise_ids: Vec<String>,
     pub created: usize,
+}
+
+/// Canonical batch creation for glossary terms. Items are validated together
+/// and committed in one branch transaction; `dry_run` validates without writes.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateTermsInput {
+    pub project_id: String,
+    /// 1-50 terms to create atomically.
+    pub items: Vec<BatchCreateTermItem>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateTermsOutput {
+    #[serde(default)]
+    pub term_ids: Vec<String>,
+    pub created: usize,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateMotifsInput {
+    pub project_id: String,
+    /// 1-50 motifs to create atomically.
+    pub items: Vec<BatchCreateMotifItem>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateMotifsOutput {
+    #[serde(default)]
+    pub motif_ids: Vec<String>,
+    pub created: usize,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateNarrativePromisesInput {
+    pub project_id: String,
+    /// 1-50 promises to create atomically.
+    pub items: Vec<BatchCreateNarrativePromiseItem>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateNarrativePromisesOutput {
+    #[serde(default)]
+    pub narrative_promise_ids: Vec<String>,
+    pub created: usize,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetCharacterVoiceProfilesInput {
+    pub project_id: String,
+    pub branch_id: String,
+    /// 1-50 character voice profiles to set atomically.
+    pub items: Vec<BatchSetCharacterVoiceProfileItem>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetCharacterVoiceProfilesOutput {
+    #[serde(default)]
+    pub profiles: Vec<SetCharacterVoiceProfileOutput>,
+    pub updated: usize,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 /// An actual story event, separate from an author's planned payoff.

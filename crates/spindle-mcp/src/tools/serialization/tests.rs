@@ -351,6 +351,72 @@ async fn internal_call_token_allows_reentrant_dispatch_while_blocking_external_c
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn canonical_batch_creates_dispatch_and_alias_still_works() {
+    let router = router().await;
+    let project_id = prepare_run_project(&router, "Batch Router").await;
+
+    let created = structured_json(
+        router
+            .call_tool(
+                "create_terms",
+                Some(
+                    serde_json::json!({
+                        "project_id": project_id,
+                        "items": [
+                            {"term_text": "Aether", "definition": "The upper air."},
+                            {"term_text": "Ley line", "definition": "A current of power."}
+                        ]
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(created["created"], 2);
+    assert_eq!(created["term_ids"].as_array().unwrap().len(), 2);
+
+    let dry = structured_json(
+        router
+            .call_tool(
+                "create_terms",
+                Some(
+                    serde_json::json!({
+                        "project_id": project_id,
+                        "items": [{"term_text": "Dry", "definition": "Not written."}],
+                        "dry_run": true
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(dry["created"], 0);
+    assert_eq!(dry["dry_run"], true);
+
+    let alias = structured_json(
+        router
+            .call_tool(
+                "batch_create_terms",
+                Some(
+                    serde_json::json!({
+                        "project_id": project_id,
+                        "items": [{"term_text": "Alias", "definition": "Via the old name."}]
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(alias["created"], 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn typed_updates_resolve_target_project_and_lock_without_project_id() {
     let router = router().await;
     let p1 = prepare_run_project(&router, "Typed Target One").await;
