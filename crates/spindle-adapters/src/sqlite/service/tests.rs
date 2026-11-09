@@ -2774,6 +2774,9 @@ async fn selected_chapter_edit_that_loses_the_judge_keeps_accepted_prose() {
         (200, revision.clone()),
         (200, judge.clone()),
         (200, judge.clone()),
+        (200, revision.clone()),
+        (200, judge.clone()),
+        (200, judge.clone()),
         (200, revision),
         (200, judge.clone()),
         (200, judge),
@@ -2909,7 +2912,7 @@ async fn selected_chapter_edit_that_loses_the_judge_keeps_accepted_prose() {
         concerns: Vec::new(),
         edit_proposals: vec![
             ChapterEditProposalV1 {
-                id: "proposal:1".into(),
+                id: "p:1".into(),
                 scene_id: "scene:1".into(),
                 base_text_sha256: draft.text_sha256.clone(),
                 dimension: ChapterConcernDimension::OpeningsEndings,
@@ -2921,7 +2924,7 @@ async fn selected_chapter_edit_that_loses_the_judge_keeps_accepted_prose() {
                 source_concern_ids: Vec::new(),
             },
             ChapterEditProposalV1 {
-                id: "proposal:2".into(),
+                id: "p/1".into(),
                 scene_id: "scene:1".into(),
                 base_text_sha256: draft.text_sha256.clone(),
                 dimension: ChapterConcernDimension::SceneLengths,
@@ -2948,7 +2951,7 @@ async fn selected_chapter_edit_that_loses_the_judge_keeps_accepted_prose() {
     };
     let first_selection = ChapterEditSelectionV1 {
         chapter_number: 1,
-        selected_proposal_ids: vec!["proposal:1".into()],
+        selected_proposal_ids: vec!["p:1".into()],
         author_note: "try the opening".into(),
     };
     let first = service
@@ -2972,7 +2975,7 @@ async fn selected_chapter_edit_that_loses_the_judge_keeps_accepted_prose() {
     assert_eq!(first.edits[0].stage, "accepted_original");
     let second_selection = ChapterEditSelectionV1 {
         chapter_number: 1,
-        selected_proposal_ids: vec!["proposal:2".into()],
+        selected_proposal_ids: vec!["p/1".into()],
         author_note: "then the ending".into(),
     };
     let second = service
@@ -2996,21 +2999,74 @@ async fn selected_chapter_edit_that_loses_the_judge_keeps_accepted_prose() {
     assert_eq!(second.edits[0].stage, "accepted_original");
     assert!(second.invalidation.affected_scene_ids.is_empty());
     assert_eq!(std::fs::read(&draft_path).unwrap(), draft_before);
+    // The same proposal ID on a changed base must get a new operation identity
+    // and dispatch again rather than loading the old terminal loop artifact.
+    let new_text = "Fresh base prose.";
+    let mut new_draft = artifact::load_artifact(&draft_path).expect("load draft");
+    new_draft.text = new_text.into();
+    new_draft.text_sha256 = crate::drafting::editorial::editorial_sha256_hex(new_text.as_bytes());
+    new_draft.receipt.normalized_output_sha256 =
+        crate::drafting::editorial::normalized_output_sha256(new_text);
+    new_draft.accepted_text_sha256 = Some(new_draft.text_sha256.clone());
+    artifact::save_artifact(&draft_path, &new_draft).expect("save new base");
+    let mut new_base_critique = critique.clone();
+    new_base_critique.edit_proposals = vec![ChapterEditProposalV1 {
+        id: "p:1".into(),
+        scene_id: "scene:1".into(),
+        base_text_sha256: new_draft.text_sha256.clone(),
+        dimension: ChapterConcernDimension::OpeningsEndings,
+        anchor: ChapterConcernAnchorV1 {
+            scene_id: "scene:1".into(),
+            text_sha256: new_draft.text_sha256.clone(),
+            start_byte: 0,
+            end_byte: 5,
+            exact_quote: "Fresh".into(),
+        },
+        diagnosis: "Fresh base opening.".into(),
+        requested_change: "Keep the fresh opening physical.".into(),
+        preserve: vec!["POV".into()],
+        success_test: "The fresh opening stays physical.".into(),
+        source_concern_ids: Vec::new(),
+    }];
+    let new_base_selection = ChapterEditSelectionV1 {
+        chapter_number: 1,
+        selected_proposal_ids: vec!["p:1".into()],
+        author_note: "same id, new base".into(),
+    };
+    let third = service
+        .apply_editorial_chapter_edits(
+            &controller_path,
+            0,
+            &draft_path,
+            "chapter 1 context",
+            &new_base_critique,
+            &new_base_selection,
+            &RevisionBudget::scene_default("venice-model".into(), 20_000),
+            &JudgeBudget::scene_default("venice-model".into(), 20_000),
+            Some(&VerifiedFixtureTokenizer),
+            RevisionLoopOptions::default(),
+            30,
+        )
+        .await
+        .expect("reused id on a new base applies");
+    assert_eq!(third.edits.len(), 1);
+    assert!(!third.edits[0].accepted);
+    assert_eq!(third.edits[0].stage, "accepted_original");
     assert_eq!(
         server.join().unwrap(),
-        6,
-        "each of two retained proposals needs revision + two judge calls"
+        9,
+        "each retained proposal needs its own revision + two judge calls"
     );
     let controller =
         crate::drafting::editorial::load_editorial_controller(&controller_path).expect("reload");
     assert_eq!(
         controller.scenes[0].ledger.scene_reservations.len(),
-        4,
-        "two distinct Revise and two distinct Judge reservations"
+        6,
+        "three distinct chapter-edit operations each get Revise + Judge reservations"
     );
     assert_eq!(
         controller.chapter_edit_namespaces.len(),
-        2,
+        3,
         "each proposal keeps a stable durable namespace across selection subsets"
     );
     let _ = (

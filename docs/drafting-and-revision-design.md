@@ -1014,7 +1014,9 @@ activates a prose-affecting default.
   reservation namespace keyed by chapter/base hash/proposal ID and persisted in
   the controller, so a retained first proposal cannot block or reuse a second
   proposal's charge and the identity survives selection-subset changes and
-  restarts. Unselected proposals are never applied;
+  restarts. Each operation's loop artifact is keyed by that durable namespace,
+  not a sanitized proposal ID, so distinct IDs that sanitize identically (or a
+  reused ID on a new base) cannot reuse another operation's terminal artifact. Unselected proposals are never applied;
   stale base hashes, invalid anchors, and scene mismatches are skipped. Acceptance returns a
   `ChapterInvalidationPlanV1` covering the chapter summary, scene extraction,
   beat annotations, reader notes, re-extraction, and downstream revalidation.

@@ -847,19 +847,15 @@ impl SqliteSpindleService {
             edit_options.max_rounds = 1;
             edit_options.pre_selected_directives = Some(vec![directive]);
             edit_options.chapter_context = Some(chapter_context.to_string());
-            let safe_id: String = proposal
-                .id
-                .chars()
-                .map(|ch| {
-                    if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                        ch
-                    } else {
-                        '_'
-                    }
-                })
-                .collect();
+            let namespace = namespaces
+                .get(proposal_index)
+                .copied()
+                .unwrap_or_else(|| u32::try_from(proposal_index + 1).unwrap_or(u32::MAX));
+            // The durable namespace is unique per chapter/base/proposal identity,
+            // so distinct IDs that sanitize identically cannot share a loop file,
+            // and a reused ID on a new base gets a new file.
             let loop_path =
-                draft_artifact_path.with_extension(format!("chapter-edit-{safe_id}.loop.json"));
+                draft_artifact_path.with_extension(format!("chapter-edit-{namespace}.loop.json"));
             let critic_budget = crate::drafting::critique::CriticBudget::scene_default(
                 revision_budget.model_id.clone(),
                 revision_budget.context_window,
@@ -868,10 +864,7 @@ impl SqliteSpindleService {
                 controller_path,
                 scene_index,
                 now_millis,
-                namespaces
-                    .get(proposal_index)
-                    .copied()
-                    .unwrap_or_else(|| u32::try_from(proposal_index + 1).unwrap_or(u32::MAX)),
+                namespace,
             );
             let result = self
                 .revise_artifact_loop_with_gate(
