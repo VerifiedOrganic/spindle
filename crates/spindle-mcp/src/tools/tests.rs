@@ -125,6 +125,8 @@ fn trace_state(
             max_revise_attempts: None,
             checkpoint_policy: None,
             replan_policy: None,
+            editorial: None,
+            editorial_controller_path: None,
             chapters: Vec::new(),
         },
         "bible_branch:x".into(),

@@ -491,6 +491,8 @@ mod tests {
             max_revise_attempts: None,
             checkpoint_policy: None,
             replan_policy: None,
+            editorial: None,
+            editorial_controller_path: None,
             chapters: vec![ChapterSeed {
                 chapter_number: 1,
                 synopsis: "Test chapter".to_string(),

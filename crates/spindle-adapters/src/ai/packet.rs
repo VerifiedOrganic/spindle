@@ -12,7 +12,7 @@ use crate::drafting::{
 };
 use spindle_core::drafting::{
     CriticFindingInput, CritiqueDirective, DeblindedArm, DraftingPacketV1, EditorialPolicy,
-    IngestedFinding, ShadowCritiqueOutcome, SinglePassJudgeRecord,
+    EditorialRouteAvailability, IngestedFinding, ShadowCritiqueOutcome, SinglePassJudgeRecord,
 };
 
 #[derive(Debug, Clone)]
@@ -197,6 +197,29 @@ impl ModelRouter {
             }
         }
         Ok((prepared, response))
+    }
+
+    /// Observe route/tokenizer availability for the editorial controller without
+    /// dispatching a model call. A missing or uncleared route reports `false`.
+    pub fn editorial_route_availability(&self, rating: &str) -> EditorialRouteAvailability {
+        let Ok(runtime) = self.runtime.read() else {
+            return EditorialRouteAvailability::default();
+        };
+        let route_ok = |name: &str| resolve_cleared_route(&runtime, name, Some(rating)).is_ok();
+        let mut availability = EditorialRouteAvailability {
+            draft: route_ok("draft"),
+            review: route_ok("review"),
+            line_edit: route_ok("line_edit"),
+            extract: route_ok("extract"),
+            verified_tokenizer: false,
+        };
+        if let Ok(route) = resolve_cleared_route(&runtime, "draft", Some(rating))
+            && let Ok(agent) = http_agent_for_route(&runtime, route)
+        {
+            availability.verified_tokenizer =
+                agent.config.tokenizer.is_some() && self.counter_scope(&runtime, route).is_ok();
+        }
+        availability
     }
 
     /// Resolve the effective `PacketBudget` and transport/sampling metadata for

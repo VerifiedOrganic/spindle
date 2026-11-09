@@ -1936,3 +1936,169 @@ const EXPLICIT_NEIGHBOR_PROSE: &str = "She pulled him down and took him inside h
 
 const TELEPORT_PROSE: &str = "He woke in the grey morning and ate his bread at the \
          long table. The midnight harbour lay black and still around him as he stood on the quay.";
+
+// ── Editorial controller: hybrid host tasks, budget, and no-route fallback ──
+
+#[tokio::test]
+async fn editorial_host_revision_without_judge_route_returns_pending_manual_judgment() {
+    use crate::drafting::artifact;
+    use crate::drafting::tests::fixture;
+    use spindle_core::drafting::{
+        DraftMessages, EditorialControllerStateV1, EditorialPolicy, EditorialPricingV1,
+        EditorialRouteAvailability, EditorialStage, EditorialTextRefV1, HostEditorialSubmissionV1,
+        HostSubmissionOutcomeV1, PreparedDraftingPacket, ResolvedEditorialSettingsV1,
+        extraction::DraftReceiptBinding,
+    };
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let packet = fixture();
+    let controller_path = _tmp.path().join("editorial-controller.json");
+    let draft_path = _tmp.path().join("scene-draft.json");
+    let mut settings = ResolvedEditorialSettingsV1::critique_v1_default();
+    settings.pricing = Some(EditorialPricingV1 {
+        input_usd_micros_per_million: 0,
+        output_usd_micros_per_million: 0,
+    });
+    let mut controller = EditorialControllerStateV1::new(
+        "run:1".into(),
+        packet.project_id.clone(),
+        packet.branch_id.clone(),
+        settings.clone(),
+    );
+    let scene = crate::drafting::editorial::new_editorial_scene_state(
+        1,
+        1,
+        Some("scene:1".into()),
+        "packet-hash".into(),
+        "source-hash".into(),
+        EditorialRouteAvailability::all_available(),
+        &settings,
+    );
+    controller.scenes.push(scene);
+    crate::drafting::editorial::save_editorial_controller(&controller_path, &controller)
+        .expect("save controller");
+
+    let messages = DraftMessages {
+        system: "system".into(),
+        user: "user".into(),
+    };
+    let packet_hash =
+        crate::drafting::editorial::editorial_sha256_hex(&serde_json::to_vec(&messages).unwrap());
+    controller.scenes[0].packet_hash = packet_hash.clone();
+    crate::drafting::editorial::save_editorial_controller(&controller_path, &controller)
+        .expect("save controller with packet hash");
+    let mut draft = artifact::capture_plain_text(
+        &packet,
+        &packet_hash,
+        "Original host draft prose.".into(),
+        false,
+        DraftReceiptBinding {
+            generation_id: "host:task:1".into(),
+            agent_id: "host".into(),
+            normalized_output_sha256: crate::drafting::editorial::normalized_output_sha256(
+                "Original host draft prose.",
+            ),
+        },
+    )
+    .expect("capture draft");
+    draft.prepared_packet = Some(PreparedDraftingPacket {
+        packet: packet.clone(),
+        messages,
+        messages_hash: packet_hash.clone(),
+    });
+    artifact::save_artifact(&draft_path, &draft).expect("save draft");
+
+    let task = svc
+        .prepare_editorial_host_task_from_artifact(&controller_path, 0, "task:1", &draft_path, 10)
+        .await
+        .expect("prepare draft host task");
+    assert_eq!(task.task_id, "task:1");
+
+    let outcome = svc
+        .submit_editorial_host_task(
+            &controller_path,
+            &draft_path,
+            HostEditorialSubmissionV1 {
+                task_id: "task:1".into(),
+                packet_hash: packet_hash.clone(),
+                text: "Host drafted plain prose.".into(),
+                usage: None,
+                truncated: false,
+            },
+            None,
+            20,
+        )
+        .await
+        .expect("submit host draft");
+    assert!(matches!(
+        outcome,
+        HostSubmissionOutcomeV1::DraftAccepted { .. }
+    ));
+
+    let mut controller = crate::drafting::editorial::load_editorial_controller(&controller_path)
+        .expect("reload controller");
+    let draft_on_disk = artifact::load_artifact(&draft_path).expect("reload draft");
+    assert_eq!(draft_on_disk.text, "Host drafted plain prose.");
+    assert_eq!(draft_on_disk.receipt.agent_id, "host");
+    controller.scenes[0].stage = EditorialStage::Critiqued;
+    controller.scenes[0].incumbent = Some(EditorialTextRefV1 {
+        text_sha256: draft_on_disk.text_sha256.clone(),
+        generation_id: Some(draft_on_disk.receipt.generation_id.clone()),
+        agent_id: Some("host".into()),
+    });
+    crate::drafting::editorial::save_editorial_controller(&controller_path, &controller)
+        .expect("save controller");
+
+    let revision_task = svc
+        .prepare_editorial_host_task_from_artifact(&controller_path, 0, "task:2", &draft_path, 30)
+        .await
+        .expect("prepare revision host task");
+    assert_eq!(
+        revision_task.incumbent_text.as_deref(),
+        Some("Host drafted plain prose.")
+    );
+
+    let outcome = svc
+        .submit_editorial_host_task(
+            &controller_path,
+            &draft_path,
+            HostEditorialSubmissionV1 {
+                task_id: "task:2".into(),
+                packet_hash: packet_hash.clone(),
+                text: "Host revised plain prose.".into(),
+                usage: None,
+                truncated: false,
+            },
+            None,
+            40,
+        )
+        .await
+        .expect("submit host revision");
+    let HostSubmissionOutcomeV1::PendingManualJudgment { pending } = outcome else {
+        panic!("missing judge route must park, not prefer the candidate: {outcome:?}");
+    };
+    assert!(
+        matches!(
+            pending.reason,
+            spindle_core::drafting::ManualJudgmentReason::NoAutomatedJudgeRoute
+                | spindle_core::drafting::ManualJudgmentReason::MissingVerifiedTokenizer
+        ),
+        "missing automated judge must park honestly, got {:?}",
+        pending.reason
+    );
+    let controller = crate::drafting::editorial::load_editorial_controller(&controller_path)
+        .expect("reload controller");
+    assert_eq!(controller.scenes[0].stage, EditorialStage::AcceptedOriginal);
+    assert!(controller.scenes[0].pending_manual_judgment.is_some());
+    assert!(
+        !controller.scenes[0]
+            .judge
+            .as_ref()
+            .expect("judge summary")
+            .accepted_revision
+    );
+    assert_eq!(
+        controller.settings.editorial_policy,
+        EditorialPolicy::CritiqueV1
+    );
+}

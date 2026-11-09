@@ -3,6 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize};
+use spindle_core::drafting::{EditorialRunConfig, ResolvedEditorialSettingsV1};
 use spindle_core::models::{AgencyWarning, ContentRating};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -33,6 +34,14 @@ pub struct HarnessSeed {
     pub checkpoint_policy: Option<String>,
     #[serde(default)]
     pub replan_policy: Option<String>,
+    /// Additive opt-in editorial controller configuration. Absent (or
+    /// `editorial_policy = "legacy"`) preserves exact legacy behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editorial: Option<EditorialRunConfig>,
+    /// Local path to the durable editorial-controller artifact prepared by the
+    /// server. Absent until the controller is prepared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editorial_controller_path: Option<String>,
     #[serde(default)]
     pub chapters: Vec<ChapterSeed>,
 }
@@ -106,14 +115,39 @@ pub struct HarnessState {
     /// default so pre-P4 state fixtures still deserialize.
     #[serde(default)]
     pub replan_policy: Option<String>,
+    /// Resolved, persisted editorial settings. `None` means legacy behavior and
+    /// no editorial status/actions are emitted, preserving older runs' output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_editorial: Option<ResolvedEditorialSettingsV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editorial_controller_path: Option<String>,
     #[serde(default)]
     pub chapters: Vec<ChapterState>,
     #[serde(default)]
     pub checkpoint_history: Vec<CheckpointRecord>,
 }
 
+impl HarnessSeed {
+    /// Resolve the additive editorial config into the persisted settings record.
+    /// A missing or legacy config resolves to `None` so legacy runs emit no new
+    /// status, actions, or budget checks.
+    pub fn resolve_editorial_settings(&self) -> Result<Option<ResolvedEditorialSettingsV1>> {
+        let Some(config) = &self.editorial else {
+            return Ok(None);
+        };
+        let resolved = ResolvedEditorialSettingsV1::resolve(config)
+            .map_err(|error| anyhow::anyhow!("invalid editorial configuration: {error}"))?;
+        if resolved.is_legacy() {
+            return Ok(None);
+        }
+        Ok(Some(resolved))
+    }
+}
+
 impl HarnessState {
     pub fn from_seed(seed: HarnessSeed, active_branch_id: String) -> Self {
+        let resolved_editorial = seed.resolve_editorial_settings().ok().flatten();
+        let editorial_controller_path = seed.editorial_controller_path.clone();
         let mining_policy =
             spindle_core::models::validate_mining_policy(seed.mining_policy.as_deref())
                 .unwrap_or(seed.mining_policy);
@@ -139,6 +173,8 @@ impl HarnessState {
             max_revise_attempts,
             checkpoint_policy,
             replan_policy,
+            resolved_editorial,
+            editorial_controller_path,
             chapters: seed
                 .chapters
                 .into_iter()
@@ -475,6 +511,8 @@ pub fn load_seed(path: &Path) -> Result<HarnessSeed> {
             rejected
         )
     })?;
+    seed.resolve_editorial_settings()
+        .map_err(|error| anyhow::anyhow!("{error} in {}", path.display()))?;
     Ok(seed)
 }
 
@@ -611,6 +649,8 @@ mod tests {
             max_revise_attempts: Some(2),
             checkpoint_policy: Some("auto_advisory".to_string()),
             replan_policy: Some("propose_all".to_string()),
+            editorial: None,
+            editorial_controller_path: None,
             chapters: Vec::new(),
         };
         let state = HarnessState::from_seed(seed, "bible_branch:main".to_string());
@@ -632,6 +672,8 @@ mod tests {
             max_revise_attempts: Some(0),
             checkpoint_policy: Some("manual".to_string()),
             replan_policy: Some("disabled".to_string()),
+            editorial: None,
+            editorial_controller_path: None,
             chapters: Vec::new(),
         };
         let default_state = HarnessState::from_seed(default_seed, "bible_branch:main".to_string());

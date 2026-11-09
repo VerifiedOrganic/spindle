@@ -850,3 +850,89 @@ stage-boundary crash recovery with compare-and-swap (CAS) promotion.
     repair, surgical revision (`5.88%` paragraph / `6.37%` byte change on
     `PJ02`), and swapped-order judge retention (`mean = 2.5` calls/scene, `0`
     broad-edit flags). `EditorialPolicy::Legacy` remains the default policy.
+
+## Implementation status: hybrid host tasks, CLI, and durable budget ledger (PR 7)
+
+PR 7 adds the durable editorial-controller contract, hybrid host tasks, agent
+parity service methods, prose-free attribution, and the harness configuration
+and status/dry-run seams. `EditorialPolicy::Legacy` remains the default; nothing
+prose-affecting is activated by this step.
+
+### Core contracts and durable budget ledger
+
+- `spindle_core::drafting::editorial` defines `EditorialActionKind`,
+  `EditorialBudgetCaps`/`Usage`/`EditorialBudgetReservation`,
+  `EditorialBudgetLedgerV1`, `HostEditorialTaskV1`,
+  `HostEditorialSubmissionV1`, `HostSubmissionOutcomeV1`,
+  `ResolvedEditorialSettingsV1`, `EditorialControllerStateV1`,
+  `EditorialSceneStateV1`, `EditorialNextActionV1`, and
+  `EditorialAttributionV1`.
+- Default ceilings are the design values: per-scene `12` calls, `210k` tokens,
+  `720s`, `$2.00`; per-run `200` calls, `3M` tokens, `90` minutes, `$20`.
+  Reservations are exact proposed calls (`draft` 1, `critique` 1, `revision` 1,
+  two-order judge 2, line edit 1, extraction 1) and are admitted only when every
+  scene and run ceiling still holds. Re-admitting the same
+  `(run, branch, scene, packet, stage, attempt, action)` key is idempotent.
+- `usage_known = false` (host completion or lost provider usage) keeps the full
+  reservation charged; it never fabricates zero usage. A paid dispatch with no
+  configured model price is denied with `missing_price` instead of pretending
+  the monetary cap was verified.
+- The controller is a single JSON artifact saved with a temp-file rename and a
+  per-path lock. Stage changes and reservations are written in the same locked
+  transaction, so a restart cannot reset counters and concurrent owners cannot
+  double-admit.
+- `EditorialAttributionV1` is prose-free: it records stage/attempt, stable
+  prompt template id and version, prompt/context/packet/source hashes,
+  tokenizer identity, parent/candidate hashes, judge order, outcome, durations,
+  actual and reserved tokens/cost, and linked `model_call` ids. Prose stays in
+  the existing access-controlled draft artifacts.
+
+### Hybrid host tasks, agent parity, and judgment
+
+- `prepare_host_editorial_task` snapshots the exact packet and, for revision,
+  the incumbent text, selected directives, and strengths. The host task carries
+  the packet/hash and a stable `task_id`; retrieval through
+  `retrieve_host_task_packet` refuses a submitted task, a mismatched packet
+  hash, a stale branch, or a missing reservation, so an MCP-pull agent cannot
+  bypass the budget or branch snapshot.
+- Host submissions are validated against task id, packet hash, exact bytes,
+  emptiness, truncation, and receipt. Host prose is stored with an explicit
+  `host:<task_id>` receipt (`agent_id = "host"`, exact and normalized hashes)
+  and unknown usage keeps the reservation.
+- Revision submissions run the existing deterministic candidate checks before
+  any judge call. A disqualified candidate retains the incumbent. A missing,
+  uncleared, tokenizer-less, or invalid judge route returns
+  `pending_manual_judgment` and retains the incumbent; it is never treated as a
+  candidate preference. A valid swapped-order judge still requires both passes
+  to prefer the candidate before promotion.
+- Agent mode exposes the same first-draft and bounded revision-loop entry points
+  (`execute_editorial_agent_draft`, `execute_editorial_agent_revision_loop`) over
+  the same prepared packet and artifacts, recording prose-free attribution for
+  each persisted stage transition.
+
+### Harness CLI, status, and legacy compatibility
+
+- `HarnessSeed` accepts an optional `editorial` object
+  (`editorial_policy = legacy | critique_v1`, execution mode, packet/rubric
+  versions, round cap, line-edit and chapter-pass flags, scene/run budgets,
+  optional pricing, generation seed) plus an optional
+  `editorial_controller_path`. `HarnessState` persists the resolved settings;
+  absent or `legacy` configs resolve to `None` and emit no new output.
+- `init` persists resolved settings. `status` reports incumbent/candidate,
+  critic/judge outcome, parked issues, remaining scene/run caps, pending host
+  task, pending manual judgment, and the next action with its reservation and
+  any missing route/tokenizer. `verify` validates the controller artifact
+  without model calls. `resume` dry-run reports the next action, reservation,
+  and missing route/tokenizer without dispatching.
+- `resume --execute-one` advances one persisted editorial action. The CLI can
+  accept a hybrid draft submission (`--host-submission <json>`) and preserves
+  its exact bytes plus receipt. A revision submission or an agent model pass is
+  reported as requiring server-side checks/judging/dispatch; the CLI never
+  silently skips those gates. Agent dispatch remains an internal service seam;
+  MCP tool naming and wiring are deferred to P4 as the design specifies.
+- Legacy runs continue to resume with exact output parity. The feature remains
+  opt-in; release gate **G** has not been re-run for this step and the prior
+  one-shot packet result (`0.4444`, CI `[0.3667, 0.5167]`) still leaves
+  `EditorialPolicy::Legacy` as the default. Continuity gate **C** remains
+  `20 / 28 = 0.7143` overall recall with `5` control false positives and
+  `4 / 4` accepted-prose violating probes across `90` verified live artifacts.

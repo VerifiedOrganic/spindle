@@ -446,6 +446,7 @@ mod canon_ratification;
 mod consistency;
 mod context;
 mod drafting;
+mod editorial;
 mod entities;
 mod entity_updates;
 mod export;
