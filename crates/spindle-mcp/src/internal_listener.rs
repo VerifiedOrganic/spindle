@@ -86,7 +86,7 @@ pub async fn spawn_internal_listener(service: SpindleService) -> anyhow::Result<
         .context("binding internal MCP listener")?;
     let addr = listener.local_addr().context("reading listener addr")?;
     let cancel = CancellationToken::new();
-    let router = http::mcp_router(service, cancel.clone());
+    let router = http::internal_mcp_router(service, cancel.clone());
     let shutdown = cancel.clone();
     tokio::spawn(async move {
         // axum::serve is the accept loop: it serves each connection to

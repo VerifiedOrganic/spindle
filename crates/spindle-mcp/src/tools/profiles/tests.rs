@@ -67,6 +67,47 @@ async fn unknown_and_removed_profiles_fail_closed() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn internal_listener_honors_secondary_profile_override() {
+    use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
+
+    let registry = router().await;
+    let listener = crate::internal_listener::spawn_internal_listener(registry.service().clone())
+        .await
+        .expect("internal listener");
+    let url = format!("http://{}/mcp?profile=worldbuilding", listener.addr());
+    let client = McpHarnessClient::connect(&TransportConfig::Http { url })
+        .await
+        .expect("connect secondary profile client");
+    let tools = client.list_all_tools().await.expect("list tools");
+    let names: std::collections::BTreeSet<_> = tools.iter().map(|t| t.name.as_ref()).collect();
+    let worldbuilding = spindle_adapters::guidance::list_profiles()
+        .iter()
+        .find(|profile| profile.name == "worldbuilding")
+        .unwrap();
+    assert_eq!(
+        names,
+        worldbuilding.tools.iter().copied().collect(),
+        "secondary profile override must not be narrowed to the primary's profile"
+    );
+    assert!(names.contains("create_faction"));
+
+    let result = client
+        .call_tool::<_, serde_json::Value>(
+            "create_faction",
+            &serde_json::json!({"project_id": "project:missing", "name": "Test Faction"}),
+        )
+        .await;
+    let error = result.expect_err("missing project must fail validation");
+    assert!(
+        !format!("{error:#}").contains("unknown tool"),
+        "create_faction must be dispatchable under the secondary profile: {error:#}"
+    );
+
+    drop(client);
+    listener.shutdown();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn secondary_proxy_defaults_to_generated_workflow_write() {
     use rmcp::ServiceExt as _;
     let registry = router().await;

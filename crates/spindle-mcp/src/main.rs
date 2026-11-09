@@ -840,13 +840,10 @@ where
     E: std::error::Error + Send + Sync + 'static,
 {
     let addr = proxy::wait_for_primary(data_dir).await?;
-    let client = proxy::connect_to_primary(addr).await?;
+    let tool_profile = crate::server::resolved_startup_tool_profile();
+    let client = proxy::connect_to_primary_with_profile(addr, tool_profile.as_deref()).await?;
     let failover_signal = tokio_util::sync::CancellationToken::new();
-    let handler = ProxyHandler::new(
-        client.peer().clone(),
-        failover_signal.clone(),
-        crate::server::resolved_startup_tool_profile(),
-    );
+    let handler = ProxyHandler::new(client.peer().clone(), failover_signal.clone(), tool_profile);
 
     let running = handler
         .serve(server_io)

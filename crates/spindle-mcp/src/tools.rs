@@ -160,7 +160,6 @@ mod profiles;
 #[cfg(test)]
 pub(crate) use profiles::OPERATOR_ONLY_TOOLS;
 pub(crate) use profiles::is_operator_only;
-#[cfg(test)]
 pub(crate) use profiles::profile_names;
 use profiles::*;
 pub(crate) use profiles::{print_profiles, profile_has_tool, profile_help, validate_tool_profile};
@@ -269,8 +268,23 @@ impl ToolRouter {
         }
     }
 
-    #[cfg(test)]
-    pub fn serialization_state(&self) -> &Arc<ToolSerializationState> {
+    /// A view of this router with a different tool profile. The session
+    /// context and serialization state are shared, so `set_active_project`
+    /// and branch selection survive per-request profile selection.
+    pub(crate) fn with_profile(&self, tool_profile: Option<String>) -> Self {
+        Self {
+            service: self.service.clone(),
+            session_context: self.session_context.clone(),
+            serialization_state: self.serialization_state.clone(),
+            tool_profile,
+        }
+    }
+
+    pub(crate) fn tool_profile(&self) -> Option<&str> {
+        self.tool_profile.as_deref()
+    }
+
+    pub(crate) fn serialization_state(&self) -> &Arc<ToolSerializationState> {
         &self.serialization_state
     }
 

@@ -27,11 +27,10 @@ pub(crate) fn resolved_startup_tool_profile() -> Option<String> {
 
 #[derive(Clone)]
 pub struct SpindleMcpServer {
-    service: SpindleService,
-    /// Model-facing base profile. A valid internal dispatch token upgrades a
-    /// request to the full orchestration registry.
-    base_profile: Option<String>,
-    serialization_state: Arc<ToolSerializationState>,
+    tool_router: ToolRouter,
+    /// Internal listener sessions may select a generated model profile via
+    /// `?profile=`; ordinary model HTTP/stdio sessions may not.
+    allow_profile_override: bool,
     resource_router: ResourceRouter,
 }
 
@@ -45,43 +44,66 @@ impl SpindleMcpServer {
         service: SpindleService,
         serialization_state: Arc<ToolSerializationState>,
     ) -> Self {
-        Self {
-            service: service.clone(),
-            base_profile: resolved_startup_tool_profile(),
+        let tool_router = ToolRouter::with_tool_profile_and_serialization(
+            service.clone(),
+            resolved_startup_tool_profile(),
             serialization_state,
+        );
+        Self {
+            tool_router,
+            allow_profile_override: false,
             resource_router: ResourceRouter::new(service),
         }
     }
 
     #[cfg(test)]
     pub fn serialization_state(&self) -> &Arc<ToolSerializationState> {
-        &self.serialization_state
+        self.tool_router.serialization_state()
     }
 
     #[cfg(test)]
     pub fn with_tool_profile(service: SpindleService, tool_profile: Option<String>) -> Self {
         let serialization_state = ToolSerializationState::for_service(&service);
         Self {
-            service: service.clone(),
-            base_profile: tool_profile,
-            serialization_state,
+            tool_router: ToolRouter::with_tool_profile_and_serialization(
+                service.clone(),
+                tool_profile,
+                serialization_state,
+            ),
+            allow_profile_override: false,
             resource_router: ResourceRouter::new(service),
         }
     }
 
-    /// Build a router for one request. A validated internal token gets the full
-    /// registry; every other caller, including tokenless clients of the
-    /// addr-file HTTP listener and secondary proxies, gets the model profile.
-    fn router(&self, internal: bool) -> ToolRouter {
-        ToolRouter::with_tool_profile_and_serialization(
-            self.service.clone(),
-            if internal {
-                None
-            } else {
-                self.base_profile.clone()
-            },
-            self.serialization_state.clone(),
-        )
+    /// The internal listener is a local orchestration surface. It keeps the
+    /// startup profile for tokenless clients but lets a secondary proxy select
+    /// its own generated profile via `?profile=`; a valid internal token still
+    /// upgrades a request to the full registry.
+    pub(crate) fn with_internal_listener(service: SpindleService) -> Self {
+        let serialization_state = ToolSerializationState::for_service(&service);
+        let tool_router = ToolRouter::with_tool_profile_and_serialization(
+            service.clone(),
+            resolved_startup_tool_profile(),
+            serialization_state,
+        );
+        Self {
+            tool_router,
+            allow_profile_override: true,
+            resource_router: ResourceRouter::new(service),
+        }
+    }
+
+    /// Build a router for one request. The base router owns the session
+    /// context; profile views share it.
+    fn router(&self, internal: bool, requested_profile: Option<&str>) -> ToolRouter {
+        let profile = if internal {
+            None
+        } else {
+            requested_profile
+                .map(str::to_owned)
+                .or_else(|| self.tool_router.tool_profile().map(str::to_owned))
+        };
+        self.tool_router.with_profile(profile)
     }
 
     /// Build a `StreamableHttpService` that spawns a new `SpindleMcpServer`
@@ -95,6 +117,19 @@ impl SpindleMcpServer {
             service,
             cancellation_token,
             serialization_state,
+        )
+    }
+
+    pub(crate) fn streamable_http_service_internal(
+        service: SpindleService,
+        cancellation_token: CancellationToken,
+    ) -> StreamableHttpService<Self, LocalSessionManager> {
+        let config =
+            StreamableHttpServerConfig::default().with_cancellation_token(cancellation_token);
+        StreamableHttpService::new(
+            move || Ok(SpindleMcpServer::with_internal_listener(service.clone())),
+            Arc::new(LocalSessionManager::default()),
+            config,
         )
     }
 
@@ -148,15 +183,21 @@ All hosts can use the `list_skills`, `get_skill`, and `get_reference` tools as e
     ) -> Result<ListToolsResult, McpError> {
         let internal_token = extract_internal_token(&context);
         let internal = self
-            .serialization_state
+            .tool_router
+            .serialization_state()
             .is_internal_token(internal_token.as_deref());
+        let requested = if self.allow_profile_override {
+            extract_profile_override(&context)
+        } else {
+            None
+        };
         Ok(ListToolsResult::with_all_items(
-            self.router(internal).list_tools(),
+            self.router(internal, requested.as_deref()).list_tools(),
         ))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        self.router(false)
+        self.router(false, None)
             .list_tools()
             .into_iter()
             .find(|tool| tool.name == name)
@@ -186,9 +227,15 @@ All hosts can use the `list_skills`, `get_skill`, and `get_reference` tools as e
         // on instead of stalling the loop.
         let internal_token = extract_internal_token(&context);
         let internal = self
-            .serialization_state
+            .tool_router
+            .serialization_state()
             .is_internal_token(internal_token.as_deref());
-        let router = self.router(internal);
+        let requested = if self.allow_profile_override {
+            extract_profile_override(&context)
+        } else {
+            None
+        };
+        let router = self.router(internal, requested.as_deref());
         let call = router.call_tool_with_internal_token(
             &request.name,
             request.arguments.as_ref(),
@@ -272,6 +319,30 @@ fn extract_internal_token(context: &RequestContext<RoleServer>) -> Option<String
     None
 }
 
+/// Optional generated-profile selection for an internal-listener secondary.
+/// Unknown names are ignored (the base profile still applies); operator names
+/// are never valid profiles.
+fn extract_profile_override(context: &RequestContext<RoleServer>) -> Option<String> {
+    let parts = context.extensions.get::<axum::http::request::Parts>()?;
+    let raw = parts
+        .headers
+        .get("x-spindle-tool-profile")
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| {
+            parts.uri.query().and_then(|query| {
+                query.split('&').find_map(|pair| {
+                    let (key, value) = pair.split_once('=')?;
+                    (key == "profile").then_some(value)
+                })
+            })
+        })?;
+    let profile = raw.trim();
+    if profile.is_empty() || !crate::tools::profile_names().contains(&profile) {
+        return None;
+    }
+    Some(profile.to_string())
+}
+
 /// Best-effort message out of a caught panic payload. `panic!` produces either a
 /// `&'static str` or a formatted `String`; anything else is an opaque payload we
 /// can only acknowledge.
@@ -335,6 +406,83 @@ mod tests {
             ModelRouter::local_only(),
         ));
         SpindleMcpServer::with_tool_profile(service, None)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_context_survives_per_request_profile_views() {
+        use rmcp::ServiceExt as _;
+
+        let temp = tempdir().expect("temp dir");
+        let db = SqlitePool::open(&temp.path().join("server.db"))
+            .await
+            .expect("db init");
+        let data_dir = temp.keep();
+        let service = SpindleService::new(SpindleRepository::with_model_router(
+            db,
+            data_dir,
+            ModelRouter::local_only(),
+        ));
+        let server = SpindleMcpServer::with_tool_profile(service, None);
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let task = tokio::spawn(server.serve(server_io));
+        let client = ().serve(client_io).await.unwrap();
+
+        async fn call(
+            client: &rmcp::service::RunningService<rmcp::service::RoleClient, ()>,
+            name: &str,
+            args: serde_json::Value,
+        ) -> serde_json::Value {
+            let result = client
+                .call_tool(
+                    rmcp::model::CallToolRequestParams::new(name.to_string())
+                        .with_arguments(args.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap();
+            assert_ne!(result.is_error, Some(true), "{name}: {result:?}");
+            serde_json::from_value(result.structured_content.unwrap()).unwrap()
+        }
+
+        let project_args = |name: &str| {
+            serde_json::json!({
+                "name": name,
+                "project_type": "novel",
+                "genre": "fantasy",
+                "reader_contract": {"promise": "A test", "style_notes": [], "boundaries": []}
+            })
+        };
+        let p1 = call(&client, "create_project", project_args("First")).await;
+        let p1_id = p1["project_id"].as_str().unwrap().to_string();
+        let _p2 = call(&client, "create_project", project_args("Second")).await;
+        call(
+            &client,
+            "set_active_project",
+            serde_json::json!({"project_id": p1_id}),
+        )
+        .await;
+        let branch = call(
+            &client,
+            "create_branch",
+            serde_json::json!({
+                "project_id": p1_id,
+                "name": "alternate",
+                "branch_type": "alternate"
+            }),
+        )
+        .await;
+        let branch_id = branch["branch_id"].as_str().unwrap().to_string();
+        call(
+            &client,
+            "switch_branch",
+            serde_json::json!({"project_id": p1_id, "branch_id": branch_id}),
+        )
+        .await;
+        let state = call(&client, "get_writer_state", serde_json::json!({})).await;
+        assert_eq!(state["current"]["project"]["project_id"], p1_id);
+        assert_eq!(state["current"]["branch"]["branch_id"], branch_id);
+
+        client.cancel().await.unwrap();
+        task.await.unwrap().unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
