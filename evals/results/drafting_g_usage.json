@@ -127,8 +127,29 @@
         "elapsed_seconds": 653.7499999999997
       }
     },
+    "loop_incremental_vs_own_initial": {
+      "ollama-glm-5.2": {
+        "calls": 180,
+        "input_tokens": 505956,
+        "output_tokens": 114925,
+        "elapsed_seconds": 738.6610000000004
+      },
+      "ollama-deepseek-v4.1-flash": {
+        "calls": 180,
+        "input_tokens": 511256,
+        "output_tokens": 119417,
+        "elapsed_seconds": 698.009
+      },
+      "ollama-gemma4-31b": {
+        "calls": 180,
+        "input_tokens": 512000,
+        "output_tokens": 98799,
+        "elapsed_seconds": 567.4179999999999
+      }
+    },
     "loop_vs_baseline_total_calls": 540,
     "loop_vs_packet_only_total_calls": 540,
-    "total_calls": 1080
+    "loop_incremental_total_calls": 540,
+    "total_calls": 1620
   }
 }

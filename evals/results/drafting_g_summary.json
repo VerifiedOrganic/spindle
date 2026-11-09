@@ -1,6 +1,6 @@
 {
   "schema_version": "drafting_g_pr9_summary_v1",
-  "generated_at": "2026-11-09T15:44:53.548378+00:00",
+  "generated_at": "2026-11-09T16:22:12.685006+00:00",
   "source_main": "601bf0919587",
   "defaults": {
     "editorial_policy": "legacy",
@@ -153,6 +153,78 @@
         "ollama-gemma4-31b"
       ]
     },
+    "critique_revise_loop_incremental_vs_own_initial": {
+      "name": "drafting_packet_v1_critic_loop_incremental_vs_own_initial",
+      "comparison": "loop final vs that loop's own saved initial draft (self-pair ablation)",
+      "n_pairs": 90,
+      "n_clusters": 30,
+      "candidate_wins": 2,
+      "baseline_wins": 0,
+      "ties": 88,
+      "candidate_win_rate_tie_half": 0.5111,
+      "ci95": [
+        0.5,
+        0.5333
+      ],
+      "lower_bound_exceeds_0_50": false,
+      "candidate_outright_win_rate": 0.0222,
+      "baseline_outright_win_rate": 0.0,
+      "tie_rate": 0.9778,
+      "by_scene_type": {
+        "action": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5,
+          "ci95": [
+            0.5,
+            0.5
+          ]
+        },
+        "dialogue-heavy": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5,
+          "ci95": [
+            0.5,
+            0.5
+          ]
+        },
+        "quiet-interior": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5,
+          "ci95": [
+            0.5,
+            0.5
+          ]
+        },
+        "reveal": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5,
+          "ci95": [
+            0.5,
+            0.5
+          ]
+        },
+        "chapter-closer": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5556,
+          "ci95": [
+            0.5,
+            0.6667
+          ]
+        }
+      },
+      "position_bias_rate": 0.0667,
+      "order_consistency_rate": 0.9333,
+      "inter_judge_agreement": {
+        "fleiss_kappa": 0.3203,
+        "unanimous_rate": 0.9556,
+        "n_judges": 3
+      },
+      "judges": [
+        "ollama-glm-5.2",
+        "ollama-deepseek-v4.1-flash",
+        "ollama-gemma4-31b"
+      ]
+    },
     "line_edit_vs_scene_loop_only": {
       "status": "not_run",
       "reason": "No evals-only bridge exists for the optional line-edit pass; scope was evals/results/docs only and budget went to the mandatory row-6 loop G. Not activated."
@@ -165,6 +237,10 @@
       "status": "not_run",
       "reason": "No live hybrid/agent execution-mode G harness was run in this evals-only measurement; neither host execution mode is activated and Legacy remains the default."
     }
+  },
+  "control_methodology": {
+    "packet_only_control": "The packet-only arm is an independent generation, not each loop's own initial draft. Its text hash differs from the loop's saved initial hash in all 90 pairs, so loop-vs-packet-only measures end-to-end pipeline samples, not the incremental effect of editing the same draft.",
+    "incremental_ablation": "Each loop's final text was also judged against that same loop's saved initial_text from RevisionLoopArtifactV1 (90 self-pairs: 81 unchanged, 9 revised). This isolates the edit increment but is underpowered because only 9 pairs have differing text; it is supplementary and does not replace the end-to-end gate."
   },
   "loop_distribution": {
     "n": 90,
@@ -310,16 +386,37 @@
           "elapsed_seconds": 653.7499999999997
         }
       },
+      "loop_incremental_vs_own_initial": {
+        "ollama-glm-5.2": {
+          "calls": 180,
+          "input_tokens": 505956,
+          "output_tokens": 114925,
+          "elapsed_seconds": 738.6610000000004
+        },
+        "ollama-deepseek-v4.1-flash": {
+          "calls": 180,
+          "input_tokens": 511256,
+          "output_tokens": 119417,
+          "elapsed_seconds": 698.009
+        },
+        "ollama-gemma4-31b": {
+          "calls": 180,
+          "input_tokens": 512000,
+          "output_tokens": 98799,
+          "elapsed_seconds": 567.4179999999999
+        }
+      },
       "loop_vs_baseline_total_calls": 540,
       "loop_vs_packet_only_total_calls": 540,
-      "total_calls": 1080
+      "loop_incremental_total_calls": 540,
+      "total_calls": 1620
     }
   },
   "conclusion": {
     "loop_vs_baseline_lower_bound_exceeds_0_50": false,
     "loop_vs_packet_only_lower_bound_exceeds_0_50": false,
+    "loop_incremental_vs_own_initial_lower_bound_exceeds_0_50": false,
     "any_default_activation": false,
     "note": "Defaults unchanged. A lower bound <= 0.50 means the loop does not clear the G gate; even a pass would not be activated in this PR."
-  },
-  "branch_merged_main": "9b6a70e"
+  }
 }

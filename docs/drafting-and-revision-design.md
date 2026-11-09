@@ -1047,6 +1047,7 @@ was judged in randomized and swapped presentation order; CIs are 95%
 non-parametric cluster bootstraps by brief. Checked-in results:
 `evals/results/drafting_g_loop_vs_baseline.json`,
 `evals/results/drafting_g_loop_vs_packet_only.json`,
+`evals/results/drafting_g_loop_incremental_vs_own_initial.json`,
 `evals/results/drafting_g_summary.json`, and
 `evals/results/drafting_g_usage.json`.
 
@@ -1054,6 +1055,16 @@ non-parametric cluster bootstraps by brief. Checked-in results:
 | --- | ---: | ---: | --- | --- |
 | Loop vs legacy baseline | 90 | 0.4389 | [0.3667, 0.5111] | **No** |
 | Loop vs packet-only | 90 | 0.4833 | [0.4111, 0.5556] | **No** |
+| Loop final vs own initial (self-pair ablation) | 90 | 0.5111 | [0.5000, 0.5333] | **No** (lower bound = 0.50) |
+
+**Control disclosure.** The packet-only arm is an independent generation, not
+each loop's own initial draft. Its text hash differs from the loop's saved
+initial hash in all 90 pairs, so loop-vs-packet measures two end-to-end
+pipelines, not the incremental effect of editing the same draft. An incremental
+self-pair ablation (each loop's final text vs its own saved `initial_text`)
+gives `0.5111 [0.5000, 0.5333]`, with 2 wins, 0 losses, and 88 ties; 81 pairs
+are unchanged and only 9 differ. It is underpowered and the lower bound is
+exactly 0.50, so it still does not clear the `> 0.50` gate.
 
 The loop promoted a revision in only `9 / 90` scenes (`10.0%`). Of the rest,
 `56` had no actionable directives, `20` produced an invalid critic response,
@@ -1067,8 +1078,9 @@ Neither lower bound exceeds 0.50, so the loop G does **not** clear and
 
 Usage: `532` generation-ledger calls (including `221` token-count probes; `311`
 draft/critic/revise/judge calls), `3.43M` input / `397k` output tokens total;
-`1,080` live judge passes (540 per comparison). Cost is not recorded because
-the eval configs carry no token price; tokens and latency are in the usage JSON.
+`1,620` live judge passes (540 per comparison across three comparisons). Cost is
+not recorded because the eval configs carry no token price; tokens and latency
+are in the usage JSON.
 No defaults, flags, or product code were changed.
 
 The line-edit and chapter-pass G experiments, the chapter-coherence blinded
