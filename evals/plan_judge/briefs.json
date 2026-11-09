@@ -1,0 +1,5378 @@
+{
+  "schema_version": 1,
+  "suite_id": "spindle.plan_judge.v1",
+  "description": "30 fixed planning briefs: 10 greenfield new-book, 10 chapter-horizon continuation, 10 mid-book replan/amendment. Includes single and rotating POV, standalone/series/serial modes, known cast/world constraints and deliberately conflicting replan inputs. Fixture plans built from these briefs are labelled fixtures, not model output.",
+  "kinds": {
+    "greenfield": 10,
+    "continuation": 10,
+    "replan": 10
+  },
+  "briefs": [
+    {
+      "id": "PJG01",
+      "kind": "greenfield",
+      "kind_label": "greenfield new-book",
+      "name": "The Clapperless Bell",
+      "genre": "mystery",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "general",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 1,
+        "chapter_end": 3,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Clapperless Bell: A fair-play coastal mystery where every clue has a material cost. The central pressure is the harbor's evacuation.",
+      "contract_promise": "A fair-play coastal mystery where every clue has a material cost.",
+      "existing_context": "",
+      "conflicting_input": null,
+      "hook": "the clapperless bell",
+      "stakes": "the harbor's evacuation",
+      "constraints": [
+        "Keep every scene within the general content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon."
+      ],
+      "boundaries": [
+        "No harm to children",
+        "No amnesia reset"
+      ],
+      "style_notes": [
+        "Close third person",
+        "Sensory coastal detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:harbor-p",
+          "name": "Mara",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:harbor-a",
+          "name": "Ivo",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:harbor-o",
+          "name": "Vell",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:harbor",
+          "name": "Watchtower",
+          "kind": "signal tower"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:harbor",
+          "rule_name": "Harbor tides",
+          "description": "The tidal gate opens at dawn and cannot be forced."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:harbor",
+          "input": {
+            "theme_statement": "Truth requires risk",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:harbor",
+          "input": {
+            "name": "The impossible bell",
+            "conflict_type": "central",
+            "stakes": "the harbor's evacuation"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:harbor",
+          "input": {
+            "name": "Find the bell ringer",
+            "plot_type": "main",
+            "summary": "Find the bell ringer"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:harbor",
+          "input": {
+            "character_id": "cast:harbor-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Truth requires risk"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:bell",
+          "description": "Who rang the clapperless bell?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 3,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:harbor-p"
+      },
+      "pov_roster": [
+        "cast:harbor-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 1,
+          "turn": "Mara hears the clapperless bell and finds fresh salt on the locked bell rope.",
+          "scenes": [
+            "Mara notices the clapperless bell at Watchtower and keeps the first clue hidden.",
+            "Mara asks Ivo for help and pays a small price for silence."
+          ]
+        },
+        {
+          "chapter_number": 2,
+          "turn": "Mara trades her archive key for a tide chart and loses Ivo's trust.",
+          "scenes": [
+            "Mara follows a lead that costs the harbor's evacuation.",
+            "Mara chooses between the clue and Ivo's safety."
+          ]
+        },
+        {
+          "chapter_number": 3,
+          "turn": "Mara confronts Vell with the forged signal log and chooses what to reveal.",
+          "scenes": [
+            "Mara confronts Vell with the recovered proof.",
+            "Mara decides what to reveal about the clapperless bell."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should Ivo know about the forged log before the final confrontation?",
+      "constraint_spec": {
+        "rating_ceiling": "general",
+        "allowed_pov_refs": [
+          "cast:harbor-p"
+        ],
+        "required_cast_refs": [
+          "cast:harbor-p",
+          "cast:harbor-a"
+        ],
+        "required_location_refs": [
+          "loc:harbor"
+        ],
+        "required_promise_refs": [
+          "promise:bell"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 3,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJC01",
+      "kind": "continuation",
+      "kind_label": "chapter-horizon continuation",
+      "name": "The Clapperless Bell",
+      "genre": "mystery",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "general",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 5,
+        "chapter_end": 6,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Clapperless Bell: A fair-play coastal mystery where every clue has a material cost. The central pressure is the harbor's evacuation.",
+      "contract_promise": "A fair-play coastal mystery where every clue has a material cost.",
+      "existing_context": "Chapters 1-4 are drafted and accepted. The contract, cast and the impossible bell are canon. The next planning horizon continues directly from chapter 4.",
+      "conflicting_input": null,
+      "hook": "the clapperless bell",
+      "stakes": "the harbor's evacuation",
+      "constraints": [
+        "Keep every scene within the general content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Reuse the accepted contract and cast; never create a duplicate series."
+      ],
+      "boundaries": [
+        "No harm to children",
+        "No amnesia reset"
+      ],
+      "style_notes": [
+        "Close third person",
+        "Sensory coastal detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:harbor-p",
+          "name": "Mara",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:harbor-a",
+          "name": "Ivo",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:harbor-o",
+          "name": "Vell",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:harbor",
+          "name": "Watchtower",
+          "kind": "signal tower"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:harbor",
+          "rule_name": "Harbor tides",
+          "description": "The tidal gate opens at dawn and cannot be forced."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:harbor",
+          "input": {
+            "theme_statement": "Truth requires risk",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:harbor",
+          "input": {
+            "name": "The impossible bell",
+            "conflict_type": "central",
+            "stakes": "the harbor's evacuation"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:harbor",
+          "input": {
+            "name": "Find the bell ringer",
+            "plot_type": "main",
+            "summary": "Find the bell ringer"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:harbor",
+          "input": {
+            "character_id": "cast:harbor-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Truth requires risk"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:bell",
+          "description": "Who rang the clapperless bell?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 5,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 6,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:harbor-p"
+      },
+      "pov_roster": [
+        "cast:harbor-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 5,
+          "turn": "Mara trades her archive key for a tide chart and loses Ivo's trust.",
+          "scenes": [
+            "Mara reopens the the clapperless bell thread and finds a detail the earlier chapters missed.",
+            "Mara tests Ivo's account and learns why the earlier plan was incomplete."
+          ]
+        },
+        {
+          "chapter_number": 6,
+          "turn": "Mara confronts Vell with the forged signal log and chooses what to reveal.",
+          "scenes": [
+            "Mara forces the the harbor's evacuation confrontation and pays off what the prior chapters set up.",
+            "Mara chooses what the next book may inherit about the clapperless bell."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should Ivo know about the forged log before the final confrontation?",
+      "constraint_spec": {
+        "rating_ceiling": "general",
+        "allowed_pov_refs": [
+          "cast:harbor-p"
+        ],
+        "required_cast_refs": [
+          "cast:harbor-p",
+          "cast:harbor-a"
+        ],
+        "required_location_refs": [
+          "loc:harbor"
+        ],
+        "required_promise_refs": [
+          "promise:bell"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJR01",
+      "kind": "replan",
+      "kind_label": "mid-book replan or amendment",
+      "name": "The Clapperless Bell",
+      "genre": "mystery",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "general",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 9,
+        "chapter_end": 10,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Clapperless Bell: A fair-play coastal mystery where every clue has a material cost. The central pressure is the harbor's evacuation.",
+      "contract_promise": "A fair-play coastal mystery where every clue has a material cost.",
+      "existing_context": "Chapters 1-8 are drafted. A summary-triggered replan must amend the unwritten future without rewriting drafted prose or accepted canon.",
+      "conflicting_input": "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon.",
+      "hook": "the clapperless bell",
+      "stakes": "the harbor's evacuation",
+      "constraints": [
+        "Keep every scene within the general content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Treat this as an amendment to unwritten future chapters only.",
+        "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon."
+      ],
+      "boundaries": [
+        "No harm to children",
+        "No amnesia reset"
+      ],
+      "style_notes": [
+        "Close third person",
+        "Sensory coastal detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:harbor-p",
+          "name": "Mara",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:harbor-a",
+          "name": "Ivo",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:harbor-o",
+          "name": "Vell",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:harbor",
+          "name": "Watchtower",
+          "kind": "signal tower"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:harbor",
+          "rule_name": "Harbor tides",
+          "description": "The tidal gate opens at dawn and cannot be forced."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:harbor",
+          "input": {
+            "theme_statement": "Truth requires risk",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:harbor",
+          "input": {
+            "name": "The impossible bell",
+            "conflict_type": "central",
+            "stakes": "the harbor's evacuation"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:harbor",
+          "input": {
+            "name": "Find the bell ringer",
+            "plot_type": "main",
+            "summary": "Find the bell ringer"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:harbor",
+          "input": {
+            "character_id": "cast:harbor-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Truth requires risk"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:bell",
+          "description": "Who rang the clapperless bell?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 9,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 10,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:harbor-p"
+      },
+      "pov_roster": [
+        "cast:harbor-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 9,
+          "turn": "Mara trades her archive key for a tide chart and loses Ivo's trust.",
+          "scenes": [
+            "Mara renegotiates the the clapperless bell plan after the new boundary changes what can be shown.",
+            "Mara asks Ivo which earlier promise still holds and which must be re-staged."
+          ]
+        },
+        {
+          "chapter_number": 10,
+          "turn": "Mara confronts Vell with the forged signal log and chooses what to reveal.",
+          "scenes": [
+            "Mara pays off the clapperless bell in a non-graphic confrontation that preserves the harbor's evacuation.",
+            "Mara chooses what the revised outline leaves for the next arc."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should Ivo know about the forged log before the final confrontation?",
+      "constraint_spec": {
+        "rating_ceiling": "general",
+        "allowed_pov_refs": [
+          "cast:harbor-p"
+        ],
+        "required_cast_refs": [
+          "cast:harbor-p",
+          "cast:harbor-a"
+        ],
+        "required_location_refs": [
+          "loc:harbor"
+        ],
+        "required_promise_refs": [
+          "promise:bell"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJG02",
+      "kind": "greenfield",
+      "kind_label": "greenfield new-book",
+      "name": "River-Road Ledger",
+      "genre": "fantasy",
+      "mode": "series",
+      "pov_mode": "rotating",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 1,
+        "chapter_end": 3,
+        "scenes_per_chapter": 2
+      },
+      "premise": "River-Road Ledger: A river-road fantasy about material debt, not chosen-one destiny. The central pressure is the river villages' grain supply.",
+      "contract_promise": "A river-road fantasy about material debt, not chosen-one destiny.",
+      "existing_context": "",
+      "conflicting_input": null,
+      "hook": "the stolen toll ledger",
+      "stakes": "the river villages' grain supply",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon."
+      ],
+      "boundaries": [
+        "No sexual content",
+        "No prophecy"
+      ],
+      "style_notes": [
+        "Concrete trade detail",
+        "Lightly wry dialogue"
+      ],
+      "cast": [
+        {
+          "ref": "cast:river-p",
+          "name": "Tamsin",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:river-a",
+          "name": "Orin",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:river-o",
+          "name": "Lady Sable",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:river",
+          "name": "North Lock",
+          "kind": "river lock"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:river",
+          "rule_name": "River law",
+          "description": "Cargo dropped into the sluice belongs to the lock-house."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:river",
+          "input": {
+            "theme_statement": "Debt is a kind of weather",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:river",
+          "input": {
+            "name": "The stolen ledger",
+            "conflict_type": "central",
+            "stakes": "the river villages' grain supply"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:river",
+          "input": {
+            "name": "Recover the river ledger",
+            "plot_type": "main",
+            "summary": "Recover the river ledger"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:river",
+          "input": {
+            "character_id": "cast:river-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Debt is a kind of weather"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:ledger",
+          "description": "Who altered the toll ledger?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 3,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "allowed_roster": [
+          "cast:river-p",
+          "cast:river-a"
+        ],
+        "max_consecutive_chapters": 2
+      },
+      "pov_roster": [
+        "cast:river-p",
+        "cast:river-a"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 1,
+          "turn": "Tamsin finds the stolen ledger hidden in a grain barge.",
+          "scenes": [
+            "Tamsin notices the stolen toll ledger at North Lock and keeps the first clue hidden.",
+            "Tamsin asks Orin for help and pays a small price for silence."
+          ]
+        },
+        {
+          "chapter_number": 2,
+          "turn": "Orin trades their safe passage for a name and Tamsin pays the debt.",
+          "scenes": [
+            "Tamsin follows a lead that costs the river villages' grain supply.",
+            "Tamsin chooses between the clue and Orin's safety."
+          ]
+        },
+        {
+          "chapter_number": 3,
+          "turn": "Tamsin confronts Lady Sable with the altered page and chooses the villages.",
+          "scenes": [
+            "Tamsin confronts Lady Sable with the recovered proof.",
+            "Tamsin decides what to reveal about the stolen toll ledger."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Orin confess before the confrontation, or after?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:river-p",
+          "cast:river-a"
+        ],
+        "required_cast_refs": [
+          "cast:river-p",
+          "cast:river-a"
+        ],
+        "required_location_refs": [
+          "loc:river"
+        ],
+        "required_promise_refs": [
+          "promise:ledger"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 3,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJC02",
+      "kind": "continuation",
+      "kind_label": "chapter-horizon continuation",
+      "name": "River-Road Ledger",
+      "genre": "fantasy",
+      "mode": "series",
+      "pov_mode": "rotating",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 5,
+        "chapter_end": 6,
+        "scenes_per_chapter": 2
+      },
+      "premise": "River-Road Ledger: A river-road fantasy about material debt, not chosen-one destiny. The central pressure is the river villages' grain supply.",
+      "contract_promise": "A river-road fantasy about material debt, not chosen-one destiny.",
+      "existing_context": "Chapters 1-4 are drafted and accepted. The contract, cast and the stolen ledger are canon. The next planning horizon continues directly from chapter 4.",
+      "conflicting_input": null,
+      "hook": "the stolen toll ledger",
+      "stakes": "the river villages' grain supply",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Reuse the accepted contract and cast; never create a duplicate series."
+      ],
+      "boundaries": [
+        "No sexual content",
+        "No prophecy"
+      ],
+      "style_notes": [
+        "Concrete trade detail",
+        "Lightly wry dialogue"
+      ],
+      "cast": [
+        {
+          "ref": "cast:river-p",
+          "name": "Tamsin",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:river-a",
+          "name": "Orin",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:river-o",
+          "name": "Lady Sable",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:river",
+          "name": "North Lock",
+          "kind": "river lock"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:river",
+          "rule_name": "River law",
+          "description": "Cargo dropped into the sluice belongs to the lock-house."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:river",
+          "input": {
+            "theme_statement": "Debt is a kind of weather",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:river",
+          "input": {
+            "name": "The stolen ledger",
+            "conflict_type": "central",
+            "stakes": "the river villages' grain supply"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:river",
+          "input": {
+            "name": "Recover the river ledger",
+            "plot_type": "main",
+            "summary": "Recover the river ledger"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:river",
+          "input": {
+            "character_id": "cast:river-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Debt is a kind of weather"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:ledger",
+          "description": "Who altered the toll ledger?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 5,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 6,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "allowed_roster": [
+          "cast:river-p",
+          "cast:river-a"
+        ],
+        "max_consecutive_chapters": 2
+      },
+      "pov_roster": [
+        "cast:river-p",
+        "cast:river-a"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 5,
+          "turn": "Orin trades their safe passage for a name and Tamsin pays the debt.",
+          "scenes": [
+            "Tamsin reopens the the stolen toll ledger thread and finds a detail the earlier chapters missed.",
+            "Tamsin tests Orin's account and learns why the earlier plan was incomplete."
+          ]
+        },
+        {
+          "chapter_number": 6,
+          "turn": "Tamsin confronts Lady Sable with the altered page and chooses the villages.",
+          "scenes": [
+            "Tamsin forces the the river villages' grain supply confrontation and pays off what the prior chapters set up.",
+            "Tamsin chooses what the next book may inherit about the stolen toll ledger."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Orin confess before the confrontation, or after?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:river-p",
+          "cast:river-a"
+        ],
+        "required_cast_refs": [
+          "cast:river-p",
+          "cast:river-a"
+        ],
+        "required_location_refs": [
+          "loc:river"
+        ],
+        "required_promise_refs": [
+          "promise:ledger"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJR02",
+      "kind": "replan",
+      "kind_label": "mid-book replan or amendment",
+      "name": "River-Road Ledger",
+      "genre": "fantasy",
+      "mode": "series",
+      "pov_mode": "rotating",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 9,
+        "chapter_end": 10,
+        "scenes_per_chapter": 2
+      },
+      "premise": "River-Road Ledger: A river-road fantasy about material debt, not chosen-one destiny. The central pressure is the river villages' grain supply.",
+      "contract_promise": "A river-road fantasy about material debt, not chosen-one destiny.",
+      "existing_context": "Chapters 1-8 are drafted. A summary-triggered replan must amend the unwritten future without rewriting drafted prose or accepted canon.",
+      "conflicting_input": "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon.",
+      "hook": "the stolen toll ledger",
+      "stakes": "the river villages' grain supply",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Treat this as an amendment to unwritten future chapters only.",
+        "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon."
+      ],
+      "boundaries": [
+        "No sexual content",
+        "No prophecy"
+      ],
+      "style_notes": [
+        "Concrete trade detail",
+        "Lightly wry dialogue"
+      ],
+      "cast": [
+        {
+          "ref": "cast:river-p",
+          "name": "Tamsin",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:river-a",
+          "name": "Orin",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:river-o",
+          "name": "Lady Sable",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:river",
+          "name": "North Lock",
+          "kind": "river lock"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:river",
+          "rule_name": "River law",
+          "description": "Cargo dropped into the sluice belongs to the lock-house."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:river",
+          "input": {
+            "theme_statement": "Debt is a kind of weather",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:river",
+          "input": {
+            "name": "The stolen ledger",
+            "conflict_type": "central",
+            "stakes": "the river villages' grain supply"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:river",
+          "input": {
+            "name": "Recover the river ledger",
+            "plot_type": "main",
+            "summary": "Recover the river ledger"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:river",
+          "input": {
+            "character_id": "cast:river-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Debt is a kind of weather"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:ledger",
+          "description": "Who altered the toll ledger?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 9,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 10,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "allowed_roster": [
+          "cast:river-p",
+          "cast:river-a"
+        ],
+        "max_consecutive_chapters": 2
+      },
+      "pov_roster": [
+        "cast:river-p",
+        "cast:river-a"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 9,
+          "turn": "Orin trades their safe passage for a name and Tamsin pays the debt.",
+          "scenes": [
+            "Tamsin renegotiates the the stolen toll ledger plan after the new boundary changes what can be shown.",
+            "Tamsin asks Orin which earlier promise still holds and which must be re-staged."
+          ]
+        },
+        {
+          "chapter_number": 10,
+          "turn": "Tamsin confronts Lady Sable with the altered page and chooses the villages.",
+          "scenes": [
+            "Tamsin pays off the stolen toll ledger in a non-graphic confrontation that preserves the river villages' grain supply.",
+            "Tamsin chooses what the revised outline leaves for the next arc."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Orin confess before the confrontation, or after?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:river-p",
+          "cast:river-a"
+        ],
+        "required_cast_refs": [
+          "cast:river-p",
+          "cast:river-a"
+        ],
+        "required_location_refs": [
+          "loc:river"
+        ],
+        "required_promise_refs": [
+          "promise:ledger"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJG03",
+      "kind": "greenfield",
+      "kind_label": "greenfield new-book",
+      "name": "Orbit of Small Debts",
+      "genre": "science_fiction",
+      "mode": "serial",
+      "pov_mode": "single",
+      "rating_ceiling": "teen",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 1,
+        "chapter_end": 3,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Orbit of Small Debts: A serial science-fiction mystery about maintenance work and collective care. The central pressure is the station's sleepers.",
+      "contract_promise": "A serial science-fiction mystery about maintenance work and collective care.",
+      "existing_context": "",
+      "conflicting_input": null,
+      "hook": "the vanishing oxygen debt",
+      "stakes": "the station's sleepers",
+      "constraints": [
+        "Keep every scene within the teen content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon."
+      ],
+      "boundaries": [
+        "No gore",
+        "No chosen-one prophecy"
+      ],
+      "style_notes": [
+        "Procedural detail",
+        "Dry workplace humor"
+      ],
+      "cast": [
+        {
+          "ref": "cast:orbit-p",
+          "name": "Ada",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:orbit-a",
+          "name": "Ren",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:orbit-o",
+          "name": "Controller Nine",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:orbit",
+          "name": "Relay Station",
+          "kind": "orbital station"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:orbit",
+          "rule_name": "Oxygen ledger",
+          "description": "Every breath is debited against a station account."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:orbit",
+          "input": {
+            "theme_statement": "Care is a distributed system",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:orbit",
+          "input": {
+            "name": "The failing oxygen ledger",
+            "conflict_type": "central",
+            "stakes": "the station's sleepers"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:orbit",
+          "input": {
+            "name": "Expose the debit fraud",
+            "plot_type": "main",
+            "summary": "Expose the debit fraud"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:orbit",
+          "input": {
+            "character_id": "cast:orbit-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Care is a distributed system"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:oxygen",
+          "description": "Why is the station deleting oxygen debts?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1
+          },
+          "payoff_at": null,
+          "deferred_reason": "The promise intentionally remains open for the next book.",
+          "destination": "next book's opening arc"
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:orbit-p"
+      },
+      "pov_roster": [
+        "cast:orbit-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 1,
+          "turn": "Ada finds a deleted oxygen debt in the maintenance ledger.",
+          "scenes": [
+            "Ada notices the vanishing oxygen debt at Relay Station and keeps the first clue hidden.",
+            "Ada asks Ren for help and pays a small price for silence."
+          ]
+        },
+        {
+          "chapter_number": 2,
+          "turn": "Ada trades her sleep shift for a diagnostic key and Ren's trust.",
+          "scenes": [
+            "Ada follows a lead that costs the station's sleepers.",
+            "Ada chooses between the clue and Ren's safety."
+          ]
+        },
+        {
+          "chapter_number": 3,
+          "turn": "Ada confronts Controller Nine as the sleepers wake early.",
+          "scenes": [
+            "Ada confronts Controller Nine with the recovered proof.",
+            "Ada decides what to reveal about the vanishing oxygen debt."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the sleepers be told before the ledger is proven?",
+      "constraint_spec": {
+        "rating_ceiling": "teen",
+        "allowed_pov_refs": [
+          "cast:orbit-p"
+        ],
+        "required_cast_refs": [
+          "cast:orbit-p",
+          "cast:orbit-a"
+        ],
+        "required_location_refs": [
+          "loc:orbit"
+        ],
+        "required_promise_refs": [
+          "promise:oxygen"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 3,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJC03",
+      "kind": "continuation",
+      "kind_label": "chapter-horizon continuation",
+      "name": "Orbit of Small Debts",
+      "genre": "science_fiction",
+      "mode": "serial",
+      "pov_mode": "single",
+      "rating_ceiling": "teen",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 5,
+        "chapter_end": 6,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Orbit of Small Debts: A serial science-fiction mystery about maintenance work and collective care. The central pressure is the station's sleepers.",
+      "contract_promise": "A serial science-fiction mystery about maintenance work and collective care.",
+      "existing_context": "Chapters 1-4 are drafted and accepted. The contract, cast and the failing oxygen ledger are canon. The next planning horizon continues directly from chapter 4.",
+      "conflicting_input": null,
+      "hook": "the vanishing oxygen debt",
+      "stakes": "the station's sleepers",
+      "constraints": [
+        "Keep every scene within the teen content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Reuse the accepted contract and cast; never create a duplicate series."
+      ],
+      "boundaries": [
+        "No gore",
+        "No chosen-one prophecy"
+      ],
+      "style_notes": [
+        "Procedural detail",
+        "Dry workplace humor"
+      ],
+      "cast": [
+        {
+          "ref": "cast:orbit-p",
+          "name": "Ada",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:orbit-a",
+          "name": "Ren",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:orbit-o",
+          "name": "Controller Nine",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:orbit",
+          "name": "Relay Station",
+          "kind": "orbital station"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:orbit",
+          "rule_name": "Oxygen ledger",
+          "description": "Every breath is debited against a station account."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:orbit",
+          "input": {
+            "theme_statement": "Care is a distributed system",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:orbit",
+          "input": {
+            "name": "The failing oxygen ledger",
+            "conflict_type": "central",
+            "stakes": "the station's sleepers"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:orbit",
+          "input": {
+            "name": "Expose the debit fraud",
+            "plot_type": "main",
+            "summary": "Expose the debit fraud"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:orbit",
+          "input": {
+            "character_id": "cast:orbit-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Care is a distributed system"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:oxygen",
+          "description": "Why is the station deleting oxygen debts?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 5,
+            "scene_order": 1
+          },
+          "payoff_at": null,
+          "deferred_reason": "The promise intentionally remains open for the next book.",
+          "destination": "next book's opening arc"
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:orbit-p"
+      },
+      "pov_roster": [
+        "cast:orbit-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 5,
+          "turn": "Ada trades her sleep shift for a diagnostic key and Ren's trust.",
+          "scenes": [
+            "Ada reopens the the vanishing oxygen debt thread and finds a detail the earlier chapters missed.",
+            "Ada tests Ren's account and learns why the earlier plan was incomplete."
+          ]
+        },
+        {
+          "chapter_number": 6,
+          "turn": "Ada confronts Controller Nine as the sleepers wake early.",
+          "scenes": [
+            "Ada forces the the station's sleepers confrontation and pays off what the prior chapters set up.",
+            "Ada chooses what the next book may inherit about the vanishing oxygen debt."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the sleepers be told before the ledger is proven?",
+      "constraint_spec": {
+        "rating_ceiling": "teen",
+        "allowed_pov_refs": [
+          "cast:orbit-p"
+        ],
+        "required_cast_refs": [
+          "cast:orbit-p",
+          "cast:orbit-a"
+        ],
+        "required_location_refs": [
+          "loc:orbit"
+        ],
+        "required_promise_refs": [
+          "promise:oxygen"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJR03",
+      "kind": "replan",
+      "kind_label": "mid-book replan or amendment",
+      "name": "Orbit of Small Debts",
+      "genre": "science_fiction",
+      "mode": "serial",
+      "pov_mode": "single",
+      "rating_ceiling": "teen",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 9,
+        "chapter_end": 10,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Orbit of Small Debts: A serial science-fiction mystery about maintenance work and collective care. The central pressure is the station's sleepers.",
+      "contract_promise": "A serial science-fiction mystery about maintenance work and collective care.",
+      "existing_context": "Chapters 1-8 are drafted. A summary-triggered replan must amend the unwritten future without rewriting drafted prose or accepted canon.",
+      "conflicting_input": "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon.",
+      "hook": "the vanishing oxygen debt",
+      "stakes": "the station's sleepers",
+      "constraints": [
+        "Keep every scene within the teen content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Treat this as an amendment to unwritten future chapters only.",
+        "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon."
+      ],
+      "boundaries": [
+        "No gore",
+        "No chosen-one prophecy"
+      ],
+      "style_notes": [
+        "Procedural detail",
+        "Dry workplace humor"
+      ],
+      "cast": [
+        {
+          "ref": "cast:orbit-p",
+          "name": "Ada",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:orbit-a",
+          "name": "Ren",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:orbit-o",
+          "name": "Controller Nine",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:orbit",
+          "name": "Relay Station",
+          "kind": "orbital station"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:orbit",
+          "rule_name": "Oxygen ledger",
+          "description": "Every breath is debited against a station account."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:orbit",
+          "input": {
+            "theme_statement": "Care is a distributed system",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:orbit",
+          "input": {
+            "name": "The failing oxygen ledger",
+            "conflict_type": "central",
+            "stakes": "the station's sleepers"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:orbit",
+          "input": {
+            "name": "Expose the debit fraud",
+            "plot_type": "main",
+            "summary": "Expose the debit fraud"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:orbit",
+          "input": {
+            "character_id": "cast:orbit-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Care is a distributed system"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:oxygen",
+          "description": "Why is the station deleting oxygen debts?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 9,
+            "scene_order": 1
+          },
+          "payoff_at": null,
+          "deferred_reason": "The promise intentionally remains open for the next book.",
+          "destination": "next book's opening arc"
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:orbit-p"
+      },
+      "pov_roster": [
+        "cast:orbit-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 9,
+          "turn": "Ada trades her sleep shift for a diagnostic key and Ren's trust.",
+          "scenes": [
+            "Ada renegotiates the the vanishing oxygen debt plan after the new boundary changes what can be shown.",
+            "Ada asks Ren which earlier promise still holds and which must be re-staged."
+          ]
+        },
+        {
+          "chapter_number": 10,
+          "turn": "Ada confronts Controller Nine as the sleepers wake early.",
+          "scenes": [
+            "Ada pays off the vanishing oxygen debt in a non-graphic confrontation that preserves the station's sleepers.",
+            "Ada chooses what the revised outline leaves for the next arc."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the sleepers be told before the ledger is proven?",
+      "constraint_spec": {
+        "rating_ceiling": "teen",
+        "allowed_pov_refs": [
+          "cast:orbit-p"
+        ],
+        "required_cast_refs": [
+          "cast:orbit-p",
+          "cast:orbit-a"
+        ],
+        "required_location_refs": [
+          "loc:orbit"
+        ],
+        "required_promise_refs": [
+          "promise:oxygen"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJG04",
+      "kind": "greenfield",
+      "kind_label": "greenfield new-book",
+      "name": "The Unsent Letters",
+      "genre": "romance",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 1,
+        "chapter_end": 3,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Unsent Letters: A mature romance about revision, consent and the letters people withhold. The central pressure is the inn's inheritance.",
+      "contract_promise": "A mature romance about revision, consent and the letters people withhold.",
+      "existing_context": "",
+      "conflicting_input": null,
+      "hook": "the unsent letters",
+      "stakes": "the inn's inheritance",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon."
+      ],
+      "boundaries": [
+        "No explicit sex",
+        "No coercion"
+      ],
+      "style_notes": [
+        "Warm close third",
+        "Letter fragments"
+      ],
+      "cast": [
+        {
+          "ref": "cast:letters-p",
+          "name": "June",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:letters-a",
+          "name": "Theo",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:letters-o",
+          "name": "Margaret",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:letters",
+          "name": "Seaside Inn",
+          "kind": "coastal inn"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:letters",
+          "rule_name": "Unsent letters",
+          "description": "A letter becomes canon only when both parties read it."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:letters",
+          "input": {
+            "theme_statement": "Love is a revision",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:letters",
+          "input": {
+            "name": "The unsent letters",
+            "conflict_type": "central",
+            "stakes": "the inn's inheritance"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:letters",
+          "input": {
+            "name": "Deliver the letters without breaking the family",
+            "plot_type": "main",
+            "summary": "Deliver the letters without breaking the family"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:letters",
+          "input": {
+            "character_id": "cast:letters-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Love is a revision"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:letter",
+          "description": "Who wrote the final unsent letter?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 3,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:letters-p"
+      },
+      "pov_roster": [
+        "cast:letters-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 1,
+          "turn": "June finds a locked box of unsent letters beneath the press.",
+          "scenes": [
+            "June notices the unsent letters at Seaside Inn and keeps the first clue hidden.",
+            "June asks Theo for help and pays a small price for silence."
+          ]
+        },
+        {
+          "chapter_number": 2,
+          "turn": "June and Theo read one letter together and disagree about consent.",
+          "scenes": [
+            "June follows a lead that costs the inn's inheritance.",
+            "June chooses between the clue and Theo's safety."
+          ]
+        },
+        {
+          "chapter_number": 3,
+          "turn": "June confronts Margaret with the final letter and chooses the inn's future.",
+          "scenes": [
+            "June confronts Margaret with the recovered proof.",
+            "June decides what to reveal about the unsent letters."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does June read the last letter alone or with Theo?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:letters-p"
+        ],
+        "required_cast_refs": [
+          "cast:letters-p",
+          "cast:letters-a"
+        ],
+        "required_location_refs": [
+          "loc:letters"
+        ],
+        "required_promise_refs": [
+          "promise:letter"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 3,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJC04",
+      "kind": "continuation",
+      "kind_label": "chapter-horizon continuation",
+      "name": "The Unsent Letters",
+      "genre": "romance",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 5,
+        "chapter_end": 6,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Unsent Letters: A mature romance about revision, consent and the letters people withhold. The central pressure is the inn's inheritance.",
+      "contract_promise": "A mature romance about revision, consent and the letters people withhold.",
+      "existing_context": "Chapters 1-4 are drafted and accepted. The contract, cast and the unsent letters are canon. The next planning horizon continues directly from chapter 4.",
+      "conflicting_input": null,
+      "hook": "the unsent letters",
+      "stakes": "the inn's inheritance",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Reuse the accepted contract and cast; never create a duplicate series."
+      ],
+      "boundaries": [
+        "No explicit sex",
+        "No coercion"
+      ],
+      "style_notes": [
+        "Warm close third",
+        "Letter fragments"
+      ],
+      "cast": [
+        {
+          "ref": "cast:letters-p",
+          "name": "June",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:letters-a",
+          "name": "Theo",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:letters-o",
+          "name": "Margaret",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:letters",
+          "name": "Seaside Inn",
+          "kind": "coastal inn"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:letters",
+          "rule_name": "Unsent letters",
+          "description": "A letter becomes canon only when both parties read it."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:letters",
+          "input": {
+            "theme_statement": "Love is a revision",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:letters",
+          "input": {
+            "name": "The unsent letters",
+            "conflict_type": "central",
+            "stakes": "the inn's inheritance"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:letters",
+          "input": {
+            "name": "Deliver the letters without breaking the family",
+            "plot_type": "main",
+            "summary": "Deliver the letters without breaking the family"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:letters",
+          "input": {
+            "character_id": "cast:letters-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Love is a revision"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:letter",
+          "description": "Who wrote the final unsent letter?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 5,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 6,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:letters-p"
+      },
+      "pov_roster": [
+        "cast:letters-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 5,
+          "turn": "June and Theo read one letter together and disagree about consent.",
+          "scenes": [
+            "June reopens the the unsent letters thread and finds a detail the earlier chapters missed.",
+            "June tests Theo's account and learns why the earlier plan was incomplete."
+          ]
+        },
+        {
+          "chapter_number": 6,
+          "turn": "June confronts Margaret with the final letter and chooses the inn's future.",
+          "scenes": [
+            "June forces the the inn's inheritance confrontation and pays off what the prior chapters set up.",
+            "June chooses what the next book may inherit about the unsent letters."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does June read the last letter alone or with Theo?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:letters-p"
+        ],
+        "required_cast_refs": [
+          "cast:letters-p",
+          "cast:letters-a"
+        ],
+        "required_location_refs": [
+          "loc:letters"
+        ],
+        "required_promise_refs": [
+          "promise:letter"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJR04",
+      "kind": "replan",
+      "kind_label": "mid-book replan or amendment",
+      "name": "The Unsent Letters",
+      "genre": "romance",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 9,
+        "chapter_end": 10,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Unsent Letters: A mature romance about revision, consent and the letters people withhold. The central pressure is the inn's inheritance.",
+      "contract_promise": "A mature romance about revision, consent and the letters people withhold.",
+      "existing_context": "Chapters 1-8 are drafted. A summary-triggered replan must amend the unwritten future without rewriting drafted prose or accepted canon.",
+      "conflicting_input": "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon.",
+      "hook": "the unsent letters",
+      "stakes": "the inn's inheritance",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Treat this as an amendment to unwritten future chapters only.",
+        "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon."
+      ],
+      "boundaries": [
+        "No explicit sex",
+        "No coercion"
+      ],
+      "style_notes": [
+        "Warm close third",
+        "Letter fragments"
+      ],
+      "cast": [
+        {
+          "ref": "cast:letters-p",
+          "name": "June",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:letters-a",
+          "name": "Theo",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:letters-o",
+          "name": "Margaret",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:letters",
+          "name": "Seaside Inn",
+          "kind": "coastal inn"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:letters",
+          "rule_name": "Unsent letters",
+          "description": "A letter becomes canon only when both parties read it."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:letters",
+          "input": {
+            "theme_statement": "Love is a revision",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:letters",
+          "input": {
+            "name": "The unsent letters",
+            "conflict_type": "central",
+            "stakes": "the inn's inheritance"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:letters",
+          "input": {
+            "name": "Deliver the letters without breaking the family",
+            "plot_type": "main",
+            "summary": "Deliver the letters without breaking the family"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:letters",
+          "input": {
+            "character_id": "cast:letters-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Love is a revision"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:letter",
+          "description": "Who wrote the final unsent letter?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 9,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 10,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:letters-p"
+      },
+      "pov_roster": [
+        "cast:letters-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 9,
+          "turn": "June and Theo read one letter together and disagree about consent.",
+          "scenes": [
+            "June renegotiates the the unsent letters plan after the new boundary changes what can be shown.",
+            "June asks Theo which earlier promise still holds and which must be re-staged."
+          ]
+        },
+        {
+          "chapter_number": 10,
+          "turn": "June confronts Margaret with the final letter and chooses the inn's future.",
+          "scenes": [
+            "June pays off the unsent letters in a non-graphic confrontation that preserves the inn's inheritance.",
+            "June chooses what the revised outline leaves for the next arc."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does June read the last letter alone or with Theo?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:letters-p"
+        ],
+        "required_cast_refs": [
+          "cast:letters-p",
+          "cast:letters-a"
+        ],
+        "required_location_refs": [
+          "loc:letters"
+        ],
+        "required_promise_refs": [
+          "promise:letter"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJG05",
+      "kind": "greenfield",
+      "kind_label": "greenfield new-book",
+      "name": "Ash Garden",
+      "genre": "literary",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "general",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 1,
+        "chapter_end": 3,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Ash Garden: A quiet literary novel about inheritance, maintenance and unglamorous choices. The central pressure is the family's last shared home.",
+      "contract_promise": "A quiet literary novel about inheritance, maintenance and unglamorous choices.",
+      "existing_context": "",
+      "conflicting_input": null,
+      "hook": "the ash-buried garden",
+      "stakes": "the family's last shared home",
+      "constraints": [
+        "Keep every scene within the general content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon."
+      ],
+      "boundaries": [
+        "No sudden violence",
+        "No amnesia"
+      ],
+      "style_notes": [
+        "Quiet interiority",
+        "Seasonal sensory detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:ash-p",
+          "name": "Nia",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:ash-a",
+          "name": "Sol",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:ash-o",
+          "name": "Vale",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:ash",
+          "name": "Ash Garden",
+          "kind": "family garden"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:ash",
+          "rule_name": "Ash season",
+          "description": "Nothing planted during ash season survives the first frost."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:ash",
+          "input": {
+            "theme_statement": "Inheritance is a choice you keep making",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:ash",
+          "input": {
+            "name": "The contested garden",
+            "conflict_type": "central",
+            "stakes": "the family's last shared home"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:ash",
+          "input": {
+            "name": "Decide what to keep",
+            "plot_type": "main",
+            "summary": "Decide what to keep"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:ash",
+          "input": {
+            "character_id": "cast:ash-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Inheritance is a choice you keep making"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:garden",
+          "description": "What did the garden hide?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 3,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:ash-p"
+      },
+      "pov_roster": [
+        "cast:ash-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 1,
+          "turn": "Nia finds a boundary stone under the ash and realizes the garden was split.",
+          "scenes": [
+            "Nia notices the ash-buried garden at Ash Garden and keeps the first clue hidden.",
+            "Nia asks Sol for help and pays a small price for silence."
+          ]
+        },
+        {
+          "chapter_number": 2,
+          "turn": "Nia trades her return ticket for a survey and loses Sol's help.",
+          "scenes": [
+            "Nia follows a lead that costs the family's last shared home.",
+            "Nia chooses between the clue and Sol's safety."
+          ]
+        },
+        {
+          "chapter_number": 3,
+          "turn": "Nia confronts Vale with the stone and chooses what to keep.",
+          "scenes": [
+            "Nia confronts Vale with the recovered proof.",
+            "Nia decides what to reveal about the ash-buried garden."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the garden be sold to keep the house, or kept whole?",
+      "constraint_spec": {
+        "rating_ceiling": "general",
+        "allowed_pov_refs": [
+          "cast:ash-p"
+        ],
+        "required_cast_refs": [
+          "cast:ash-p",
+          "cast:ash-a"
+        ],
+        "required_location_refs": [
+          "loc:ash"
+        ],
+        "required_promise_refs": [
+          "promise:garden"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 3,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJC05",
+      "kind": "continuation",
+      "kind_label": "chapter-horizon continuation",
+      "name": "Ash Garden",
+      "genre": "literary",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "general",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 5,
+        "chapter_end": 6,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Ash Garden: A quiet literary novel about inheritance, maintenance and unglamorous choices. The central pressure is the family's last shared home.",
+      "contract_promise": "A quiet literary novel about inheritance, maintenance and unglamorous choices.",
+      "existing_context": "Chapters 1-4 are drafted and accepted. The contract, cast and the contested garden are canon. The next planning horizon continues directly from chapter 4.",
+      "conflicting_input": null,
+      "hook": "the ash-buried garden",
+      "stakes": "the family's last shared home",
+      "constraints": [
+        "Keep every scene within the general content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Reuse the accepted contract and cast; never create a duplicate series."
+      ],
+      "boundaries": [
+        "No sudden violence",
+        "No amnesia"
+      ],
+      "style_notes": [
+        "Quiet interiority",
+        "Seasonal sensory detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:ash-p",
+          "name": "Nia",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:ash-a",
+          "name": "Sol",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:ash-o",
+          "name": "Vale",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:ash",
+          "name": "Ash Garden",
+          "kind": "family garden"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:ash",
+          "rule_name": "Ash season",
+          "description": "Nothing planted during ash season survives the first frost."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:ash",
+          "input": {
+            "theme_statement": "Inheritance is a choice you keep making",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:ash",
+          "input": {
+            "name": "The contested garden",
+            "conflict_type": "central",
+            "stakes": "the family's last shared home"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:ash",
+          "input": {
+            "name": "Decide what to keep",
+            "plot_type": "main",
+            "summary": "Decide what to keep"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:ash",
+          "input": {
+            "character_id": "cast:ash-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Inheritance is a choice you keep making"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:garden",
+          "description": "What did the garden hide?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 5,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 6,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:ash-p"
+      },
+      "pov_roster": [
+        "cast:ash-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 5,
+          "turn": "Nia trades her return ticket for a survey and loses Sol's help.",
+          "scenes": [
+            "Nia reopens the the ash-buried garden thread and finds a detail the earlier chapters missed.",
+            "Nia tests Sol's account and learns why the earlier plan was incomplete."
+          ]
+        },
+        {
+          "chapter_number": 6,
+          "turn": "Nia confronts Vale with the stone and chooses what to keep.",
+          "scenes": [
+            "Nia forces the the family's last shared home confrontation and pays off what the prior chapters set up.",
+            "Nia chooses what the next book may inherit about the ash-buried garden."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the garden be sold to keep the house, or kept whole?",
+      "constraint_spec": {
+        "rating_ceiling": "general",
+        "allowed_pov_refs": [
+          "cast:ash-p"
+        ],
+        "required_cast_refs": [
+          "cast:ash-p",
+          "cast:ash-a"
+        ],
+        "required_location_refs": [
+          "loc:ash"
+        ],
+        "required_promise_refs": [
+          "promise:garden"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJR05",
+      "kind": "replan",
+      "kind_label": "mid-book replan or amendment",
+      "name": "Ash Garden",
+      "genre": "literary",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "general",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 9,
+        "chapter_end": 10,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Ash Garden: A quiet literary novel about inheritance, maintenance and unglamorous choices. The central pressure is the family's last shared home.",
+      "contract_promise": "A quiet literary novel about inheritance, maintenance and unglamorous choices.",
+      "existing_context": "Chapters 1-8 are drafted. A summary-triggered replan must amend the unwritten future without rewriting drafted prose or accepted canon.",
+      "conflicting_input": "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon.",
+      "hook": "the ash-buried garden",
+      "stakes": "the family's last shared home",
+      "constraints": [
+        "Keep every scene within the general content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Treat this as an amendment to unwritten future chapters only.",
+        "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon."
+      ],
+      "boundaries": [
+        "No sudden violence",
+        "No amnesia"
+      ],
+      "style_notes": [
+        "Quiet interiority",
+        "Seasonal sensory detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:ash-p",
+          "name": "Nia",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:ash-a",
+          "name": "Sol",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:ash-o",
+          "name": "Vale",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:ash",
+          "name": "Ash Garden",
+          "kind": "family garden"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:ash",
+          "rule_name": "Ash season",
+          "description": "Nothing planted during ash season survives the first frost."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:ash",
+          "input": {
+            "theme_statement": "Inheritance is a choice you keep making",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:ash",
+          "input": {
+            "name": "The contested garden",
+            "conflict_type": "central",
+            "stakes": "the family's last shared home"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:ash",
+          "input": {
+            "name": "Decide what to keep",
+            "plot_type": "main",
+            "summary": "Decide what to keep"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:ash",
+          "input": {
+            "character_id": "cast:ash-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Inheritance is a choice you keep making"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:garden",
+          "description": "What did the garden hide?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 9,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 10,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:ash-p"
+      },
+      "pov_roster": [
+        "cast:ash-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 9,
+          "turn": "Nia trades her return ticket for a survey and loses Sol's help.",
+          "scenes": [
+            "Nia renegotiates the the ash-buried garden plan after the new boundary changes what can be shown.",
+            "Nia asks Sol which earlier promise still holds and which must be re-staged."
+          ]
+        },
+        {
+          "chapter_number": 10,
+          "turn": "Nia confronts Vale with the stone and chooses what to keep.",
+          "scenes": [
+            "Nia pays off the ash-buried garden in a non-graphic confrontation that preserves the family's last shared home.",
+            "Nia chooses what the revised outline leaves for the next arc."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the garden be sold to keep the house, or kept whole?",
+      "constraint_spec": {
+        "rating_ceiling": "general",
+        "allowed_pov_refs": [
+          "cast:ash-p"
+        ],
+        "required_cast_refs": [
+          "cast:ash-p",
+          "cast:ash-a"
+        ],
+        "required_location_refs": [
+          "loc:ash"
+        ],
+        "required_promise_refs": [
+          "promise:garden"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJG06",
+      "kind": "greenfield",
+      "kind_label": "greenfield new-book",
+      "name": "The Forged Succession",
+      "genre": "historical",
+      "mode": "series",
+      "pov_mode": "rotating",
+      "rating_ceiling": "teen",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 1,
+        "chapter_end": 3,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Forged Succession: A historical series about proof, performance and the cost of legitimacy. The central pressure is the border truce.",
+      "contract_promise": "A historical series about proof, performance and the cost of legitimacy.",
+      "existing_context": "",
+      "conflicting_input": null,
+      "hook": "the forged succession writ",
+      "stakes": "the border truce",
+      "constraints": [
+        "Keep every scene within the teen content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon."
+      ],
+      "boundaries": [
+        "No torture on page",
+        "No prophecy"
+      ],
+      "style_notes": [
+        "Formal but lucid",
+        "Material detail of seals and roads"
+      ],
+      "cast": [
+        {
+          "ref": "cast:crown-p",
+          "name": "Elin",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:crown-a",
+          "name": "Brice",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:crown-o",
+          "name": "Regent Hale",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:crown",
+          "name": "Border Keep",
+          "kind": "border fortress"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:crown",
+          "rule_name": "Succession seal",
+          "description": "A succession writ is valid only with the original seal."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:crown",
+          "input": {
+            "theme_statement": "Legitimacy is performed",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:crown",
+          "input": {
+            "name": "The forged succession",
+            "conflict_type": "central",
+            "stakes": "the border truce"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:crown",
+          "input": {
+            "name": "Prove the writ",
+            "plot_type": "main",
+            "summary": "Prove the writ"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:crown",
+          "input": {
+            "character_id": "cast:crown-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Legitimacy is performed"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:seal",
+          "description": "Who forged the succession seal?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 3,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "allowed_roster": [
+          "cast:crown-p",
+          "cast:crown-a"
+        ],
+        "max_consecutive_chapters": 2
+      },
+      "pov_roster": [
+        "cast:crown-p",
+        "cast:crown-a"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 1,
+          "turn": "Elin finds a wax mismatch on the succession writ.",
+          "scenes": [
+            "Elin notices the forged succession writ at Border Keep and keeps the first clue hidden.",
+            "Elin asks Brice for help and pays a small price for silence."
+          ]
+        },
+        {
+          "chapter_number": 2,
+          "turn": "Brice buys her time with a false escort and loses his command.",
+          "scenes": [
+            "Elin follows a lead that costs the border truce.",
+            "Elin chooses between the clue and Brice's safety."
+          ]
+        },
+        {
+          "chapter_number": 3,
+          "turn": "Elin confronts Regent Hale before the border lords and chooses the truce.",
+          "scenes": [
+            "Elin confronts Regent Hale with the recovered proof.",
+            "Elin decides what to reveal about the forged succession writ."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Brice lose his command publicly or quietly?",
+      "constraint_spec": {
+        "rating_ceiling": "teen",
+        "allowed_pov_refs": [
+          "cast:crown-p",
+          "cast:crown-a"
+        ],
+        "required_cast_refs": [
+          "cast:crown-p",
+          "cast:crown-a"
+        ],
+        "required_location_refs": [
+          "loc:crown"
+        ],
+        "required_promise_refs": [
+          "promise:seal"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 3,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJC06",
+      "kind": "continuation",
+      "kind_label": "chapter-horizon continuation",
+      "name": "The Forged Succession",
+      "genre": "historical",
+      "mode": "series",
+      "pov_mode": "rotating",
+      "rating_ceiling": "teen",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 5,
+        "chapter_end": 6,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Forged Succession: A historical series about proof, performance and the cost of legitimacy. The central pressure is the border truce.",
+      "contract_promise": "A historical series about proof, performance and the cost of legitimacy.",
+      "existing_context": "Chapters 1-4 are drafted and accepted. The contract, cast and the forged succession are canon. The next planning horizon continues directly from chapter 4.",
+      "conflicting_input": null,
+      "hook": "the forged succession writ",
+      "stakes": "the border truce",
+      "constraints": [
+        "Keep every scene within the teen content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Reuse the accepted contract and cast; never create a duplicate series."
+      ],
+      "boundaries": [
+        "No torture on page",
+        "No prophecy"
+      ],
+      "style_notes": [
+        "Formal but lucid",
+        "Material detail of seals and roads"
+      ],
+      "cast": [
+        {
+          "ref": "cast:crown-p",
+          "name": "Elin",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:crown-a",
+          "name": "Brice",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:crown-o",
+          "name": "Regent Hale",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:crown",
+          "name": "Border Keep",
+          "kind": "border fortress"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:crown",
+          "rule_name": "Succession seal",
+          "description": "A succession writ is valid only with the original seal."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:crown",
+          "input": {
+            "theme_statement": "Legitimacy is performed",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:crown",
+          "input": {
+            "name": "The forged succession",
+            "conflict_type": "central",
+            "stakes": "the border truce"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:crown",
+          "input": {
+            "name": "Prove the writ",
+            "plot_type": "main",
+            "summary": "Prove the writ"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:crown",
+          "input": {
+            "character_id": "cast:crown-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Legitimacy is performed"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:seal",
+          "description": "Who forged the succession seal?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 5,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 6,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "allowed_roster": [
+          "cast:crown-p",
+          "cast:crown-a"
+        ],
+        "max_consecutive_chapters": 2
+      },
+      "pov_roster": [
+        "cast:crown-p",
+        "cast:crown-a"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 5,
+          "turn": "Brice buys her time with a false escort and loses his command.",
+          "scenes": [
+            "Elin reopens the the forged succession writ thread and finds a detail the earlier chapters missed.",
+            "Elin tests Brice's account and learns why the earlier plan was incomplete."
+          ]
+        },
+        {
+          "chapter_number": 6,
+          "turn": "Elin confronts Regent Hale before the border lords and chooses the truce.",
+          "scenes": [
+            "Elin forces the the border truce confrontation and pays off what the prior chapters set up.",
+            "Elin chooses what the next book may inherit about the forged succession writ."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Brice lose his command publicly or quietly?",
+      "constraint_spec": {
+        "rating_ceiling": "teen",
+        "allowed_pov_refs": [
+          "cast:crown-p",
+          "cast:crown-a"
+        ],
+        "required_cast_refs": [
+          "cast:crown-p",
+          "cast:crown-a"
+        ],
+        "required_location_refs": [
+          "loc:crown"
+        ],
+        "required_promise_refs": [
+          "promise:seal"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJR06",
+      "kind": "replan",
+      "kind_label": "mid-book replan or amendment",
+      "name": "The Forged Succession",
+      "genre": "historical",
+      "mode": "series",
+      "pov_mode": "rotating",
+      "rating_ceiling": "teen",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 9,
+        "chapter_end": 10,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Forged Succession: A historical series about proof, performance and the cost of legitimacy. The central pressure is the border truce.",
+      "contract_promise": "A historical series about proof, performance and the cost of legitimacy.",
+      "existing_context": "Chapters 1-8 are drafted. A summary-triggered replan must amend the unwritten future without rewriting drafted prose or accepted canon.",
+      "conflicting_input": "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon.",
+      "hook": "the forged succession writ",
+      "stakes": "the border truce",
+      "constraints": [
+        "Keep every scene within the teen content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Treat this as an amendment to unwritten future chapters only.",
+        "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon."
+      ],
+      "boundaries": [
+        "No torture on page",
+        "No prophecy"
+      ],
+      "style_notes": [
+        "Formal but lucid",
+        "Material detail of seals and roads"
+      ],
+      "cast": [
+        {
+          "ref": "cast:crown-p",
+          "name": "Elin",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:crown-a",
+          "name": "Brice",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:crown-o",
+          "name": "Regent Hale",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:crown",
+          "name": "Border Keep",
+          "kind": "border fortress"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:crown",
+          "rule_name": "Succession seal",
+          "description": "A succession writ is valid only with the original seal."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:crown",
+          "input": {
+            "theme_statement": "Legitimacy is performed",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:crown",
+          "input": {
+            "name": "The forged succession",
+            "conflict_type": "central",
+            "stakes": "the border truce"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:crown",
+          "input": {
+            "name": "Prove the writ",
+            "plot_type": "main",
+            "summary": "Prove the writ"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:crown",
+          "input": {
+            "character_id": "cast:crown-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Legitimacy is performed"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:seal",
+          "description": "Who forged the succession seal?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 9,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 10,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "allowed_roster": [
+          "cast:crown-p",
+          "cast:crown-a"
+        ],
+        "max_consecutive_chapters": 2
+      },
+      "pov_roster": [
+        "cast:crown-p",
+        "cast:crown-a"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 9,
+          "turn": "Brice buys her time with a false escort and loses his command.",
+          "scenes": [
+            "Elin renegotiates the the forged succession writ plan after the new boundary changes what can be shown.",
+            "Elin asks Brice which earlier promise still holds and which must be re-staged."
+          ]
+        },
+        {
+          "chapter_number": 10,
+          "turn": "Elin confronts Regent Hale before the border lords and chooses the truce.",
+          "scenes": [
+            "Elin pays off the forged succession writ in a non-graphic confrontation that preserves the border truce.",
+            "Elin chooses what the revised outline leaves for the next arc."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Brice lose his command publicly or quietly?",
+      "constraint_spec": {
+        "rating_ceiling": "teen",
+        "allowed_pov_refs": [
+          "cast:crown-p",
+          "cast:crown-a"
+        ],
+        "required_cast_refs": [
+          "cast:crown-p",
+          "cast:crown-a"
+        ],
+        "required_location_refs": [
+          "loc:crown"
+        ],
+        "required_promise_refs": [
+          "promise:seal"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJG07",
+      "kind": "greenfield",
+      "kind_label": "greenfield new-book",
+      "name": "Dead Air",
+      "genre": "thriller",
+      "mode": "serial",
+      "pov_mode": "single",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 1,
+        "chapter_end": 3,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Dead Air: A serial thriller about verification, institutional trust and a voice on a dead band. The central pressure is the city's evacuation.",
+      "contract_promise": "A serial thriller about verification, institutional trust and a voice on a dead band.",
+      "existing_context": "",
+      "conflicting_input": null,
+      "hook": "the dead emergency band",
+      "stakes": "the city's evacuation",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon."
+      ],
+      "boundaries": [
+        "No on-page torture",
+        "No amnesia reset"
+      ],
+      "style_notes": [
+        "Terse present-tense feel",
+        "Radio-room procedural detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:static-p",
+          "name": "Cole",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:static-a",
+          "name": "Vera",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:static-o",
+          "name": "The Caller",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:static",
+          "name": "Radio Tower",
+          "kind": "emergency radio tower"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:static",
+          "rule_name": "Emergency band",
+          "description": "The emergency band cannot be spoofed without tower access."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:static",
+          "input": {
+            "theme_statement": "Trust the signal, not the voice",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:static",
+          "input": {
+            "name": "The false evacuation order",
+            "conflict_type": "central",
+            "stakes": "the city's evacuation"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:static",
+          "input": {
+            "name": "Find the tower intruder",
+            "plot_type": "main",
+            "summary": "Find the tower intruder"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:static",
+          "input": {
+            "character_id": "cast:static-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Trust the signal, not the voice"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:band",
+          "description": "Who is broadcasting on the dead band?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1
+          },
+          "payoff_at": null,
+          "deferred_reason": "The promise intentionally remains open for the next book.",
+          "destination": "next book's opening arc"
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:static-p"
+      },
+      "pov_roster": [
+        "cast:static-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 1,
+          "turn": "Cole hears a voice on a band that should be dead.",
+          "scenes": [
+            "Cole notices the dead emergency band at Radio Tower and keeps the first clue hidden.",
+            "Cole asks Vera for help and pays a small price for silence."
+          ]
+        },
+        {
+          "chapter_number": 2,
+          "turn": "Cole trades the dispatch log for Vera's source and loses his alibi.",
+          "scenes": [
+            "Cole follows a lead that costs the city's evacuation.",
+            "Cole chooses between the clue and Vera's safety."
+          ]
+        },
+        {
+          "chapter_number": 3,
+          "turn": "Cole confronts the broadcaster in the tower and chooses the evacuation.",
+          "scenes": [
+            "Cole confronts The Caller with the recovered proof.",
+            "Cole decides what to reveal about the dead emergency band."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Vera publish before Cole confirms the tower access?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:static-p"
+        ],
+        "required_cast_refs": [
+          "cast:static-p",
+          "cast:static-a"
+        ],
+        "required_location_refs": [
+          "loc:static"
+        ],
+        "required_promise_refs": [
+          "promise:band"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 3,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJC07",
+      "kind": "continuation",
+      "kind_label": "chapter-horizon continuation",
+      "name": "Dead Air",
+      "genre": "thriller",
+      "mode": "serial",
+      "pov_mode": "single",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 5,
+        "chapter_end": 6,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Dead Air: A serial thriller about verification, institutional trust and a voice on a dead band. The central pressure is the city's evacuation.",
+      "contract_promise": "A serial thriller about verification, institutional trust and a voice on a dead band.",
+      "existing_context": "Chapters 1-4 are drafted and accepted. The contract, cast and the false evacuation order are canon. The next planning horizon continues directly from chapter 4.",
+      "conflicting_input": null,
+      "hook": "the dead emergency band",
+      "stakes": "the city's evacuation",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Reuse the accepted contract and cast; never create a duplicate series."
+      ],
+      "boundaries": [
+        "No on-page torture",
+        "No amnesia reset"
+      ],
+      "style_notes": [
+        "Terse present-tense feel",
+        "Radio-room procedural detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:static-p",
+          "name": "Cole",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:static-a",
+          "name": "Vera",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:static-o",
+          "name": "The Caller",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:static",
+          "name": "Radio Tower",
+          "kind": "emergency radio tower"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:static",
+          "rule_name": "Emergency band",
+          "description": "The emergency band cannot be spoofed without tower access."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:static",
+          "input": {
+            "theme_statement": "Trust the signal, not the voice",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:static",
+          "input": {
+            "name": "The false evacuation order",
+            "conflict_type": "central",
+            "stakes": "the city's evacuation"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:static",
+          "input": {
+            "name": "Find the tower intruder",
+            "plot_type": "main",
+            "summary": "Find the tower intruder"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:static",
+          "input": {
+            "character_id": "cast:static-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Trust the signal, not the voice"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:band",
+          "description": "Who is broadcasting on the dead band?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 5,
+            "scene_order": 1
+          },
+          "payoff_at": null,
+          "deferred_reason": "The promise intentionally remains open for the next book.",
+          "destination": "next book's opening arc"
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:static-p"
+      },
+      "pov_roster": [
+        "cast:static-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 5,
+          "turn": "Cole trades the dispatch log for Vera's source and loses his alibi.",
+          "scenes": [
+            "Cole reopens the the dead emergency band thread and finds a detail the earlier chapters missed.",
+            "Cole tests Vera's account and learns why the earlier plan was incomplete."
+          ]
+        },
+        {
+          "chapter_number": 6,
+          "turn": "Cole confronts the broadcaster in the tower and chooses the evacuation.",
+          "scenes": [
+            "Cole forces the the city's evacuation confrontation and pays off what the prior chapters set up.",
+            "Cole chooses what the next book may inherit about the dead emergency band."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Vera publish before Cole confirms the tower access?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:static-p"
+        ],
+        "required_cast_refs": [
+          "cast:static-p",
+          "cast:static-a"
+        ],
+        "required_location_refs": [
+          "loc:static"
+        ],
+        "required_promise_refs": [
+          "promise:band"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJR07",
+      "kind": "replan",
+      "kind_label": "mid-book replan or amendment",
+      "name": "Dead Air",
+      "genre": "thriller",
+      "mode": "serial",
+      "pov_mode": "single",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 9,
+        "chapter_end": 10,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Dead Air: A serial thriller about verification, institutional trust and a voice on a dead band. The central pressure is the city's evacuation.",
+      "contract_promise": "A serial thriller about verification, institutional trust and a voice on a dead band.",
+      "existing_context": "Chapters 1-8 are drafted. A summary-triggered replan must amend the unwritten future without rewriting drafted prose or accepted canon.",
+      "conflicting_input": "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon.",
+      "hook": "the dead emergency band",
+      "stakes": "the city's evacuation",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Treat this as an amendment to unwritten future chapters only.",
+        "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon."
+      ],
+      "boundaries": [
+        "No on-page torture",
+        "No amnesia reset"
+      ],
+      "style_notes": [
+        "Terse present-tense feel",
+        "Radio-room procedural detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:static-p",
+          "name": "Cole",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:static-a",
+          "name": "Vera",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:static-o",
+          "name": "The Caller",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:static",
+          "name": "Radio Tower",
+          "kind": "emergency radio tower"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:static",
+          "rule_name": "Emergency band",
+          "description": "The emergency band cannot be spoofed without tower access."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:static",
+          "input": {
+            "theme_statement": "Trust the signal, not the voice",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:static",
+          "input": {
+            "name": "The false evacuation order",
+            "conflict_type": "central",
+            "stakes": "the city's evacuation"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:static",
+          "input": {
+            "name": "Find the tower intruder",
+            "plot_type": "main",
+            "summary": "Find the tower intruder"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:static",
+          "input": {
+            "character_id": "cast:static-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Trust the signal, not the voice"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:band",
+          "description": "Who is broadcasting on the dead band?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 9,
+            "scene_order": 1
+          },
+          "payoff_at": null,
+          "deferred_reason": "The promise intentionally remains open for the next book.",
+          "destination": "next book's opening arc"
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:static-p"
+      },
+      "pov_roster": [
+        "cast:static-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 9,
+          "turn": "Cole trades the dispatch log for Vera's source and loses his alibi.",
+          "scenes": [
+            "Cole renegotiates the the dead emergency band plan after the new boundary changes what can be shown.",
+            "Cole asks Vera which earlier promise still holds and which must be re-staged."
+          ]
+        },
+        {
+          "chapter_number": 10,
+          "turn": "Cole confronts the broadcaster in the tower and chooses the evacuation.",
+          "scenes": [
+            "Cole pays off the dead emergency band in a non-graphic confrontation that preserves the city's evacuation.",
+            "Cole chooses what the revised outline leaves for the next arc."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Vera publish before Cole confirms the tower access?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:static-p"
+        ],
+        "required_cast_refs": [
+          "cast:static-p",
+          "cast:static-a"
+        ],
+        "required_location_refs": [
+          "loc:static"
+        ],
+        "required_promise_refs": [
+          "promise:band"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJG08",
+      "kind": "greenfield",
+      "kind_label": "greenfield new-book",
+      "name": "Hollow Mill",
+      "genre": "horror",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 1,
+        "chapter_end": 3,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Hollow Mill: A restrained horror novel about broken promises and communal debt. The central pressure is the village's children.",
+      "contract_promise": "A restrained horror novel about broken promises and communal debt.",
+      "existing_context": "",
+      "conflicting_input": null,
+      "hook": "the nightly knocking",
+      "stakes": "the village's children",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon."
+      ],
+      "boundaries": [
+        "No harm to children on page",
+        "No graphic gore"
+      ],
+      "style_notes": [
+        "Cold sensory detail",
+        "Restrained dread"
+      ],
+      "cast": [
+        {
+          "ref": "cast:hollow-p",
+          "name": "Iris",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:hollow-a",
+          "name": "Noah",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:hollow-o",
+          "name": "The Warden",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:hollow",
+          "name": "Hollow Mill",
+          "kind": "abandoned mill"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:hollow",
+          "rule_name": "Night knocking",
+          "description": "The mill only knocks when a promise is broken."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:hollow",
+          "input": {
+            "theme_statement": "Debt survives the debtor",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:hollow",
+          "input": {
+            "name": "The nightly knocking",
+            "conflict_type": "central",
+            "stakes": "the village's children"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:hollow",
+          "input": {
+            "name": "Uncover the mill promise",
+            "plot_type": "main",
+            "summary": "Uncover the mill promise"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:hollow",
+          "input": {
+            "character_id": "cast:hollow-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Debt survives the debtor"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:knock",
+          "description": "Whose promise keeps the mill knocking?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 3,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:hollow-p"
+      },
+      "pov_roster": [
+        "cast:hollow-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 1,
+          "turn": "Iris records the knocking and finds a child's name in the mill ledger.",
+          "scenes": [
+            "Iris notices the nightly knocking at Hollow Mill and keeps the first clue hidden.",
+            "Iris asks Noah for help and pays a small price for silence."
+          ]
+        },
+        {
+          "chapter_number": 2,
+          "turn": "Iris trades her only recording for Noah's account and loses the mill key.",
+          "scenes": [
+            "Iris follows a lead that costs the village's children.",
+            "Iris chooses between the clue and Noah's safety."
+          ]
+        },
+        {
+          "chapter_number": 3,
+          "turn": "Iris confronts the Warden in the mill and chooses what the village must repay.",
+          "scenes": [
+            "Iris confronts The Warden with the recovered proof.",
+            "Iris decides what to reveal about the nightly knocking."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the village repay the promise or break the mill?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:hollow-p"
+        ],
+        "required_cast_refs": [
+          "cast:hollow-p",
+          "cast:hollow-a"
+        ],
+        "required_location_refs": [
+          "loc:hollow"
+        ],
+        "required_promise_refs": [
+          "promise:knock"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 3,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJC08",
+      "kind": "continuation",
+      "kind_label": "chapter-horizon continuation",
+      "name": "Hollow Mill",
+      "genre": "horror",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 5,
+        "chapter_end": 6,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Hollow Mill: A restrained horror novel about broken promises and communal debt. The central pressure is the village's children.",
+      "contract_promise": "A restrained horror novel about broken promises and communal debt.",
+      "existing_context": "Chapters 1-4 are drafted and accepted. The contract, cast and the nightly knocking are canon. The next planning horizon continues directly from chapter 4.",
+      "conflicting_input": null,
+      "hook": "the nightly knocking",
+      "stakes": "the village's children",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Reuse the accepted contract and cast; never create a duplicate series."
+      ],
+      "boundaries": [
+        "No harm to children on page",
+        "No graphic gore"
+      ],
+      "style_notes": [
+        "Cold sensory detail",
+        "Restrained dread"
+      ],
+      "cast": [
+        {
+          "ref": "cast:hollow-p",
+          "name": "Iris",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:hollow-a",
+          "name": "Noah",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:hollow-o",
+          "name": "The Warden",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:hollow",
+          "name": "Hollow Mill",
+          "kind": "abandoned mill"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:hollow",
+          "rule_name": "Night knocking",
+          "description": "The mill only knocks when a promise is broken."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:hollow",
+          "input": {
+            "theme_statement": "Debt survives the debtor",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:hollow",
+          "input": {
+            "name": "The nightly knocking",
+            "conflict_type": "central",
+            "stakes": "the village's children"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:hollow",
+          "input": {
+            "name": "Uncover the mill promise",
+            "plot_type": "main",
+            "summary": "Uncover the mill promise"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:hollow",
+          "input": {
+            "character_id": "cast:hollow-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Debt survives the debtor"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:knock",
+          "description": "Whose promise keeps the mill knocking?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 5,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 6,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:hollow-p"
+      },
+      "pov_roster": [
+        "cast:hollow-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 5,
+          "turn": "Iris trades her only recording for Noah's account and loses the mill key.",
+          "scenes": [
+            "Iris reopens the the nightly knocking thread and finds a detail the earlier chapters missed.",
+            "Iris tests Noah's account and learns why the earlier plan was incomplete."
+          ]
+        },
+        {
+          "chapter_number": 6,
+          "turn": "Iris confronts the Warden in the mill and chooses what the village must repay.",
+          "scenes": [
+            "Iris forces the the village's children confrontation and pays off what the prior chapters set up.",
+            "Iris chooses what the next book may inherit about the nightly knocking."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the village repay the promise or break the mill?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:hollow-p"
+        ],
+        "required_cast_refs": [
+          "cast:hollow-p",
+          "cast:hollow-a"
+        ],
+        "required_location_refs": [
+          "loc:hollow"
+        ],
+        "required_promise_refs": [
+          "promise:knock"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJR08",
+      "kind": "replan",
+      "kind_label": "mid-book replan or amendment",
+      "name": "Hollow Mill",
+      "genre": "horror",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "mature",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 9,
+        "chapter_end": 10,
+        "scenes_per_chapter": 2
+      },
+      "premise": "Hollow Mill: A restrained horror novel about broken promises and communal debt. The central pressure is the village's children.",
+      "contract_promise": "A restrained horror novel about broken promises and communal debt.",
+      "existing_context": "Chapters 1-8 are drafted. A summary-triggered replan must amend the unwritten future without rewriting drafted prose or accepted canon.",
+      "conflicting_input": "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon.",
+      "hook": "the nightly knocking",
+      "stakes": "the village's children",
+      "constraints": [
+        "Keep every scene within the mature content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Treat this as an amendment to unwritten future chapters only.",
+        "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon."
+      ],
+      "boundaries": [
+        "No harm to children on page",
+        "No graphic gore"
+      ],
+      "style_notes": [
+        "Cold sensory detail",
+        "Restrained dread"
+      ],
+      "cast": [
+        {
+          "ref": "cast:hollow-p",
+          "name": "Iris",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:hollow-a",
+          "name": "Noah",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:hollow-o",
+          "name": "The Warden",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:hollow",
+          "name": "Hollow Mill",
+          "kind": "abandoned mill"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:hollow",
+          "rule_name": "Night knocking",
+          "description": "The mill only knocks when a promise is broken."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:hollow",
+          "input": {
+            "theme_statement": "Debt survives the debtor",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:hollow",
+          "input": {
+            "name": "The nightly knocking",
+            "conflict_type": "central",
+            "stakes": "the village's children"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:hollow",
+          "input": {
+            "name": "Uncover the mill promise",
+            "plot_type": "main",
+            "summary": "Uncover the mill promise"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:hollow",
+          "input": {
+            "character_id": "cast:hollow-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "Debt survives the debtor"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:knock",
+          "description": "Whose promise keeps the mill knocking?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 9,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 10,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:hollow-p"
+      },
+      "pov_roster": [
+        "cast:hollow-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 9,
+          "turn": "Iris trades her only recording for Noah's account and loses the mill key.",
+          "scenes": [
+            "Iris renegotiates the the nightly knocking plan after the new boundary changes what can be shown.",
+            "Iris asks Noah which earlier promise still holds and which must be re-staged."
+          ]
+        },
+        {
+          "chapter_number": 10,
+          "turn": "Iris confronts the Warden in the mill and chooses what the village must repay.",
+          "scenes": [
+            "Iris pays off the nightly knocking in a non-graphic confrontation that preserves the village's children.",
+            "Iris chooses what the revised outline leaves for the next arc."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the village repay the promise or break the mill?",
+      "constraint_spec": {
+        "rating_ceiling": "mature",
+        "allowed_pov_refs": [
+          "cast:hollow-p"
+        ],
+        "required_cast_refs": [
+          "cast:hollow-p",
+          "cast:hollow-a"
+        ],
+        "required_location_refs": [
+          "loc:hollow"
+        ],
+        "required_promise_refs": [
+          "promise:knock"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJG09",
+      "kind": "greenfield",
+      "kind_label": "greenfield new-book",
+      "name": "The Missing Caravan",
+      "genre": "adventure",
+      "mode": "series",
+      "pov_mode": "rotating",
+      "rating_ceiling": "general",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 1,
+        "chapter_end": 3,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Missing Caravan: A series adventure about maps as promises and the cost of a wrong turn. The central pressure is the salt trade.",
+      "contract_promise": "A series adventure about maps as promises and the cost of a wrong turn.",
+      "existing_context": "",
+      "conflicting_input": null,
+      "hook": "the missing caravan",
+      "stakes": "the salt trade",
+      "constraints": [
+        "Keep every scene within the general content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon."
+      ],
+      "boundaries": [
+        "No animal cruelty",
+        "No prophecy"
+      ],
+      "style_notes": [
+        "Brisk travel detail",
+        "Dry banter"
+      ],
+      "cast": [
+        {
+          "ref": "cast:caravan-p",
+          "name": "Sefa",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:caravan-a",
+          "name": "Dain",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:caravan-o",
+          "name": "Quartermaster Rill",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:caravan",
+          "name": "Salt Road",
+          "kind": "desert trade road"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:caravan",
+          "rule_name": "Salt road markers",
+          "description": "A marker moved after dusk is not a road."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:caravan",
+          "input": {
+            "theme_statement": "A map is a promise",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:caravan",
+          "input": {
+            "name": "The missing caravan",
+            "conflict_type": "central",
+            "stakes": "the salt trade"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:caravan",
+          "input": {
+            "name": "Find the missing caravan",
+            "plot_type": "main",
+            "summary": "Find the missing caravan"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:caravan",
+          "input": {
+            "character_id": "cast:caravan-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "A map is a promise"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:caravan",
+          "description": "Why did the caravan leave the marked road?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 3,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "allowed_roster": [
+          "cast:caravan-p",
+          "cast:caravan-a"
+        ],
+        "max_consecutive_chapters": 2
+      },
+      "pov_roster": [
+        "cast:caravan-p",
+        "cast:caravan-a"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 1,
+          "turn": "Sefa finds a moved salt marker and a fresh caravan track.",
+          "scenes": [
+            "Sefa notices the missing caravan at Salt Road and keeps the first clue hidden.",
+            "Sefa asks Dain for help and pays a small price for silence."
+          ]
+        },
+        {
+          "chapter_number": 2,
+          "turn": "Dain trades the safe route for a shortcut and loses the water cache.",
+          "scenes": [
+            "Sefa follows a lead that costs the salt trade.",
+            "Sefa chooses between the clue and Dain's safety."
+          ]
+        },
+        {
+          "chapter_number": 3,
+          "turn": "Sefa confronts Quartermaster Rill at the dry well and chooses the trade route.",
+          "scenes": [
+            "Sefa confronts Quartermaster Rill with the recovered proof.",
+            "Sefa decides what to reveal about the missing caravan."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Dain admit the shortcut was his idea?",
+      "constraint_spec": {
+        "rating_ceiling": "general",
+        "allowed_pov_refs": [
+          "cast:caravan-p",
+          "cast:caravan-a"
+        ],
+        "required_cast_refs": [
+          "cast:caravan-p",
+          "cast:caravan-a"
+        ],
+        "required_location_refs": [
+          "loc:caravan"
+        ],
+        "required_promise_refs": [
+          "promise:caravan"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 3,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJC09",
+      "kind": "continuation",
+      "kind_label": "chapter-horizon continuation",
+      "name": "The Missing Caravan",
+      "genre": "adventure",
+      "mode": "series",
+      "pov_mode": "rotating",
+      "rating_ceiling": "general",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 5,
+        "chapter_end": 6,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Missing Caravan: A series adventure about maps as promises and the cost of a wrong turn. The central pressure is the salt trade.",
+      "contract_promise": "A series adventure about maps as promises and the cost of a wrong turn.",
+      "existing_context": "Chapters 1-4 are drafted and accepted. The contract, cast and the missing caravan are canon. The next planning horizon continues directly from chapter 4.",
+      "conflicting_input": null,
+      "hook": "the missing caravan",
+      "stakes": "the salt trade",
+      "constraints": [
+        "Keep every scene within the general content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Reuse the accepted contract and cast; never create a duplicate series."
+      ],
+      "boundaries": [
+        "No animal cruelty",
+        "No prophecy"
+      ],
+      "style_notes": [
+        "Brisk travel detail",
+        "Dry banter"
+      ],
+      "cast": [
+        {
+          "ref": "cast:caravan-p",
+          "name": "Sefa",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:caravan-a",
+          "name": "Dain",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:caravan-o",
+          "name": "Quartermaster Rill",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:caravan",
+          "name": "Salt Road",
+          "kind": "desert trade road"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:caravan",
+          "rule_name": "Salt road markers",
+          "description": "A marker moved after dusk is not a road."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:caravan",
+          "input": {
+            "theme_statement": "A map is a promise",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:caravan",
+          "input": {
+            "name": "The missing caravan",
+            "conflict_type": "central",
+            "stakes": "the salt trade"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:caravan",
+          "input": {
+            "name": "Find the missing caravan",
+            "plot_type": "main",
+            "summary": "Find the missing caravan"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:caravan",
+          "input": {
+            "character_id": "cast:caravan-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "A map is a promise"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:caravan",
+          "description": "Why did the caravan leave the marked road?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 5,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 6,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "allowed_roster": [
+          "cast:caravan-p",
+          "cast:caravan-a"
+        ],
+        "max_consecutive_chapters": 2
+      },
+      "pov_roster": [
+        "cast:caravan-p",
+        "cast:caravan-a"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 5,
+          "turn": "Dain trades the safe route for a shortcut and loses the water cache.",
+          "scenes": [
+            "Sefa reopens the the missing caravan thread and finds a detail the earlier chapters missed.",
+            "Sefa tests Dain's account and learns why the earlier plan was incomplete."
+          ]
+        },
+        {
+          "chapter_number": 6,
+          "turn": "Sefa confronts Quartermaster Rill at the dry well and chooses the trade route.",
+          "scenes": [
+            "Sefa forces the the salt trade confrontation and pays off what the prior chapters set up.",
+            "Sefa chooses what the next book may inherit about the missing caravan."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Dain admit the shortcut was his idea?",
+      "constraint_spec": {
+        "rating_ceiling": "general",
+        "allowed_pov_refs": [
+          "cast:caravan-p",
+          "cast:caravan-a"
+        ],
+        "required_cast_refs": [
+          "cast:caravan-p",
+          "cast:caravan-a"
+        ],
+        "required_location_refs": [
+          "loc:caravan"
+        ],
+        "required_promise_refs": [
+          "promise:caravan"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJR09",
+      "kind": "replan",
+      "kind_label": "mid-book replan or amendment",
+      "name": "The Missing Caravan",
+      "genre": "adventure",
+      "mode": "series",
+      "pov_mode": "rotating",
+      "rating_ceiling": "general",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 9,
+        "chapter_end": 10,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Missing Caravan: A series adventure about maps as promises and the cost of a wrong turn. The central pressure is the salt trade.",
+      "contract_promise": "A series adventure about maps as promises and the cost of a wrong turn.",
+      "existing_context": "Chapters 1-8 are drafted. A summary-triggered replan must amend the unwritten future without rewriting drafted prose or accepted canon.",
+      "conflicting_input": "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon.",
+      "hook": "the missing caravan",
+      "stakes": "the salt trade",
+      "constraints": [
+        "Keep every scene within the general content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Treat this as an amendment to unwritten future chapters only.",
+        "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon."
+      ],
+      "boundaries": [
+        "No animal cruelty",
+        "No prophecy"
+      ],
+      "style_notes": [
+        "Brisk travel detail",
+        "Dry banter"
+      ],
+      "cast": [
+        {
+          "ref": "cast:caravan-p",
+          "name": "Sefa",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:caravan-a",
+          "name": "Dain",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:caravan-o",
+          "name": "Quartermaster Rill",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:caravan",
+          "name": "Salt Road",
+          "kind": "desert trade road"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:caravan",
+          "rule_name": "Salt road markers",
+          "description": "A marker moved after dusk is not a road."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:caravan",
+          "input": {
+            "theme_statement": "A map is a promise",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:caravan",
+          "input": {
+            "name": "The missing caravan",
+            "conflict_type": "central",
+            "stakes": "the salt trade"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:caravan",
+          "input": {
+            "name": "Find the missing caravan",
+            "plot_type": "main",
+            "summary": "Find the missing caravan"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:caravan",
+          "input": {
+            "character_id": "cast:caravan-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "A map is a promise"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:caravan",
+          "description": "Why did the caravan leave the marked road?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 9,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 10,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "allowed_roster": [
+          "cast:caravan-p",
+          "cast:caravan-a"
+        ],
+        "max_consecutive_chapters": 2
+      },
+      "pov_roster": [
+        "cast:caravan-p",
+        "cast:caravan-a"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 9,
+          "turn": "Dain trades the safe route for a shortcut and loses the water cache.",
+          "scenes": [
+            "Sefa renegotiates the the missing caravan plan after the new boundary changes what can be shown.",
+            "Sefa asks Dain which earlier promise still holds and which must be re-staged."
+          ]
+        },
+        {
+          "chapter_number": 10,
+          "turn": "Sefa confronts Quartermaster Rill at the dry well and chooses the trade route.",
+          "scenes": [
+            "Sefa pays off the missing caravan in a non-graphic confrontation that preserves the salt trade.",
+            "Sefa chooses what the revised outline leaves for the next arc."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Does Dain admit the shortcut was his idea?",
+      "constraint_spec": {
+        "rating_ceiling": "general",
+        "allowed_pov_refs": [
+          "cast:caravan-p",
+          "cast:caravan-a"
+        ],
+        "required_cast_refs": [
+          "cast:caravan-p",
+          "cast:caravan-a"
+        ],
+        "required_location_refs": [
+          "loc:caravan"
+        ],
+        "required_promise_refs": [
+          "promise:caravan"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJG10",
+      "kind": "greenfield",
+      "kind_label": "greenfield new-book",
+      "name": "The Vanished Mural",
+      "genre": "contemporary",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "teen",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 1,
+        "chapter_end": 3,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Vanished Mural: A contemporary novel about public memory, permits and neighborhood power. The central pressure is the community center.",
+      "contract_promise": "A contemporary novel about public memory, permits and neighborhood power.",
+      "existing_context": "",
+      "conflicting_input": null,
+      "hook": "the vanished mural",
+      "stakes": "the community center",
+      "constraints": [
+        "Keep every scene within the teen content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon."
+      ],
+      "boundaries": [
+        "No slurs",
+        "No police violence on page"
+      ],
+      "style_notes": [
+        "Bright dialogue",
+        "Concrete neighborhood detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:city-p",
+          "name": "Luis",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:city-a",
+          "name": "Amara",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:city-o",
+          "name": "Reed",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:city",
+          "name": "Community Center",
+          "kind": "neighborhood center"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:city",
+          "rule_name": "Mural permit",
+          "description": "A mural becomes public record only after a community vote."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:city",
+          "input": {
+            "theme_statement": "A city remembers what it chooses",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:city",
+          "input": {
+            "name": "The vanished mural",
+            "conflict_type": "central",
+            "stakes": "the community center"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:city",
+          "input": {
+            "name": "Recover the mural",
+            "plot_type": "main",
+            "summary": "Recover the mural"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:city",
+          "input": {
+            "character_id": "cast:city-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "A city remembers what it chooses"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:mural",
+          "description": "Who painted over the mural?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 3,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:city-p"
+      },
+      "pov_roster": [
+        "cast:city-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 1,
+          "turn": "Luis finds fresh primer over the mural and a missing permit page.",
+          "scenes": [
+            "Luis notices the vanished mural at Community Center and keeps the first clue hidden.",
+            "Luis asks Amara for help and pays a small price for silence."
+          ]
+        },
+        {
+          "chapter_number": 2,
+          "turn": "Luis trades a commission for Amara's vote list and loses a gallery contact.",
+          "scenes": [
+            "Luis follows a lead that costs the community center.",
+            "Luis chooses between the clue and Amara's safety."
+          ]
+        },
+        {
+          "chapter_number": 3,
+          "turn": "Luis confronts Reed at the center and chooses what the wall records.",
+          "scenes": [
+            "Luis confronts Reed with the recovered proof.",
+            "Luis decides what to reveal about the vanished mural."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the original mural be restored or replaced by a community vote?",
+      "constraint_spec": {
+        "rating_ceiling": "teen",
+        "allowed_pov_refs": [
+          "cast:city-p"
+        ],
+        "required_cast_refs": [
+          "cast:city-p",
+          "cast:city-a"
+        ],
+        "required_location_refs": [
+          "loc:city"
+        ],
+        "required_promise_refs": [
+          "promise:mural"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 3,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJC10",
+      "kind": "continuation",
+      "kind_label": "chapter-horizon continuation",
+      "name": "The Vanished Mural",
+      "genre": "contemporary",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "teen",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 5,
+        "chapter_end": 6,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Vanished Mural: A contemporary novel about public memory, permits and neighborhood power. The central pressure is the community center.",
+      "contract_promise": "A contemporary novel about public memory, permits and neighborhood power.",
+      "existing_context": "Chapters 1-4 are drafted and accepted. The contract, cast and the vanished mural are canon. The next planning horizon continues directly from chapter 4.",
+      "conflicting_input": null,
+      "hook": "the vanished mural",
+      "stakes": "the community center",
+      "constraints": [
+        "Keep every scene within the teen content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Reuse the accepted contract and cast; never create a duplicate series."
+      ],
+      "boundaries": [
+        "No slurs",
+        "No police violence on page"
+      ],
+      "style_notes": [
+        "Bright dialogue",
+        "Concrete neighborhood detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:city-p",
+          "name": "Luis",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:city-a",
+          "name": "Amara",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:city-o",
+          "name": "Reed",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:city",
+          "name": "Community Center",
+          "kind": "neighborhood center"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:city",
+          "rule_name": "Mural permit",
+          "description": "A mural becomes public record only after a community vote."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:city",
+          "input": {
+            "theme_statement": "A city remembers what it chooses",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:city",
+          "input": {
+            "name": "The vanished mural",
+            "conflict_type": "central",
+            "stakes": "the community center"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:city",
+          "input": {
+            "name": "Recover the mural",
+            "plot_type": "main",
+            "summary": "Recover the mural"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:city",
+          "input": {
+            "character_id": "cast:city-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "A city remembers what it chooses"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:mural",
+          "description": "Who painted over the mural?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 5,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 6,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:city-p"
+      },
+      "pov_roster": [
+        "cast:city-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 5,
+          "turn": "Luis trades a commission for Amara's vote list and loses a gallery contact.",
+          "scenes": [
+            "Luis reopens the the vanished mural thread and finds a detail the earlier chapters missed.",
+            "Luis tests Amara's account and learns why the earlier plan was incomplete."
+          ]
+        },
+        {
+          "chapter_number": 6,
+          "turn": "Luis confronts Reed at the center and chooses what the wall records.",
+          "scenes": [
+            "Luis forces the the community center confrontation and pays off what the prior chapters set up.",
+            "Luis chooses what the next book may inherit about the vanished mural."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the original mural be restored or replaced by a community vote?",
+      "constraint_spec": {
+        "rating_ceiling": "teen",
+        "allowed_pov_refs": [
+          "cast:city-p"
+        ],
+        "required_cast_refs": [
+          "cast:city-p",
+          "cast:city-a"
+        ],
+        "required_location_refs": [
+          "loc:city"
+        ],
+        "required_promise_refs": [
+          "promise:mural"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    },
+    {
+      "id": "PJR10",
+      "kind": "replan",
+      "kind_label": "mid-book replan or amendment",
+      "name": "The Vanished Mural",
+      "genre": "contemporary",
+      "mode": "standalone",
+      "pov_mode": "single",
+      "rating_ceiling": "teen",
+      "horizon": {
+        "book_number": 1,
+        "chapter_start": 9,
+        "chapter_end": 10,
+        "scenes_per_chapter": 2
+      },
+      "premise": "The Vanished Mural: A contemporary novel about public memory, permits and neighborhood power. The central pressure is the community center.",
+      "contract_promise": "A contemporary novel about public memory, permits and neighborhood power.",
+      "existing_context": "Chapters 1-8 are drafted. A summary-triggered replan must amend the unwritten future without rewriting drafted prose or accepted canon.",
+      "conflicting_input": "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon.",
+      "hook": "the vanished mural",
+      "stakes": "the community center",
+      "constraints": [
+        "Keep every scene within the teen content ceiling.",
+        "Use only the declared cast and locations.",
+        "Plant the promise before it pays off.",
+        "Do not rewrite drafted prose or accepted canon.",
+        "Treat this as an amendment to unwritten future chapters only.",
+        "The prior outline promised an earlier payoff, but a new boundary forbids the original confrontation's graphic harm. Reconcile the change without moving the payoff outside the horizon."
+      ],
+      "boundaries": [
+        "No slurs",
+        "No police violence on page"
+      ],
+      "style_notes": [
+        "Bright dialogue",
+        "Concrete neighborhood detail"
+      ],
+      "cast": [
+        {
+          "ref": "cast:city-p",
+          "name": "Luis",
+          "role": "protagonist"
+        },
+        {
+          "ref": "cast:city-a",
+          "name": "Amara",
+          "role": "ally"
+        },
+        {
+          "ref": "cast:city-o",
+          "name": "Reed",
+          "role": "opposition"
+        }
+      ],
+      "locations": [
+        {
+          "ref": "loc:city",
+          "name": "Community Center",
+          "kind": "neighborhood center"
+        }
+      ],
+      "world_rules": [
+        {
+          "ref": "rule:city",
+          "rule_name": "Mural permit",
+          "description": "A mural becomes public record only after a community vote."
+        }
+      ],
+      "themes": [
+        {
+          "ref": "theme:city",
+          "input": {
+            "theme_statement": "A city remembers what it chooses",
+            "thesis_antithesis": "Safety versus risk"
+          }
+        }
+      ],
+      "conflicts": [
+        {
+          "ref": "conflict:city",
+          "input": {
+            "name": "The vanished mural",
+            "conflict_type": "central",
+            "stakes": "the community center"
+          }
+        }
+      ],
+      "plot_lines": [
+        {
+          "ref": "plot:city",
+          "input": {
+            "name": "Recover the mural",
+            "plot_type": "main",
+            "summary": "Recover the mural"
+          }
+        }
+      ],
+      "arcs": [
+        {
+          "ref": "arc:city",
+          "input": {
+            "character_id": "cast:city-p",
+            "arc_type": "growth",
+            "starting_state": "Guarded",
+            "ending_state": "Committed",
+            "thematic_purpose": "A city remembers what it chooses"
+          }
+        }
+      ],
+      "promises": [
+        {
+          "ref": "promise:mural",
+          "description": "Who painted over the mural?",
+          "planted_at": {
+            "book_number": 1,
+            "chapter_number": 9,
+            "scene_order": 1
+          },
+          "payoff_at": {
+            "book_number": 1,
+            "chapter_number": 10,
+            "scene_order": 2
+          },
+          "deferred_reason": null
+        }
+      ],
+      "pov_policy": {
+        "single_pov": "cast:city-p"
+      },
+      "pov_roster": [
+        "cast:city-p"
+      ],
+      "chapters": [
+        {
+          "chapter_number": 9,
+          "turn": "Luis trades a commission for Amara's vote list and loses a gallery contact.",
+          "scenes": [
+            "Luis renegotiates the the vanished mural plan after the new boundary changes what can be shown.",
+            "Luis asks Amara which earlier promise still holds and which must be re-staged."
+          ]
+        },
+        {
+          "chapter_number": 10,
+          "turn": "Luis confronts Reed at the center and chooses what the wall records.",
+          "scenes": [
+            "Luis pays off the vanished mural in a non-graphic confrontation that preserves the community center.",
+            "Luis chooses what the revised outline leaves for the next arc."
+          ]
+        }
+      ],
+      "existing_refs": [],
+      "open_question": "Should the original mural be restored or replaced by a community vote?",
+      "constraint_spec": {
+        "rating_ceiling": "teen",
+        "allowed_pov_refs": [
+          "cast:city-p"
+        ],
+        "required_cast_refs": [
+          "cast:city-p",
+          "cast:city-a"
+        ],
+        "required_location_refs": [
+          "loc:city"
+        ],
+        "required_promise_refs": [
+          "promise:mural"
+        ],
+        "forbidden_terms": [
+          "amnesia",
+          "prophecy",
+          "deus ex machina"
+        ],
+        "chapter_count": 2,
+        "scenes_per_chapter": 2
+      }
+    }
+  ]
+}

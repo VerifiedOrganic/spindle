@@ -1939,3 +1939,585 @@ const EXPLICIT_NEIGHBOR_PROSE: &str = "She pulled him down and took him inside h
 
 const TELEPORT_PROSE: &str = "He woke in the grey morning and ate his bread at the \
          long table. The midnight harbour lay black and still around him as he stood on the quay.";
+
+// ── Editorial controller: hybrid host tasks, budget, and no-route fallback ──
+
+#[tokio::test]
+async fn editorial_host_revision_without_judge_route_returns_pending_manual_judgment() {
+    use crate::drafting::artifact;
+    use crate::drafting::tests::fixture;
+    use spindle_core::drafting::{
+        DraftMessages, EditorialControllerStateV1, EditorialPolicy, EditorialPricingV1,
+        EditorialRouteAvailability, EditorialStage, EditorialTextRefV1, HostEditorialSubmissionV1,
+        HostSubmissionOutcomeV1, PreparedDraftingPacket, ResolvedEditorialSettingsV1,
+        extraction::DraftReceiptBinding,
+    };
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let packet = fixture();
+    let controller_path = _tmp.path().join("editorial-controller.json");
+    let draft_path = _tmp.path().join("scene-draft.json");
+    let mut settings = ResolvedEditorialSettingsV1::critique_v1_default();
+    settings.pricing = Some(EditorialPricingV1 {
+        input_usd_micros_per_million: 0,
+        output_usd_micros_per_million: 0,
+    });
+    let mut controller = EditorialControllerStateV1::new(
+        "run:1".into(),
+        packet.project_id.clone(),
+        packet.branch_id.clone(),
+        settings.clone(),
+    );
+    let scene = crate::drafting::editorial::new_editorial_scene_state(
+        1,
+        1,
+        Some("scene:1".into()),
+        "packet-hash".into(),
+        "source-hash".into(),
+        EditorialRouteAvailability::all_available(),
+        &settings,
+    );
+    controller.scenes.push(scene);
+    crate::drafting::editorial::save_editorial_controller(&controller_path, &controller)
+        .expect("save controller");
+
+    let messages = DraftMessages {
+        system: "system".into(),
+        user: "user".into(),
+    };
+    let packet_hash =
+        crate::drafting::editorial::editorial_sha256_hex(&serde_json::to_vec(&messages).unwrap());
+    controller.scenes[0].packet_hash = packet_hash.clone();
+    crate::drafting::editorial::save_editorial_controller(&controller_path, &controller)
+        .expect("save controller with packet hash");
+    let mut draft = artifact::capture_plain_text(
+        &packet,
+        &packet_hash,
+        "Original host draft prose.".into(),
+        false,
+        DraftReceiptBinding {
+            generation_id: "host:task:1".into(),
+            agent_id: "host".into(),
+            normalized_output_sha256: crate::drafting::editorial::normalized_output_sha256(
+                "Original host draft prose.",
+            ),
+        },
+    )
+    .expect("capture draft");
+    draft.prepared_packet = Some(PreparedDraftingPacket {
+        packet: packet.clone(),
+        messages,
+        messages_hash: packet_hash.clone(),
+    });
+    artifact::save_artifact(&draft_path, &draft).expect("save draft");
+
+    let task = svc
+        .prepare_editorial_host_task_from_artifact(&controller_path, 0, "task:1", &draft_path, 10)
+        .await
+        .expect("prepare draft host task");
+    assert_eq!(task.task_id, "task:1");
+
+    let outcome = svc
+        .submit_editorial_host_task(
+            &controller_path,
+            &draft_path,
+            HostEditorialSubmissionV1 {
+                task_id: "task:1".into(),
+                packet_hash: packet_hash.clone(),
+                text: "Host drafted plain prose.".into(),
+                usage: None,
+                truncated: false,
+            },
+            None,
+            20,
+        )
+        .await
+        .expect("submit host draft");
+    assert!(matches!(
+        outcome,
+        HostSubmissionOutcomeV1::DraftAccepted { .. }
+    ));
+
+    let mut controller = crate::drafting::editorial::load_editorial_controller(&controller_path)
+        .expect("reload controller");
+    let draft_on_disk = artifact::load_artifact(&draft_path).expect("reload draft");
+    assert_eq!(draft_on_disk.text, "Host drafted plain prose.");
+    assert_eq!(draft_on_disk.receipt.agent_id, "host");
+    controller.scenes[0].stage = EditorialStage::Critiqued;
+    controller.scenes[0].incumbent = Some(EditorialTextRefV1 {
+        text_sha256: draft_on_disk.text_sha256.clone(),
+        generation_id: Some(draft_on_disk.receipt.generation_id.clone()),
+        agent_id: Some("host".into()),
+    });
+    crate::drafting::editorial::save_editorial_controller(&controller_path, &controller)
+        .expect("save controller");
+
+    let revision_task = svc
+        .prepare_editorial_host_task_from_artifact(&controller_path, 0, "task:2", &draft_path, 30)
+        .await
+        .expect("prepare revision host task");
+    assert_eq!(
+        revision_task.incumbent_text.as_deref(),
+        Some("Host drafted plain prose.")
+    );
+
+    let outcome = svc
+        .submit_editorial_host_task(
+            &controller_path,
+            &draft_path,
+            HostEditorialSubmissionV1 {
+                task_id: "task:2".into(),
+                packet_hash: packet_hash.clone(),
+                text: "Host revised plain prose.".into(),
+                usage: None,
+                truncated: false,
+            },
+            None,
+            40,
+        )
+        .await
+        .expect("submit host revision");
+    let HostSubmissionOutcomeV1::PendingManualJudgment { pending } = outcome else {
+        panic!("missing judge route must park, not prefer the candidate: {outcome:?}");
+    };
+    assert!(
+        matches!(
+            pending.reason,
+            spindle_core::drafting::ManualJudgmentReason::NoAutomatedJudgeRoute
+                | spindle_core::drafting::ManualJudgmentReason::MissingVerifiedTokenizer
+        ),
+        "missing automated judge must park honestly, got {:?}",
+        pending.reason
+    );
+    let controller = crate::drafting::editorial::load_editorial_controller(&controller_path)
+        .expect("reload controller");
+    assert_eq!(controller.scenes[0].stage, EditorialStage::AcceptedOriginal);
+    assert!(controller.scenes[0].pending_manual_judgment.is_some());
+    assert!(
+        !controller.scenes[0]
+            .judge
+            .as_ref()
+            .expect("judge summary")
+            .accepted_revision
+    );
+    assert_eq!(
+        controller.settings.editorial_policy,
+        EditorialPolicy::CritiqueV1
+    );
+}
+
+fn editorial_test_controller(
+    dir: &std::path::Path,
+    name: &str,
+    scene_caps: Option<spindle_core::drafting::EditorialBudgetCaps>,
+) -> std::path::PathBuf {
+    use crate::drafting::tests::fixture;
+    use spindle_core::drafting::{
+        EditorialControllerStateV1, EditorialPricingV1, EditorialRouteAvailability,
+        ResolvedEditorialSettingsV1,
+    };
+    let packet = fixture();
+    let mut settings = ResolvedEditorialSettingsV1::critique_v1_default();
+    settings.pricing = Some(EditorialPricingV1 {
+        input_usd_micros_per_million: 0,
+        output_usd_micros_per_million: 0,
+    });
+    if let Some(caps) = scene_caps {
+        settings.scene_budget = caps;
+    }
+    let mut controller = EditorialControllerStateV1::new(
+        "run:1".into(),
+        packet.project_id.clone(),
+        packet.branch_id.clone(),
+        settings.clone(),
+    );
+    let mut scene = crate::drafting::editorial::new_editorial_scene_state(
+        1,
+        1,
+        Some("scene:1".into()),
+        "packet-hash".into(),
+        "source-hash".into(),
+        EditorialRouteAvailability::all_available(),
+        &settings,
+    );
+    if let Some(caps) = scene_caps {
+        scene.ledger.scene_caps = caps;
+    }
+    controller.scenes.push(scene);
+    let path = dir.join(name);
+    crate::drafting::editorial::save_editorial_controller(&path, &controller)
+        .expect("save controller");
+    path
+}
+
+#[tokio::test]
+async fn agent_draft_admission_is_persisted_before_dispatch_and_caps_restart() {
+    use spindle_core::drafting::EditorialBudgetCaps;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let caps = EditorialBudgetCaps {
+        max_calls: 1,
+        ..EditorialBudgetCaps::scene_default()
+    };
+    let controller_path = editorial_test_controller(tmp.path(), "agent-draft.json", Some(caps));
+
+    // A held controller lock blocks a concurrent admission instead of letting
+    // two callers admit against the same counters.
+    let held =
+        crate::drafting::artifact::lock_artifact(&controller_path).expect("hold controller lock");
+    let busy = crate::sqlite::service::editorial::admit_editorial_agent_draft_action(
+        &controller_path,
+        0,
+        10,
+    );
+    assert!(busy.is_err(), "concurrent admission must fail busy");
+    drop(held);
+
+    let reservation = crate::sqlite::service::editorial::admit_editorial_agent_draft_action(
+        &controller_path,
+        0,
+        20,
+    )
+    .expect("admission persists");
+    assert_eq!(reservation.reserved.calls, 1);
+    assert!(reservation.is_dispatched());
+    let persisted =
+        crate::drafting::editorial::load_editorial_controller(&controller_path).expect("reload");
+    assert_eq!(persisted.scenes[0].ledger.scene_reservations.len(), 1);
+
+    // A same-stage retry while the dispatch is in flight is rejected rather
+    // than silently reusing the reservation for a second paid call.
+    let in_flight = crate::sqlite::service::editorial::admit_editorial_agent_draft_action(
+        &controller_path,
+        0,
+        25,
+    )
+    .expect_err("in-flight dispatch must not be reused");
+    assert!(
+        in_flight.to_string().contains("dispatch_in_progress"),
+        "unexpected in-flight error: {in_flight}"
+    );
+
+    // A failed paid attempt reconciles with unknown usage, keeps the maximum
+    // charged, and consumes the attempt. The retry is a new charged admission
+    // and the persisted one-call cap denies it.
+    crate::sqlite::service::editorial::reconcile_editorial_agent_draft_action(
+        &controller_path,
+        0,
+        &tmp.path().join("agent-draft.json"),
+        &reservation.idempotency_key,
+        reservation.reserved,
+        None,
+        None,
+        40,
+        30,
+        "source-packet".into(),
+        Vec::new(),
+    )
+    .expect("reconcile failed dispatch");
+    let persisted =
+        crate::drafting::editorial::load_editorial_controller(&controller_path).expect("reload");
+    assert_eq!(persisted.scenes[0].attempt, 1);
+    assert!(!persisted.scenes[0].ledger.scene_reservations[0].usage_known);
+    let denial = crate::sqlite::service::editorial::admit_editorial_agent_draft_action(
+        &controller_path,
+        0,
+        40,
+    )
+    .expect_err("a retry must be a new charged attempt and pass the cap");
+    assert!(
+        denial.to_string().contains("scene_calls_exhausted"),
+        "unexpected retry denial: {denial}"
+    );
+}
+
+#[tokio::test]
+async fn agent_draft_reconcile_charges_known_usage_and_keeps_unknown_dispatch_charged() {
+    use crate::drafting::artifact;
+    use crate::drafting::tests::{VerifiedFixtureTokenizer, fixture};
+    use spindle_core::drafting::{
+        DraftMessages, EditorialBudgetCaps, PacketAssembly, PreparedDraftingPacket,
+        extraction::DraftReceiptBinding,
+    };
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let controller_path = editorial_test_controller(tmp.path(), "agent-usage.json", None);
+    let reservation = crate::sqlite::service::editorial::admit_editorial_agent_draft_action(
+        &controller_path,
+        0,
+        10,
+    )
+    .expect("admit");
+    let reserved = reservation.reserved;
+    let key = reservation.idempotency_key.clone();
+
+    let messages = DraftMessages {
+        system: "system".into(),
+        user: "user".into(),
+    };
+    let packet_hash =
+        crate::drafting::editorial::editorial_sha256_hex(&serde_json::to_vec(&messages).unwrap());
+    let mut packet = fixture();
+    packet.assembly = Some(PacketAssembly {
+        tokenizer_id: "fixture-unicode".into(),
+        tokenizer_version: "1".into(),
+        model_id: "fixture".into(),
+        section_counts: Vec::new(),
+        omissions: Vec::new(),
+        input_tokens: 100,
+        output_reserve: 3_000,
+        framing_reserve: 512,
+        context_window: 20_000,
+        generation_seed: None,
+    });
+    let text = "Agent draft prose.";
+    let mut captured = artifact::capture_plain_text(
+        &packet,
+        &packet_hash,
+        text.to_string(),
+        false,
+        DraftReceiptBinding {
+            generation_id: "generation:agent:1".into(),
+            agent_id: "agent".into(),
+            normalized_output_sha256: crate::drafting::editorial::normalized_output_sha256(text),
+        },
+    )
+    .expect("capture");
+    captured.prepared_packet = Some(PreparedDraftingPacket {
+        packet: packet.clone(),
+        messages,
+        messages_hash: packet_hash,
+    });
+    let tokenizer = VerifiedFixtureTokenizer;
+    crate::sqlite::service::editorial::reconcile_editorial_agent_draft_action(
+        &controller_path,
+        0,
+        &tmp.path().join("agent-draft.json"),
+        &key,
+        reserved,
+        Some(&captured),
+        Some(&tokenizer),
+        321,
+        20,
+        "source-packet".into(),
+        vec!["model_call:1".into()],
+    )
+    .expect("reconcile success");
+    let persisted =
+        crate::drafting::editorial::load_editorial_controller(&controller_path).expect("reload");
+    let used = persisted.scenes[0].ledger.scene_used();
+    assert_eq!(used.calls, 1);
+    assert_eq!(used.tokens, 100 + text.chars().count());
+    assert_eq!(used.millis, 321);
+    assert_eq!(
+        persisted.scenes[0].stage,
+        spindle_core::drafting::EditorialStage::Drafted
+    );
+    assert_eq!(persisted.attribution.len(), 1);
+
+    // A failed dispatch has no known usage: the maximum reservation stays
+    // charged rather than being refunded to zero.
+    let failed = editorial_test_controller(
+        tmp.path(),
+        "agent-failed.json",
+        Some(EditorialBudgetCaps::scene_default()),
+    );
+    let reservation =
+        crate::sqlite::service::editorial::admit_editorial_agent_draft_action(&failed, 0, 10)
+            .expect("admit");
+    crate::sqlite::service::editorial::reconcile_editorial_agent_draft_action(
+        &failed,
+        0,
+        &tmp.path().join("agent-failed.json"),
+        &reservation.idempotency_key,
+        reservation.reserved,
+        None,
+        None,
+        50,
+        20,
+        "source-packet".into(),
+        Vec::new(),
+    )
+    .expect("reconcile failure");
+    let persisted = crate::drafting::editorial::load_editorial_controller(&failed).expect("reload");
+    assert_eq!(
+        persisted.scenes[0].ledger.scene_used(),
+        reservation.reserved
+    );
+    assert!(!persisted.scenes[0].ledger.scene_reservations[0].usage_known);
+}
+
+#[tokio::test]
+async fn agent_revision_gate_denies_exhausted_shared_run_budget_and_missing_pricing() {
+    use crate::drafting::revision::RevisionBudgetGate;
+    use spindle_core::drafting::{EditorialActionKind, EditorialBudgetCaps, EditorialPricingV1};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = editorial_test_controller(tmp.path(), "revision-gate.json", None);
+    let mut controller =
+        crate::drafting::editorial::load_editorial_controller(&path).expect("load controller");
+    let run_caps = EditorialBudgetCaps {
+        max_calls: 2,
+        ..EditorialBudgetCaps::run_default()
+    };
+    controller.settings.run_budget = run_caps;
+    for scene in &mut controller.scenes {
+        scene.ledger.run_caps = run_caps;
+    }
+    crate::drafting::editorial::save_editorial_controller(&path, &controller)
+        .expect("save controller");
+    let gate = crate::sqlite::service::editorial::ControllerRevisionBudgetGate::new(&path, 0, 10);
+    gate.admit(EditorialActionKind::Critique, 1, "critic")
+        .expect("first pass admits");
+    let in_flight = gate
+        .admit(EditorialActionKind::Critique, 1, "critic")
+        .expect_err("an in-flight pass cannot be reused");
+    assert!(
+        in_flight.contains("dispatch_in_progress"),
+        "unexpected in-flight error: {in_flight}"
+    );
+    let denial = gate
+        .admit(EditorialActionKind::Revise, 1, "revision")
+        .expect_err("the shared run call cap must deny the next pass");
+    assert!(
+        denial.contains("run_calls_exhausted"),
+        "unexpected denial: {denial}"
+    );
+
+    let missing_price = editorial_test_controller(tmp.path(), "revision-gate-price.json", None);
+    let mut controller = crate::drafting::editorial::load_editorial_controller(&missing_price)
+        .expect("load controller");
+    controller.settings.pricing = None;
+    crate::drafting::editorial::save_editorial_controller(&missing_price, &controller)
+        .expect("save controller");
+    let gate =
+        crate::sqlite::service::editorial::ControllerRevisionBudgetGate::new(&missing_price, 0, 10);
+    let denial = gate
+        .admit(EditorialActionKind::Critique, 1, "critic")
+        .expect_err("paid dispatch without price must deny");
+    assert!(
+        denial.contains("missing_price"),
+        "unexpected denial: {denial}"
+    );
+
+    // Exact, nonzero-price reconciliation must not refund the reservation.
+    let priced = editorial_test_controller(tmp.path(), "revision-gate-priced.json", None);
+    let mut controller =
+        crate::drafting::editorial::load_editorial_controller(&priced).expect("load controller");
+    let pricing = EditorialPricingV1 {
+        input_usd_micros_per_million: 1_000_000,
+        output_usd_micros_per_million: 2_000_000,
+    };
+    controller.settings.pricing = Some(pricing.clone());
+    crate::drafting::editorial::save_editorial_controller(&priced, &controller)
+        .expect("save controller");
+    let gate = crate::sqlite::service::editorial::ControllerRevisionBudgetGate::new(&priced, 0, 10);
+    let admission = gate
+        .admit(EditorialActionKind::Critique, 1, "critic")
+        .expect("admit priced pass");
+    gate.reconcile(
+        &admission,
+        Some(crate::drafting::revision::RevisionPassUsage {
+            calls: 1,
+            input_tokens: Some(100),
+            output_tokens: Some(50),
+            total_tokens: 150,
+            millis: 222,
+        }),
+        vec!["model_call:critic".into()],
+    )
+    .expect("reconcile known usage");
+    let controller =
+        crate::drafting::editorial::load_editorial_controller(&priced).expect("reload");
+    let used = controller.scenes[0].ledger.scene_used();
+    assert_eq!(used.calls, 1);
+    assert_eq!(used.tokens, 150);
+    assert_eq!(used.millis, 222);
+    assert_eq!(used.usd_micros, pricing.cost_micros(100, 50));
+    assert_eq!(used.usd_micros, 200);
+
+    // A failed pass reconciles `None`: the maximum stays charged.
+    let failed = editorial_test_controller(tmp.path(), "revision-gate-failed.json", None);
+    let gate = crate::sqlite::service::editorial::ControllerRevisionBudgetGate::new(&failed, 0, 10);
+    let admission = gate
+        .admit(EditorialActionKind::Critique, 1, "critic")
+        .expect("admit");
+    gate.reconcile(&admission, None, Vec::new())
+        .expect("reconcile unknown");
+    let controller =
+        crate::drafting::editorial::load_editorial_controller(&failed).expect("reload");
+    assert_eq!(controller.scenes[0].ledger.scene_used(), admission.reserved);
+    assert!(!controller.scenes[0].ledger.scene_reservations[0].usage_known);
+
+    // A two-call judge reservation claims each swapped-order pass separately:
+    // a resume after persisted pass 1 can still admit the reserved pass 2,
+    // while replaying pass 1 is rejected.
+    let judge_path = editorial_test_controller(tmp.path(), "revision-gate-judge.json", None);
+    let gate =
+        crate::sqlite::service::editorial::ControllerRevisionBudgetGate::new(&judge_path, 0, 10);
+    let pass_1 = gate
+        .admit(EditorialActionKind::Judge, 1, "judge_pass_1")
+        .expect("judge pass 1 admits");
+    let pass_2 = gate
+        .admit(EditorialActionKind::Judge, 1, "judge_pass_2")
+        .expect("reserved judge pass 2 admits on resume");
+    assert_eq!(pass_1.admission_id, pass_2.admission_id);
+    let replay = gate
+        .admit(EditorialActionKind::Judge, 1, "judge_pass_1")
+        .expect_err("judge pass 1 cannot be replayed");
+    assert!(
+        replay.contains("dispatch_in_progress"),
+        "unexpected replay error: {replay}"
+    );
+}
+
+#[tokio::test]
+async fn host_judge_admission_is_locked_and_shares_the_run_budget() {
+    use spindle_core::drafting::{
+        EditorialBudgetCaps, EditorialRouteAvailability, ResolvedEditorialSettingsV1,
+    };
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = editorial_test_controller(tmp.path(), "host-judge.json", None);
+    let mut controller =
+        crate::drafting::editorial::load_editorial_controller(&path).expect("load");
+    let run_caps = EditorialBudgetCaps {
+        max_calls: 2,
+        ..EditorialBudgetCaps::run_default()
+    };
+    controller.settings.run_budget = run_caps;
+    for scene in &mut controller.scenes {
+        scene.ledger.run_caps = run_caps;
+    }
+    let settings: ResolvedEditorialSettingsV1 = controller.settings.clone();
+    let mut second = crate::drafting::editorial::new_editorial_scene_state(
+        1,
+        2,
+        Some("scene:2".into()),
+        "packet-hash-2".into(),
+        "source-hash-2".into(),
+        EditorialRouteAvailability::all_available(),
+        &settings,
+    );
+    second.ledger.run_caps = run_caps;
+    controller.scenes.push(second);
+    crate::drafting::editorial::save_editorial_controller(&path, &controller).expect("save");
+
+    // A held controller lock proves host judge admission serializes with every
+    // other controller mutation instead of doing a bare load/admit/save.
+    let held = crate::drafting::artifact::lock_artifact(&path).expect("hold lock");
+    let busy = crate::sqlite::service::editorial::admit_host_judge_action(&path, 0, 10);
+    assert!(
+        busy.is_err(),
+        "host judge admission must use the controller lock"
+    );
+    drop(held);
+
+    crate::sqlite::service::editorial::admit_host_judge_action(&path, 0, 10)
+        .expect("first judge reservation consumes two calls");
+    let denial = crate::sqlite::service::editorial::admit_host_judge_action(&path, 1, 20)
+        .expect_err("the second scene must see the shared run-cap consumption");
+    assert!(
+        denial.to_string().contains("run_calls_exhausted"),
+        "unexpected denial: {denial}"
+    );
+}
