@@ -591,15 +591,22 @@ def _score(issues: Iterable[dict[str, Any]], plants: Iterable[dict[str, Any]]) -
         expected = EXPECTED_CHECKS[kind]
         keyword = plant["keyword"].lower()
         scene_id = plant.get("scene_id")
-        localized = any(
-            issue.get("severity") in {"error", "warning"}
-            and issue.get("check_type") in (expected | BROAD_CHECKS)
-            and (
-                keyword in str(issue.get("message", "")).lower()
-                or (scene_id and scene_id in issue.get("entity_ids", []))
+        def localizes(issue: dict[str, Any]) -> bool:
+            if issue.get("severity") not in {"error", "warning"}:
+                return False
+            check_type = issue.get("check_type")
+            if check_type not in (expected | BROAD_CHECKS):
+                return False
+            message = str(issue.get("message", "")).lower()
+            if check_type in BROAD_CHECKS:
+                # A broad check must name the planted evidence; sharing a
+                # scene with another plant is not category evidence.
+                return keyword in message
+            return keyword in message or bool(
+                scene_id and scene_id in issue.get("entity_ids", [])
             )
-            for issue in issue_list
-        )
+
+        localized = any(localizes(issue) for issue in issue_list)
         type_present = any(
             issue.get("severity") in {"error", "warning"}
             and issue.get("check_type") in expected
@@ -766,6 +773,24 @@ def held_out_2_self_test() -> None:
     )
     assert info["localized_detected"] == 0
     assert info["type_detected"] == 0
+
+    # Sharing a scene is not category evidence for a broad check.
+    shared_scene = _score(
+        [
+            {
+                "check_type": "canonical_fact_prose_drift",
+                "severity": "warning",
+                "message": "the scar does not match the character record",
+                "entity_ids": ["scene:shared"],
+            }
+        ],
+        [
+            {"type": "character_attribute", "keyword": "scar", "scene_id": "scene:shared"},
+            {"type": "world_rule_cost_violation", "keyword": "without a token", "scene_id": "scene:shared"},
+        ],
+    )
+    assert shared_scene["per_type"]["character_attribute"]["localized"] == 1
+    assert shared_scene["per_type"]["world_rule_cost_violation"]["localized"] == 0
 
     # A broad check with evidence can localize, but still cannot stand in for
     # the category-specific type-present lane.

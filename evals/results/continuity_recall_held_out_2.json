@@ -7,12 +7,12 @@
       "genre": "coastal literary mystery",
       "voice": "wry close third, past tense",
       "planted": 28,
-      "localized_detected": 8,
+      "localized_detected": 5,
       "type_detected": 4,
       "per_type": {
         "character_attribute": {
           "planted": 4,
-          "localized": 2,
+          "localized": 1,
           "type_present": 0
         },
         "dead_character_acting": {
@@ -32,7 +32,7 @@
         },
         "world_rule_cost_violation": {
           "planted": 4,
-          "localized": 1,
+          "localized": 0,
           "type_present": 0
         },
         "quantity_affordability": {
@@ -42,7 +42,7 @@
         },
         "secret_leak": {
           "planted": 4,
-          "localized": 1,
+          "localized": 0,
           "type_present": 0
         }
       },
@@ -52,8 +52,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 3) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70GA6NWY485YGWR22DEAE7R",
-            "scene:01M70GA6P446HG4HQX2MT38N5W"
+            "scene:01M70GJ10JTKPHYSR4X26FJ5XV",
+            "scene:01M70GJ110GNHK79260J1NKDKN"
           ]
         },
         {
@@ -61,8 +61,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 6) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70GA6PV6DZGD3QKCRXMPXTC",
-            "scene:01M70GA6Q29HVTTNFQ279GNEBQ"
+            "scene:01M70GJ11YYTZQ2MEPK5K3F1BH",
+            "scene:01M70GJ12B68XHCC41FYFE4JXX"
           ]
         },
         {
@@ -70,8 +70,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 5) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70GA6QQVK0SGMBT5AEFMZSM",
-            "scene:01M70GA6QYVX74FKVMC82R612C"
+            "scene:01M70GJ12XEQS14JQFPK27H584",
+            "scene:01M70GJ138N8M35AKR90J3ATTX"
           ]
         },
         {
@@ -79,8 +79,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 9) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70GA6REQDCSF7BTMRRX9YYY",
-            "scene:01M70GA6RNJGDHAFYG0ARYHAQN"
+            "scene:01M70GJ13R8CYKA5TK8DX2Y3NB",
+            "scene:01M70GJ146YPJ06N1VGENJAA6K"
           ]
         },
         {
@@ -88,7 +88,7 @@
           "severity": "warning",
           "message": "scene references canonical key 'fingers' but not canonical value 'missing two on the left hand' (bytes 229..236)",
           "entity_ids": [
-            "scene:01M70GA6PNM5JXH0WDZ9SHJ0PS"
+            "scene:01M70GJ11MHQCYS0YM8885WJVK"
           ]
         },
         {
@@ -96,7 +96,7 @@
           "severity": "warning",
           "message": "scene references canonical key 'scar' but not canonical value 'left brow' (bytes 290..294)",
           "entity_ids": [
-            "scene:01M70GA6QFHSCA2ZXS59RE0TEX"
+            "scene:01M70GJ12MDA14X2X41APFB89Q"
           ]
         }
       ]
@@ -106,12 +106,12 @@
       "genre": "pastoral science fantasy",
       "voice": "lyrical first person, present tense",
       "planted": 28,
-      "localized_detected": 6,
+      "localized_detected": 4,
       "type_detected": 4,
       "per_type": {
         "character_attribute": {
           "planted": 4,
-          "localized": 1,
+          "localized": 0,
           "type_present": 0
         },
         "dead_character_acting": {
@@ -131,7 +131,7 @@
         },
         "world_rule_cost_violation": {
           "planted": 4,
-          "localized": 1,
+          "localized": 0,
           "type_present": 0
         },
         "quantity_affordability": {
@@ -151,8 +151,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 3) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70GA99KEGFF9ECA95K3RCNV",
-            "scene:01M70GA99XJD5QQ3STS970XPWK"
+            "scene:01M70GJ3Q2E8CJQ4B9E0TKDMEY",
+            "scene:01M70GJ3QBSA0V87SE02YGZZ18"
           ]
         },
         {
@@ -160,8 +160,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 6) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70GA9AS0G5SK0HBF6F5WSD5",
-            "scene:01M70GA9B2RQ9CXYY3TA4PXG4G"
+            "scene:01M70GJ3RD2DWTHEVJDAJ30NWH",
+            "scene:01M70GJ3RPBRE2V8CSNW072CVS"
           ]
         },
         {
@@ -169,8 +169,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 5) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70GA9BTGNMXPHPWH42X2ANM",
-            "scene:01M70GA9C3KN7E0DE6MQDXR6ZT"
+            "scene:01M70GJ3SC3W2SA75Y90VSAZ3Q",
+            "scene:01M70GJ3SMJXMPDWZVA33EJ6TH"
           ]
         },
         {
@@ -178,8 +178,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 9) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70GA9CMHMDXZPYM3TN4NGMA",
-            "scene:01M70GA9CW693205QGNDHWJGE1"
+            "scene:01M70GJ3T6KDDHJVM2ER6AFYRW",
+            "scene:01M70GJ3TF9J7JB7ZXTK45PYMM"
           ]
         },
         {
@@ -187,7 +187,7 @@
           "severity": "warning",
           "message": "scene references canonical key 'scar' but not canonical value 'burn on the right forearm' (bytes 285..289)",
           "entity_ids": [
-            "scene:01M70GA9BH5MK9Z0KFHCEH4G68"
+            "scene:01M70GJ3S1SSC97DXBAMXKSERM"
           ]
         }
       ]
@@ -196,9 +196,9 @@
   "per_type": {
     "character_attribute": {
       "planted": 8,
-      "localized": 3,
+      "localized": 1,
       "type_present": 0,
-      "localized_recall": 0.375,
+      "localized_recall": 0.125,
       "type_level_recall": 0.0
     },
     "dead_character_acting": {
@@ -224,9 +224,9 @@
     },
     "world_rule_cost_violation": {
       "planted": 8,
-      "localized": 2,
+      "localized": 0,
       "type_present": 0,
-      "localized_recall": 0.25,
+      "localized_recall": 0.0,
       "type_level_recall": 0.0
     },
     "quantity_affordability": {
@@ -238,16 +238,16 @@
     },
     "secret_leak": {
       "planted": 8,
-      "localized": 1,
+      "localized": 0,
       "type_present": 0,
-      "localized_recall": 0.125,
+      "localized_recall": 0.0,
       "type_level_recall": 0.0
     }
   },
   "planted_total": 56,
-  "localized_detected": 14,
+  "localized_detected": 9,
   "type_level_detected": 8,
-  "overall_localized_recall": 0.25,
+  "overall_localized_recall": 0.1607,
   "overall_type_level_recall": 0.1429,
   "control_false_positive_count": 0,
   "control_info_count": 2,

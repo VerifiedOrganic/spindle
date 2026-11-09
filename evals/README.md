@@ -222,11 +222,11 @@ python3 evals/continuity_recall.py held-out-2
 python3 evals/continuity_recall.py held-out-2 --output evals/results/continuity_recall_held_out_2.json
 ```
 
-The current main (`601bf09`) result at authoring is **14/56 localized
-(25.00%)**, **8/56 type-present (14.29%)**, and **0 control warnings/errors**
+The current main (`601bf09`) result at authoring is **9/56 localized
+(16.07%)**, **8/56 type-present (14.29%)**, and **0 control warnings/errors**
 (2 info diagnostics). Type-present counts only warning/error findings of a
 category-specific check; localized additionally requires the planted
-scene/keyword (broad checks may localize with that evidence but never count as
+scene/keyword (broad checks must name the planted evidence and never count as
 type-present). The gap is the target for upcoming detector work, not a release
 gate. This mode leaves the baseline and first held-out corpus untouched.
 
