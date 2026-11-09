@@ -4,15 +4,22 @@
 It connects your existing book, installs the `$spindle` skill, and keeps Codex as
 the writer. Host drafting needs no Spindle API key.
 
-For generated workflow/specialist profiles, run `spindle-mcp profiles` and see
-[profile selection](docs/tool-profiles.md). Existing profile names retain their
-compatibility catalogs.
+For most authors, start with the generated `workflow-write` profile:
 
-For focused serial-fiction work, run the MCP server with `SPINDLE_TOOL_PROFILE=authoring`
-and load the `authoring-supervisor` skill. This smaller tool set covers planning,
-drafting, continuity, checkpoint review, recovery, and manuscript export. Leave
-the variable unset for the complete toolbox. Host AI prose should declare
-`authorship: "assistant"`; optional style learning uses subsequent human edits.
+```bash
+SPINDLE_TOOL_PROFILE=workflow-write spindle-mcp
+```
+
+For planning and supervised multi-chapter runs, use `workflow-authoring` and load
+the `authoring-supervisor` skill. This smaller tool set covers planning, drafting,
+continuity, checkpoint review, recovery, and manuscript export. Run
+`spindle-mcp profiles` to list every generated workflow and specialist profile;
+see [profile selection](docs/tool-profiles.md) for details.
+
+The legacy `authoring`, `write`, `minimal`, `import`, and `legacy-all` profile
+names still work in 0.3.0, but they are deprecated and will be removed in the
+next release. Host AI prose should declare `authorship: "assistant"`; optional
+style learning uses subsequent human edits.
 
 **A story bible that keeps your novel consistent across hundreds of pages.**
 
@@ -129,7 +136,9 @@ You'll need [Rust](https://rustup.rs/) installed.
    ```
 
 4. **Start writing:**
-   Connect/use Spindle MCP from that folder and start designing or writing using the `authoring-supervisor` skill!
+   Connect/use Spindle MCP from that folder with `SPINDLE_TOOL_PROFILE=workflow-write`
+   (or `workflow-authoring` for supervised runs), then start designing or writing.
+   Load the `authoring-supervisor` skill for the multi-chapter loop.
 
 By default, Spindle resolves to the project-local `.spindle/` directory (climbing up parents to find it). A platform-global data directory is used as a fallback only when no `.spindle/` workspace exists. You can still set `SPINDLE_DATA_DIR` and `SPINDLE_CONFIG` to override this behavior.
 

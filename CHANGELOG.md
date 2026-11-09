@@ -1,6 +1,110 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-11-09
+
+Spindle 0.3.0 is the compatibility release for the consolidated tool surface.
+It keeps the release-R aliases working while recommending the generated
+workflow profiles for new sessions.
+
+### Highlights for authors
+
+**Plan before drafting**
+
+- Durable new-book and planning sessions: `planning_begin`, `planning_advance`,
+  `planning_status`, and `planning_decide` stage proposals level by level and
+  keep human decisions explicit. The `new-book` skill takes a premise through
+  intake, staged planning, review, and a ready-to-draft handoff.
+- Plan review and release smoke checks catch malformed or incomplete plans
+  before they reach the drafting loop.
+
+**Canon, memory, and retrieval**
+
+- Shared claim-vs-canon validation lanes give miners, importers, and the
+  authoring loop one place to distinguish explicit canon, inferred claims, and
+  contradictions.
+- Layered derived memory keeps compact summaries and retrieval context fresh as
+  scenes, chapters, and books grow.
+- Configurable embedding providers and dimensions are tracked by index
+  generation, so changing the embedding route no longer silently mixes vector
+  spaces.
+
+**Drafting packets, critic, and revision (off by default)**
+
+- `prepare_scene` assembles a bounded scene packet with cast, setting, canon,
+  continuity, promises, and voice guidance; `commit_scene` persists the prose
+  and approved continuity effects atomically.
+- The authoring supervisor can run deterministic verify/revise, dual-persona
+  critic review, canon mining, checkpoint review, and replanning as opt-in run
+  phases. These advanced loop features remain off by default pending
+  measurement.
+- Optional line edits and bounded chapter passes help revise without turning a
+  single instruction into an unbounded rewrite.
+
+**Tool surface**
+
+- Generated workflow and specialist profiles are the recommended startup
+  surface: `workflow-write`, `workflow-authoring`, `workflow-import`, and
+  focused profiles for revision, worldbuilding, planning, new-book, research,
+  style, release, and setup.
+- `prepare_scene` and `commit_scene` provide the ordinary scene read/write
+  boundary, with dry runs, stale-token checks, idempotency, and run-phase
+  handoff.
+- Typed `update_character`, `update_location`, `update_conflict`, and
+  `update_character_arc` replace the supported fields of the open
+  `update_entity` path. Atomic batch creates cover terms, motifs, narrative
+  promises, and character voice profiles.
+- `list_changes` gives one paginated history vocabulary; `undo_change` resolves
+  an operation to its explicit revision scope and refuses automatic mutation
+  where compensation is not atomic.
+- Operator commands (`configure-agents`, `test-agent`, `rebuild-search-index`,
+  `backfill-scene-source-offsets`, `operator-delete-scene`) are CLI-only and
+  denied on model transports. The authoring harness keeps an internal,
+  token-scoped `test_agent` dispatch.
+
+**Security and reliability**
+
+- Operator tools are hidden from every model profile and denied by name over
+  stdio and HTTP.
+- A panic in a tool handler returns a named error instead of hanging the
+  caller; project serialization and internal-token dispatch are shared across
+  transports.
+- Scene addressing is unambiguous with `scene_id`, stale scene versions and
+  preparation tokens are rejected, and commit paths avoid partial writes.
+- Import, pull/push, review dispatch, and checkpoint paths no longer lose or
+  duplicate work on retries, timeouts, or transport failures.
+
+### Compatibility
+
+0.3.0 is a **compatibility release**. The following release-R names still work
+but are **deprecated** and will be removed in the next release:
+
+- Legacy profiles: `authoring`, `write`, `minimal`, `import`, and `legacy-all`.
+- Style preview twins: `preview_refresh_style_profile`,
+  `preview_apply_style_profile`, and `preview_style_revision_patch`.
+- Batch aliases: `batch_create_terms`, `batch_create_motifs`,
+  `batch_create_narrative_promises`, and
+  `batch_set_character_voice_profiles`.
+- The generic `update_entity` path for entity types that now have typed
+  updates; `save_scene_draft`, `revise_scene`, `authoring_save_scene_draft`,
+  and `commit_scene_changes` retain their existing save-only and branch
+  semantics.
+
+Use the generated profiles and canonical tools for new work. See
+[`docs/tool-profiles.md`](docs/tool-profiles.md) and the
+[release-R migration guide](docs/tool-migration-r.md) for the mapping and
+removal plan.
+
+### Known limitations
+
+- Advanced drafting-loop phases (verify/revise, dual-persona critic, canon
+  mining, self-clearing checkpoints) remain off by default pending measurement.
+- Semantic contradiction detection is degraded; deterministic claim-vs-canon
+  lanes are the reliable path.
+- There is no operator CLI for rebuilding the embedding index; index generation
+  changes are tracked, but rebuild tooling is not shipped.
+- Unified undo is checkpoint-only for scene continuity and multi-step style
+  rollback. Scene prose restores use `restore_scene_version`; style effects use
+  the explicit rollback tools.
 
 ### Added
 
