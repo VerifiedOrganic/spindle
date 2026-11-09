@@ -220,6 +220,7 @@ fn admit_with_key(
         usage_known: false,
         actual: None,
         model_call_ids: Vec::new(),
+        dispatched_at_millis: None,
         created_at_millis: now_millis,
         reconciled_at_millis: None,
     };

@@ -229,24 +229,7 @@ impl SqliteSpindleService {
                     .await;
             }
         };
-        {
-            let mut state = load_editorial_controller(controller_path)?;
-            let attempt = state
-                .scenes
-                .get(scene_index)
-                .map(|scene| scene.attempt)
-                .ok_or_else(|| anyhow::anyhow!("editorial scene index out of range"))?;
-            crate::drafting::editorial::admit_editorial_action_in_controller(
-                &mut state,
-                scene_index,
-                EditorialActionKind::Judge,
-                attempt,
-                now_millis,
-                true,
-            )
-            .map_err(|denial| anyhow::anyhow!("{denial}"))?;
-            crate::drafting::editorial::save_editorial_controller(controller_path, &state)?;
-        }
+        admit_host_judge_action(controller_path, scene_index, now_millis)?;
 
         let incumbent_text = task.incumbent_text.clone().unwrap_or_default();
         let incumbent_hash = scene
@@ -725,6 +708,81 @@ pub(crate) fn admit_editorial_agent_draft_action(
     now_millis: u64,
 ) -> Result<spindle_core::drafting::EditorialBudgetReservation> {
     update_editorial_controller(controller_path, |state| {
+        let (attempt, stage, run_id, branch_id, scene_id, packet_hash) = {
+            let scene = state
+                .scenes
+                .get(scene_index)
+                .ok_or_else(|| anyhow::anyhow!("editorial scene index out of range"))?;
+            (
+                scene.attempt,
+                scene.stage,
+                state.run_id.clone(),
+                state.branch_id.clone(),
+                scene.scene_id.clone(),
+                scene.packet_hash.clone(),
+            )
+        };
+        let key = spindle_core::drafting::EditorialReservationKey {
+            run_id,
+            branch_id,
+            scene_id,
+            packet_hash,
+            stage,
+            attempt,
+            action: EditorialActionKind::Draft,
+        };
+        let key_string = key.idempotency_key();
+        if let Some(existing) = state.scenes[scene_index].ledger.find(&key_string) {
+            if existing.is_dispatched() {
+                anyhow::bail!(
+                    "editorial_dispatch_in_progress: reservation {key_string} was already dispatched;                      a failed attempt must be reconciled before a new charged attempt"
+                );
+            }
+            let claimed = state.scenes[scene_index]
+                .ledger
+                .claim_dispatch(&key_string, now_millis);
+            anyhow::ensure!(
+                claimed == Some(true),
+                "editorial_dispatch_in_progress: reservation {key_string} was already dispatched"
+            );
+            return Ok(state.scenes[scene_index]
+                .ledger
+                .find(&key_string)
+                .expect("claimed reservation")
+                .clone());
+        }
+        let reservation = crate::drafting::editorial::admit_editorial_action_in_controller(
+            state,
+            scene_index,
+            EditorialActionKind::Draft,
+            attempt,
+            now_millis,
+            true,
+        )
+        .map_err(|denial| anyhow::anyhow!("{denial}"))?;
+        let claimed = state.scenes[scene_index]
+            .ledger
+            .claim_dispatch(&reservation.idempotency_key, now_millis);
+        anyhow::ensure!(
+            claimed == Some(true),
+            "editorial_dispatch_in_progress: reservation was already dispatched"
+        );
+        Ok(state.scenes[scene_index]
+            .ledger
+            .find(&reservation.idempotency_key)
+            .expect("admitted reservation")
+            .clone())
+    })
+}
+
+/// Locked host-judge admission. The run-cap check and the persisted reservation
+/// serialize with every other controller mutation.
+pub(crate) fn admit_host_judge_action(
+    controller_path: &std::path::Path,
+    scene_index: usize,
+    now_millis: u64,
+) -> Result<spindle_core::drafting::EditorialBudgetReservation> {
+    update_editorial_controller(controller_path, |state| {
         let attempt = state
             .scenes
             .get(scene_index)
@@ -733,7 +791,7 @@ pub(crate) fn admit_editorial_agent_draft_action(
         crate::drafting::editorial::admit_editorial_action_in_controller(
             state,
             scene_index,
-            EditorialActionKind::Draft,
+            EditorialActionKind::Judge,
             attempt,
             now_millis,
             true,
@@ -773,6 +831,11 @@ pub(crate) fn reconcile_editorial_agent_draft_action(
             scene
                 .ledger
                 .reconcile(reservation_key, actual, model_call_ids.clone(), now_millis);
+            if captured.is_none() {
+                // A failed paid attempt is consumed: the next retry must use a
+                // new attempt key and pass the cap check again.
+                scene.attempt = scene.attempt.saturating_add(1);
+            }
             if let Some(captured) = captured {
                 scene.draft_artifact_path =
                     Some(draft_artifact_path.to_string_lossy().into_owned());
@@ -883,6 +946,15 @@ impl crate::drafting::revision::RevisionBudgetGate for ControllerRevisionBudgetG
                 true,
             )
             .map_err(|denial| anyhow::anyhow!("{denial}"))?;
+            let claimed = state.scenes[self.scene_index]
+                .ledger
+                .claim_dispatch(&reservation.idempotency_key, self.now_millis);
+            anyhow::ensure!(
+                claimed == Some(true),
+                "editorial_dispatch_in_progress: revision pass {} attempt {} was already dispatched",
+                action.as_str(),
+                attempt
+            );
             Ok(crate::drafting::revision::RevisionBudgetAdmission {
                 admission_id: reservation.idempotency_key,
                 action,

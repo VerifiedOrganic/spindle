@@ -459,6 +459,7 @@ mod tests {
                 usage_known: false,
                 actual: None,
                 model_call_ids: Vec::new(),
+                dispatched_at_millis: None,
                 created_at_millis: 1,
                 reconciled_at_millis: None,
             })

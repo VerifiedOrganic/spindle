@@ -2176,24 +2176,54 @@ async fn agent_draft_admission_is_persisted_before_dispatch_and_caps_restart() {
     )
     .expect("admission persists");
     assert_eq!(reservation.reserved.calls, 1);
-    let mut persisted =
+    assert!(reservation.is_dispatched());
+    let persisted =
         crate::drafting::editorial::load_editorial_controller(&controller_path).expect("reload");
     assert_eq!(persisted.scenes[0].ledger.scene_reservations.len(), 1);
-    // Advance the terminal stage so the retry is a distinct admission key; the
-    // persisted one-call cap must still deny it.
-    persisted.scenes[0].stage = spindle_core::drafting::EditorialStage::Drafted;
-    crate::drafting::editorial::save_editorial_controller(&controller_path, &persisted)
-        .expect("save advanced stage");
 
+    // A same-stage retry while the dispatch is in flight is rejected rather
+    // than silently reusing the reservation for a second paid call.
+    let in_flight = crate::sqlite::service::editorial::admit_editorial_agent_draft_action(
+        &controller_path,
+        0,
+        25,
+    )
+    .expect_err("in-flight dispatch must not be reused");
+    assert!(
+        in_flight.to_string().contains("dispatch_in_progress"),
+        "unexpected in-flight error: {in_flight}"
+    );
+
+    // A failed paid attempt reconciles with unknown usage, keeps the maximum
+    // charged, and consumes the attempt. The retry is a new charged admission
+    // and the persisted one-call cap denies it.
+    crate::sqlite::service::editorial::reconcile_editorial_agent_draft_action(
+        &controller_path,
+        0,
+        &tmp.path().join("agent-draft.json"),
+        &reservation.idempotency_key,
+        reservation.reserved,
+        None,
+        None,
+        40,
+        30,
+        "source-packet".into(),
+        Vec::new(),
+    )
+    .expect("reconcile failed dispatch");
+    let persisted =
+        crate::drafting::editorial::load_editorial_controller(&controller_path).expect("reload");
+    assert_eq!(persisted.scenes[0].attempt, 1);
+    assert!(!persisted.scenes[0].ledger.scene_reservations[0].usage_known);
     let denial = crate::sqlite::service::editorial::admit_editorial_agent_draft_action(
         &controller_path,
         0,
-        30,
+        40,
     )
-    .expect_err("persisted call cap survives the process boundary");
+    .expect_err("a retry must be a new charged attempt and pass the cap");
     assert!(
         denial.to_string().contains("scene_calls_exhausted"),
-        "unexpected denial: {denial}"
+        "unexpected retry denial: {denial}"
     );
 }
 
@@ -2335,6 +2365,13 @@ async fn agent_revision_gate_denies_exhausted_shared_run_budget_and_missing_pric
     let gate = crate::sqlite::service::editorial::ControllerRevisionBudgetGate::new(&path, 0, 10);
     gate.admit(EditorialActionKind::Critique, 1)
         .expect("first pass admits");
+    let in_flight = gate
+        .admit(EditorialActionKind::Critique, 1)
+        .expect_err("an in-flight pass cannot be reused");
+    assert!(
+        in_flight.contains("dispatch_in_progress"),
+        "unexpected in-flight error: {in_flight}"
+    );
     let denial = gate
         .admit(EditorialActionKind::Revise, 1)
         .expect_err("the shared run call cap must deny the next pass");
@@ -2405,4 +2442,56 @@ async fn agent_revision_gate_denies_exhausted_shared_run_budget_and_missing_pric
         crate::drafting::editorial::load_editorial_controller(&failed).expect("reload");
     assert_eq!(controller.scenes[0].ledger.scene_used(), admission.reserved);
     assert!(!controller.scenes[0].ledger.scene_reservations[0].usage_known);
+}
+
+#[tokio::test]
+async fn host_judge_admission_is_locked_and_shares_the_run_budget() {
+    use spindle_core::drafting::{
+        EditorialBudgetCaps, EditorialRouteAvailability, ResolvedEditorialSettingsV1,
+    };
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = editorial_test_controller(tmp.path(), "host-judge.json", None);
+    let mut controller =
+        crate::drafting::editorial::load_editorial_controller(&path).expect("load");
+    let run_caps = EditorialBudgetCaps {
+        max_calls: 2,
+        ..EditorialBudgetCaps::run_default()
+    };
+    controller.settings.run_budget = run_caps;
+    for scene in &mut controller.scenes {
+        scene.ledger.run_caps = run_caps;
+    }
+    let settings: ResolvedEditorialSettingsV1 = controller.settings.clone();
+    let mut second = crate::drafting::editorial::new_editorial_scene_state(
+        1,
+        2,
+        Some("scene:2".into()),
+        "packet-hash-2".into(),
+        "source-hash-2".into(),
+        EditorialRouteAvailability::all_available(),
+        &settings,
+    );
+    second.ledger.run_caps = run_caps;
+    controller.scenes.push(second);
+    crate::drafting::editorial::save_editorial_controller(&path, &controller).expect("save");
+
+    // A held controller lock proves host judge admission serializes with every
+    // other controller mutation instead of doing a bare load/admit/save.
+    let held = crate::drafting::artifact::lock_artifact(&path).expect("hold lock");
+    let busy = crate::sqlite::service::editorial::admit_host_judge_action(&path, 0, 10);
+    assert!(
+        busy.is_err(),
+        "host judge admission must use the controller lock"
+    );
+    drop(held);
+
+    crate::sqlite::service::editorial::admit_host_judge_action(&path, 0, 10)
+        .expect("first judge reservation consumes two calls");
+    let denial = crate::sqlite::service::editorial::admit_host_judge_action(&path, 1, 20)
+        .expect_err("the second scene must see the shared run-cap consumption");
+    assert!(
+        denial.to_string().contains("run_calls_exhausted"),
+        "unexpected denial: {denial}"
+    );
 }

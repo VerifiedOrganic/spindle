@@ -298,6 +298,10 @@ pub struct EditorialBudgetReservation {
     pub actual: Option<EditorialBudgetUsage>,
     #[serde(default)]
     pub model_call_ids: Vec<String>,
+    /// Set atomically when the paid dispatch is claimed. A reservation that was
+    /// dispatched but not reconciled cannot be reused for a second call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatched_at_millis: Option<u64>,
     pub created_at_millis: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reconciled_at_millis: Option<u64>,
@@ -315,6 +319,20 @@ impl EditorialBudgetReservation {
 
     pub fn is_reconciled(&self) -> bool {
         self.reconciled_at_millis.is_some()
+    }
+
+    pub fn is_dispatched(&self) -> bool {
+        self.dispatched_at_millis.is_some()
+    }
+
+    /// Claim the one paid dispatch for this reservation. Returns `false` when
+    /// another dispatch already owns it.
+    pub fn claim_dispatch(&mut self, now_millis: u64) -> bool {
+        if self.dispatched_at_millis.is_some() {
+            return false;
+        }
+        self.dispatched_at_millis = Some(now_millis);
+        true
     }
 }
 
@@ -514,6 +532,26 @@ impl EditorialBudgetLedgerV1 {
         self.scene_reservations
             .iter_mut()
             .find(|reservation| reservation.idempotency_key == idempotency_key)
+    }
+
+    /// Claim dispatch on the scene and run projections together. Returns
+    /// `None` when the key is absent, `Some(false)` when already dispatched.
+    pub fn claim_dispatch(&mut self, idempotency_key: &str, now_millis: u64) -> Option<bool> {
+        let mut claimed = None;
+        for reservation in self
+            .scene_reservations
+            .iter_mut()
+            .chain(self.run_reservations.iter_mut())
+        {
+            if reservation.idempotency_key != idempotency_key {
+                continue;
+            }
+            let this_claim = reservation.claim_dispatch(now_millis);
+            if claimed.is_none() {
+                claimed = Some(this_claim);
+            }
+        }
+        claimed
     }
 
     /// Admit one exact proposed reservation. Re-admission of an existing
@@ -1585,6 +1623,7 @@ mod tests {
             usage_known: false,
             actual: None,
             model_call_ids: Vec::new(),
+            dispatched_at_millis: None,
             created_at_millis: 1,
             reconciled_at_millis: None,
         }
@@ -1955,6 +1994,7 @@ pub(crate) mod tests_support {
             usage_known: false,
             actual: None,
             model_call_ids: Vec::new(),
+            dispatched_at_millis: None,
             created_at_millis: 1,
             reconciled_at_millis: None,
         };
