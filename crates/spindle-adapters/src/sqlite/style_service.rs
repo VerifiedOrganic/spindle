@@ -9,9 +9,8 @@ use spindle_core::style::{
     CheckStyleProfileSourcesOutput, CreateStyleProfileFromMarkdownInput,
     CreateStyleProfileFromMarkdownOutput, CreateStyleRevisionPatchInput, GetStyleProfileInput,
     GetStyleProfileOutput, ListStyleProfilesInput, ListStyleProfilesOutput,
-    PreviewApplyStyleProfileInput, PreviewApplyStyleProfileOutput, PreviewRefreshStyleProfileInput,
-    PreviewRefreshStyleProfileOutput, RefreshStyleMetricDelta, RefreshStyleProfileInput,
-    RefreshStyleProfileOutput, StyleCorpusSummary, StyleEditCandidateRef,
+    PreviewApplyStyleProfileOutput, PreviewRefreshStyleProfileOutput, RefreshStyleMetricDelta,
+    RefreshStyleProfileInput, RefreshStyleProfileOutput, StyleCorpusSummary, StyleEditCandidateRef,
     StyleEditCandidatesPreview, StyleProfileApplyMode, StyleProfileCard, StyleProfileGuidance,
     StyleProfileModelReceipt, StyleProfileQualitySummary, StyleProfileSourcePolicy,
     StyleProfileStatus, StyleSourceRef,
@@ -23,8 +22,7 @@ pub const STYLE_ANALYZE_ROUTE: &str = "style_analyze";
 /// Result of resolving a project's pending style-edit candidates under the
 /// source-side rating discipline (evolution §3.9). Threads the preview section,
 /// the included candidates' positive-example corpus, and the included ids from
-/// the shared resolver into both `preview_refresh_style_profile` and
-/// `refresh_style_profile`.
+/// the shared resolver into the refresh dry-run preview and live refresh.
 struct StyleEditCandidateResolution {
     preview: StyleEditCandidatesPreview,
     /// `(display_name, operator_edit)` positive examples for the extra-corpus
@@ -1204,14 +1202,6 @@ impl SqliteSpindleService {
         })
     }
 
-    pub async fn preview_refresh_style_profile(
-        &self,
-        input: PreviewRefreshStyleProfileInput,
-    ) -> Result<PreviewRefreshStyleProfileOutput> {
-        self.build_refresh_preview(&input.project_id, &input.profile_id, input.metrics_only)
-            .await
-    }
-
     pub async fn refresh_style_profile(
         &self,
         input: RefreshStyleProfileInput,
@@ -1677,24 +1667,6 @@ impl SqliteSpindleService {
             dry_run: false,
             preview: None,
         })
-    }
-
-    pub async fn preview_apply_style_profile(
-        &self,
-        input: PreviewApplyStyleProfileInput,
-    ) -> Result<PreviewApplyStyleProfileOutput> {
-        let output = self
-            .apply_style_profile(ApplyStyleProfileInput {
-                project_id: input.project_id,
-                profile_id: input.profile_id,
-                mode: input.mode,
-                force: None,
-                dry_run: true,
-            })
-            .await?;
-        output
-            .preview
-            .ok_or_else(|| anyhow!("style apply preview missing"))
     }
 
     pub async fn list_style_profile_applications(
@@ -2454,15 +2426,15 @@ impl SqliteSpindleService {
 
     /// Canonical non-mutating patch creation. Produces proposed scene patches
     /// for later evaluation and `apply_style_revision_patch`; it never writes
-    /// prose. The release-R `preview_style_revision_patch` name delegates here.
+    /// prose. The dry-run helper below is internal to this boundary.
     pub async fn create_style_revision_patch(
         &self,
         input: CreateStyleRevisionPatchInput,
     ) -> Result<spindle_core::style::PreviewStyleRevisionPatchOutput> {
-        self.preview_style_revision_patch(input.into()).await
+        self.build_style_revision_patch(input.into()).await
     }
 
-    pub async fn preview_style_revision_patch(
+    async fn build_style_revision_patch(
         &self,
         input: spindle_core::style::PreviewStyleRevisionPatchInput,
     ) -> Result<spindle_core::style::PreviewStyleRevisionPatchOutput> {

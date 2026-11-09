@@ -293,33 +293,20 @@ impl ToolRouter {
         let Some(profile) = self.tool_profile.as_deref() else {
             return visible(all);
         };
-        if profile == "legacy-all" {
-            return visible(all);
-        }
         let Some(allowed) = profile_allowed_tool_names(profile) else {
             return Vec::new();
         };
-        let view = if spindle_adapters::guidance::list_profiles()
+        generated_tool_schemas()
             .iter()
-            .any(|p| p.name == profile)
-        {
-            generated_tool_schemas()
-        } else {
-            all
-        };
-        view.iter()
-            .filter(|t| allowed.contains(&t.name.as_ref()) && !is_operator_only(t.name.as_ref()))
+            .filter(|tool| {
+                allowed.contains(&tool.name.as_ref()) && !is_operator_only(tool.name.as_ref())
+            })
             .cloned()
             .collect()
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
         profile_has_tool(self.tool_profile.as_deref(), name)
-    }
-
-    #[cfg(test)]
-    fn all_tools(&self) -> Vec<Tool> {
-        all_tool_schemas().to_vec()
     }
 }
 

@@ -36,7 +36,9 @@ impl SpindleMcpServer {
         Self {
             tool_router: ToolRouter::with_tool_profile_and_serialization(
                 service.clone(),
-                std::env::var("SPINDLE_TOOL_PROFILE").ok(),
+                std::env::var("SPINDLE_TOOL_PROFILE")
+                    .ok()
+                    .or_else(|| Some("workflow-write".to_string())),
                 serialization_state,
             ),
             resource_router: ResourceRouter::new(service),
@@ -72,6 +74,32 @@ impl SpindleMcpServer {
             service,
             cancellation_token,
             serialization_state,
+        )
+    }
+
+    /// Internal listener variant: in-process orchestration dispatches back to
+    /// this surface, so it must expose the full registry independent of the
+    /// model-facing startup profile.
+    pub(crate) fn streamable_http_service_internal(
+        service: SpindleService,
+        cancellation_token: CancellationToken,
+    ) -> StreamableHttpService<Self, LocalSessionManager> {
+        let serialization_state = ToolSerializationState::for_service(&service);
+        let config =
+            StreamableHttpServerConfig::default().with_cancellation_token(cancellation_token);
+        StreamableHttpService::new(
+            move || {
+                Ok(Self {
+                    tool_router: ToolRouter::with_tool_profile_and_serialization(
+                        service.clone(),
+                        None,
+                        serialization_state.clone(),
+                    ),
+                    resource_router: ResourceRouter::new(service.clone()),
+                })
+            },
+            Arc::new(LocalSessionManager::default()),
+            config,
         )
     }
 

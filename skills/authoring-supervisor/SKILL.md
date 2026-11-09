@@ -87,8 +87,8 @@ When `authoring_status` reports `next_action: "await_checkpoint_review"` (or whe
   - Call `authoring_cancel_run` to pause a run cleanly.
 - **Reader simulation & editorial queue (`read_episode`, `get_editorial_queue`, `decide_editorial_item`)**:
   - Run `read_episode` at chapter review to stage reader concerns into `get_editorial_queue`, and adjudicate items with `decide_editorial_item` using the current source hash and item revision.
-- **Style profile learning (`preview_refresh_style_profile`, `refresh_style_profile`)**:
-  - Preview captured operator style-edit candidates with `preview_refresh_style_profile` and fold approved updates into the profile with `refresh_style_profile`.
+- **Style profile learning (`refresh_style_profile`)**:
+  - Inspect captured operator style-edit candidates with `refresh_style_profile` (`dry_run: true`) and fold approved updates into the profile with a live `refresh_style_profile`.
 - **Episode release (`prepare_episode_release`, `release_episode`, `get_episode_release`)**:
   - Stage an episode snapshot with `prepare_episode_release`, verify zero blockers, publish locally with `release_episode` (passing source hash and previous release ID), and read snapshots via `get_episode_release`.
 
@@ -118,7 +118,6 @@ When `authoring_status` reports `next_action: "await_checkpoint_review"` (or whe
 <!-- tool: mine_scene_canon -->
 <!-- tool: plan_chapter -->
 <!-- tool: prepare_episode_release -->
-<!-- tool: preview_refresh_style_profile -->
 <!-- tool: read_episode -->
 <!-- tool: record_knowledge -->
 <!-- tool: refresh_style_profile -->

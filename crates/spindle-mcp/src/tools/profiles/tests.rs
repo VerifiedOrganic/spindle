@@ -35,7 +35,7 @@ async fn generated_profiles_filter_listing_and_calling() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn unknown_profiles_fail_closed_and_legacy_all_preserves_catalog() {
+async fn unknown_and_removed_profiles_fail_closed() {
     let mut router = router().await;
     router.tool_profile = Some("typo".to_owned());
     assert!(router.list_tools().is_empty());
@@ -48,15 +48,21 @@ async fn unknown_profiles_fail_closed_and_legacy_all_preserves_catalog() {
             .is_error,
         Some(true)
     );
-    router.tool_profile = Some("legacy-all".to_owned());
-    let expected: Vec<_> = router
-        .all_tools()
-        .into_iter()
-        .filter(|tool| !is_operator_only(tool.name.as_ref()))
-        .collect();
-    assert_eq!(router.list_tools(), expected);
-    for name in OPERATOR_ONLY_TOOLS {
-        assert!(!router.has_tool(name), "legacy-all must deny {name}");
+    for removed in ["legacy-all", "minimal", "write", "import", "authoring"] {
+        router.tool_profile = Some(removed.to_owned());
+        assert!(router.list_tools().is_empty(), "{removed} must fail closed");
+        assert!(
+            !router.has_tool("create_project"),
+            "{removed} must deny tool calls"
+        );
+        assert_eq!(
+            router
+                .call_tool("create_project", None)
+                .await
+                .unwrap()
+                .is_error,
+            Some(true)
+        );
     }
 }
 

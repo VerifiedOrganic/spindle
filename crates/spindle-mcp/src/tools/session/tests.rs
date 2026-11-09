@@ -379,7 +379,7 @@ async fn project_selection_is_callable_in_every_profile() {
             .unwrap(),
     );
     let selection = serde_json::json!({"project_id": project["project_id"]});
-    for profile in ["minimal", "write", "import", "authoring"] {
+    for profile in crate::tools::profile_names() {
         router.tool_profile = Some(profile.to_owned());
         assert!(router.has_tool("set_active_project"), "{profile}");
         let active = structured_json(

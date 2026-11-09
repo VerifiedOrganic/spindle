@@ -891,27 +891,6 @@ review_by = "R"
 reason = "Canonical single-call scene preparation facade; declared by scene-writer."
 
 [[tools]]
-name = "preview_apply_style_profile"
-classification = "retained"
-owner = "editor"
-review_by = "R"
-reason = "Current public API; declared by an owning skill or reference."
-
-[[tools]]
-name = "preview_refresh_style_profile"
-classification = "retained"
-owner = "authoring-supervisor, editor, revision-manager"
-review_by = "R"
-reason = "Current public API; declared by an owning skill or reference."
-
-[[tools]]
-name = "preview_style_revision_patch"
-classification = "retained"
-owner = "editor"
-review_by = "R"
-reason = "Current public API; declared by an owning skill or reference."
-
-[[tools]]
 name = "pull_chapter_from_file"
 classification = "retained"
 owner = "editor, manuscript-importer, scene-writer"

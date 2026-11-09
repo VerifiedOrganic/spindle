@@ -343,7 +343,7 @@ context assembler already does for future knowledge (`service.rs:6570-6599`).
 When a scene is re-saved with prose that differs from the last agent draft (detectable: the
 run stores draft artifacts; the re-save is host/operator-provenance), store the before/after
 pair as a `style_example` candidate feeding the **existing** style-profile refresh flow
-(`preview_refresh_style_profile` → `refresh_style_profile`). Opt-in per project; candidates
+(`refresh_style_profile` dry run → live). Opt-in per project; candidates
 are reviewable before any profile refresh (I4). Explicit-scene edit pairs are stored with the
 scene's rating and only ever surfaced to rating-cleared profile-refresh routes (§4).
 

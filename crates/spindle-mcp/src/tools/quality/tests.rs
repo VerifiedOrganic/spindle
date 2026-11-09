@@ -150,7 +150,11 @@ async fn profile_token_budgets() {
     assert_eq!(budgets.canonical.len(), 10);
     let mut router = router().await;
     for (profile, budget) in &budgets.compatibility {
-        router.tool_profile = (profile != "default").then(|| profile.clone());
+        router.tool_profile = Some(if profile == "default" {
+            "workflow-write".to_string()
+        } else {
+            profile.clone()
+        });
         let tools: Vec<Value> = router
             .list_tools()
             .iter()
@@ -185,7 +189,11 @@ async fn tool_schema_lint() {
         .map(|tool| (tool.name.to_string(), serde_json::to_value(tool).unwrap()))
         .collect();
     for profile in budgets().compatibility.keys() {
-        router.tool_profile = (profile != "default").then(|| profile.clone());
+        router.tool_profile = Some(if profile == "default" {
+            "workflow-write".to_string()
+        } else {
+            profile.clone()
+        });
         for tool in router.list_tools() {
             let original = all_tool_schemas()
                 .iter()
@@ -428,7 +436,11 @@ async fn http_profile_discovery_matches_registry_budgets() {
     }
     let mut registry = router().await;
     for (profile, budget) in budgets().compatibility {
-        let selected = (profile != "default").then(|| profile.clone());
+        let selected = Some(if profile == "default" {
+            "workflow-write".to_string()
+        } else {
+            profile.clone()
+        });
         registry.tool_profile = selected.clone();
         let server = crate::server::SpindleMcpServer::with_tool_profile(
             registry.service().clone(),

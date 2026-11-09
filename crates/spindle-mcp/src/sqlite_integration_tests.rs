@@ -601,7 +601,7 @@ agent = "cli-agent-review"
     // 6. Test authoring_prepare_run reports missing requirements clearly
     let router = ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
 
@@ -1157,7 +1157,7 @@ agent = "cli-agent-review"
 
     let router2 = ToolRouter::with_tool_profile_and_serialization(
         svc2.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
 
@@ -1456,7 +1456,7 @@ async fn run_journal_full_trace_and_payload_discipline_pin() {
 
     let router = ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
 
@@ -1987,7 +1987,7 @@ async fn preflight_fixture_with_ratings(
 
     let router = ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
     let project_id = project.project_id.clone();
@@ -2773,7 +2773,7 @@ agent = "cli-agent-draft"
 
     let router = ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
 
@@ -3710,7 +3710,7 @@ agent = "cli-agent-draft"
 
     let router = ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
 
@@ -4146,7 +4146,7 @@ async fn replan_run_rejects_bad_policy_string() {
         .unwrap();
     let router = ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
     let start_args = serde_json::json!({
@@ -4339,7 +4339,7 @@ agent = "cli-agent-draft"
 
     let router = ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
 
@@ -5239,7 +5239,7 @@ agent = "cli-agent-review"
 
     let router = ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
 
@@ -5802,7 +5802,7 @@ agent = "cli-agent-review"
 
     let router = crate::tools::ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         std::sync::Arc::new(crate::tools::ToolSerializationState::default()),
     );
 
@@ -6277,7 +6277,7 @@ agent = "cli-agent-review"
 
     let router = ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
 
@@ -6898,7 +6898,7 @@ agent = "tame-analyst"
 
     let router = ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
 
@@ -7465,20 +7465,26 @@ agent = "style-agent"
 
 #[tokio::test]
 async fn explicit_candidate_withheld_when_style_route_not_explicit_cleared() {
-    use spindle_core::style::{PreviewRefreshStyleProfileInput, RefreshStyleProfileInput};
+    use spindle_core::style::RefreshStyleProfileInput;
 
     // Style agent declares general only — NOT explicit-cleared.
     let (_tmp, svc, project_id, branch_id, profile_id, candidate_id) =
         style_refresh_rating_fixture(r#""general""#).await;
 
     let preview = svc
-        .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+        .refresh_style_profile(RefreshStyleProfileInput {
             project_id: project_id.clone(),
             profile_id: profile_id.clone(),
+            apply_after_refresh: None,
+            force_apply: None,
             metrics_only: Some(true),
+            dismiss_candidate_ids: Vec::new(),
+            dry_run: true,
         })
         .await
-        .unwrap();
+        .unwrap()
+        .preview
+        .expect("refresh dry run preview");
     assert_eq!(
         preview.style_edit_candidates.included_count, 0,
         "explicit candidate is not included"
@@ -7526,20 +7532,26 @@ async fn explicit_candidate_withheld_when_style_route_not_explicit_cleared() {
 
 #[tokio::test]
 async fn explicit_candidate_included_when_style_route_explicit_cleared() {
-    use spindle_core::style::{PreviewRefreshStyleProfileInput, RefreshStyleProfileInput};
+    use spindle_core::style::RefreshStyleProfileInput;
 
     // Style agent declares explicit — cleared.
     let (_tmp, svc, project_id, branch_id, profile_id, candidate_id) =
         style_refresh_rating_fixture(r#""general", "explicit""#).await;
 
     let preview = svc
-        .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+        .refresh_style_profile(RefreshStyleProfileInput {
             project_id: project_id.clone(),
             profile_id: profile_id.clone(),
+            apply_after_refresh: None,
+            force_apply: None,
             metrics_only: Some(true),
+            dismiss_candidate_ids: Vec::new(),
+            dry_run: true,
         })
         .await
-        .unwrap();
+        .unwrap()
+        .preview
+        .expect("refresh dry run preview");
     assert_eq!(
         preview.style_edit_candidates.included_count, 1,
         "explicit candidate is included when the style route is explicit-cleared"
@@ -7712,7 +7724,7 @@ agent = "cli-agent-draft"
 
     let router = ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         Arc::new(ToolSerializationState::default()),
     );
     let start_args = serde_json::json!({
@@ -8388,7 +8400,7 @@ agent = "dead-agent-review-explicit"
 
     let router = crate::tools::ToolRouter::with_tool_profile_and_serialization(
         svc.clone(),
-        Some("write".to_string()),
+        Some("workflow-authoring".to_string()),
         crate::tools::ToolSerializationState::for_service(&svc),
     );
 

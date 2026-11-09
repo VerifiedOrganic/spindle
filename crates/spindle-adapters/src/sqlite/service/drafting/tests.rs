@@ -1118,10 +1118,7 @@ agent = "draft-agent"
 /// no prose) and are consumed by refresh.
 mod style_learning_refresh {
     use super::*;
-    use spindle_core::style::{
-        CreateStyleProfileFromMarkdownInput, PreviewRefreshStyleProfileInput,
-        RefreshStyleProfileInput,
-    };
+    use spindle_core::style::{CreateStyleProfileFromMarkdownInput, RefreshStyleProfileInput};
 
     /// A local-only service whose `style_analyze` route is EXPLICITLY bound
     /// to a local-stub agent. The built-in default style stub now errors
@@ -1280,13 +1277,19 @@ agent = "local-style"
 
         // Preview surfaces the candidate: count + ref, prose-free diff.
         let preview = svc
-            .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+            .refresh_style_profile(RefreshStyleProfileInput {
                 project_id: project_id.clone(),
                 profile_id: profile_id.clone(),
+                apply_after_refresh: None,
+                force_apply: None,
                 metrics_only: Some(true),
+                dismiss_candidate_ids: Vec::new(),
+                dry_run: true,
             })
             .await
-            .unwrap();
+            .unwrap()
+            .preview
+            .expect("refresh dry run preview");
         assert_eq!(preview.style_edit_candidates.included_count, 1);
         assert_eq!(preview.style_edit_candidates.withheld_count, 0);
         assert_eq!(preview.style_edit_candidates.candidates.len(), 1);
@@ -1339,13 +1342,19 @@ agent = "local-style"
 
         // The NEXT preview (on the refreshed profile) shows no candidates.
         let next = svc
-            .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+            .refresh_style_profile(RefreshStyleProfileInput {
                 project_id: project_id.clone(),
                 profile_id: refreshed.new_profile.profile_id.clone(),
+                apply_after_refresh: None,
+                force_apply: None,
                 metrics_only: Some(true),
+                dismiss_candidate_ids: Vec::new(),
+                dry_run: true,
             })
             .await
-            .unwrap();
+            .unwrap()
+            .preview
+            .expect("refresh dry run preview");
         assert_eq!(next.style_edit_candidates.included_count, 0);
         drop(tmp);
     }

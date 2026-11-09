@@ -19,7 +19,9 @@
       "authoring_start_run",
       "authoring_status",
       "check_consistency",
+      "commit_quantity_state",
       "commit_scene_changes",
+      "create_location",
       "create_narrative_promise",
       "decide_canon_deltas",
       "decide_editorial_item",
@@ -35,7 +37,6 @@
       "mine_scene_canon",
       "plan_chapter",
       "prepare_episode_release",
-      "preview_refresh_style_profile",
       "read_episode",
       "record_knowledge",
       "refresh_style_profile",
@@ -45,6 +46,7 @@
       "save_scene_draft",
       "search_bible",
       "set_project_calendar",
+      "set_project_quantity_scheme",
       "set_scene_clock",
       "update_entity"
     ],
@@ -245,9 +247,6 @@
           "list_style_profiles",
           "list_style_revision_patch_audits",
           "plan_style_revision",
-          "preview_apply_style_profile",
-          "preview_refresh_style_profile",
-          "preview_style_revision_patch",
           "refresh_style_profile",
           "rollback_style_profile_application",
           "rollback_style_revision_patch"
@@ -420,7 +419,6 @@
       "list_revision_markers",
       "list_scene_versions",
       "merge_branch",
-      "preview_refresh_style_profile",
       "record_note",
       "refresh_style_profile",
       "resolve_revision_marker",
@@ -570,9 +568,7 @@
   },
   "spindle": {
     "profiles": [
-      "authoring",
       "default",
-      "minimal",
       "new-book",
       "planning",
       "release",
@@ -583,19 +579,16 @@
       "workflow-authoring",
       "workflow-import",
       "workflow-write",
-      "worldbuilding",
-      "write"
+      "worldbuilding"
     ],
     "references": [
       {
         "name": "spindle/setup",
         "profiles": [
-          "authoring",
           "default",
           "setup",
           "workflow-authoring",
-          "workflow-write",
-          "write"
+          "workflow-write"
         ],
         "tools": [
           "create_book",

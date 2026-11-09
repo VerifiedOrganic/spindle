@@ -231,12 +231,6 @@ impl ToolRouter {
                 })
                 .await
             }
-            "preview_refresh_style_profile" => {
-                self.invoke(arguments, |input| {
-                    self.service.preview_refresh_style_profile(input)
-                })
-                .await
-            }
             "refresh_style_profile" => {
                 self.invoke(arguments, |input| self.service.refresh_style_profile(input))
                     .await
@@ -252,12 +246,6 @@ impl ToolRouter {
             "apply_style_profile" => {
                 self.invoke(arguments, |input| self.service.apply_style_profile(input))
                     .await
-            }
-            "preview_apply_style_profile" => {
-                self.invoke(arguments, |input| {
-                    self.service.preview_apply_style_profile(input)
-                })
-                .await
             }
             "list_style_profile_applications" => {
                 self.invoke(arguments, |input| {
@@ -294,12 +282,6 @@ impl ToolRouter {
             "create_style_revision_patch" => {
                 self.invoke(arguments, |input| {
                     self.service.create_style_revision_patch(input)
-                })
-                .await
-            }
-            "preview_style_revision_patch" => {
-                self.invoke(arguments, |input| {
-                    self.service.preview_style_revision_patch(input)
                 })
                 .await
             }

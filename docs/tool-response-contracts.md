@@ -1,11 +1,11 @@
 # Optional full response contracts
 
-Generated profiles omit `outputSchema` for 20 explicitly selected large context,
-analysis, alternatives and style-card results. Actual JSON results, input types,
-required/defaulting rules and service validation are unchanged. Scene save,
-revision, commit, authoring-save and import-start receipt schemas stay inline.
-Unset/default, the four original profiles and `legacy-all` retain their full
-original tool descriptors byte-for-byte.
+Generated profiles omit `outputSchema` for an explicitly selected set of large
+context, analysis, alternatives and style-card results. Actual JSON results,
+input types, required/defaulting rules and service validation are unchanged.
+Scene save, revision, commit, authoring-save and import-start receipt schemas
+stay inline. The unset default is now the generated `workflow-write` profile;
+R+1 removes the legacy full-descriptor profiles and `legacy-all`.
 
 Each omitted schema has a `spindle/responseContract` tool metadata entry and a
 short description link. Load it only when a client needs the full response shape:

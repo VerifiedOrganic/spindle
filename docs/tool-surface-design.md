@@ -404,7 +404,7 @@ and newly added unowned tool. Snapshot generated metadata and reject hand edits.
    as an optional reference/resource. Continue Rust DTO validation and stable JSON
    results; omission must not silently change return shapes. Where an output schema
    is advertised, it must accurately cover the actual structured result, not a
-   misleading stub. Clients that depend on full output schemas can use legacy-all
+   misleading stub. Before R+1, clients that depend on full output schemas could use legacy-all
    during migration; changing result envelopes requires versioned compatibility.
 6. Return one requested representation (structured default or rendered text), not
    prose duplicated in JSON and Markdown. Bound collections and diffs; offer
@@ -673,8 +673,9 @@ persisting a version, consuming candidates, activating a profile, invalidating
 caches, or writing an audit record. The release-R preview twins delegate to the
 same paths and keep their full extended shapes; the live outputs add a compact,
 fully described preview. `create_style_revision_patch` is the canonical non-mutating patch-creation
-step, `preview_style_revision_patch` remains a release-R alias, and only
-`apply_style_revision_patch` writes prose.
+step; R+1 removes the `preview_refresh_style_profile`,
+`preview_apply_style_profile`, and `preview_style_revision_patch` aliases, and
+only `apply_style_revision_patch` writes prose.
 
 Operator migration now ships: `configure_agents`, `test_agent`,
 `rebuild_search_index`, `backfill_scene_source_offsets`, `operator_delete_scene`,
@@ -707,3 +708,13 @@ entry instead of an ordinary error after rows have committed. The four existing 
 compatibility aliases that delegate to the canonical operation. Cross-branch
 voice batches are rejected by requiring the active branch. Durable idempotency
 receipts are not part of this slice; per-item IDs are returned as receipts.
+
+R+1 cleanup is now implemented: the unset startup profile resolves to the
+generated `workflow-write` profile, the legacy `minimal`, `write`, `import`,
+`authoring`, and `legacy-all` names fail closed, and the release-R style preview
+twins are removed in favor of `dry_run` and `create_style_revision_patch`. The
+startup default is resolved before the server constructs its router, while the
+internal/test unset router remains unfiltered so in-process orchestration and
+diagnostics can still reach the full registry. Operator commands remain
+CLI-only, and stored history, scene versions, save points, and record IDs remain
+readable. (feat(mcp,skills): R+1 profile cleanup and preview alias removal) (feat(mcp,skills): R+1 profile cleanup and preview alias removal)

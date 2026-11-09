@@ -11,9 +11,8 @@ Stored history and record IDs remain readable independently of alias removal.
 ### Operator commands are CLI-only
 
 Operator commands are no longer tool calls. They are absent from `tools/list`
-for every model profile, including unset and `legacy-all`, and a `tools/call`
-by name returns the same concise unknown-tool error as any other unavailable
-name. There is no operator MCP endpoint in release R. The authoring harness may
+for every model profile, including unset, and a `tools/call` by name returns
+the same concise unknown-tool error as any other unavailable name. There is no operator MCP endpoint in release R. The authoring harness may
 reach `test_agent` only through a server-issued internal dispatch token; an
 external stdio or HTTP caller cannot.
 
@@ -46,11 +45,10 @@ save-only and branch semantics. Branch and revision tools are not removed.
 `refresh_style_profile` and `apply_style_profile` accept `dry_run`. A dry run
 reports the proposed candidate or prose diff without inserting a profile
 version, consuming candidates, activating the profile, invalidating caches, or
-writing an audit record. `preview_refresh_style_profile` and
-`preview_apply_style_profile` remain available through release R and return the
-full extended preview shapes. `create_style_revision_patch` is the canonical
-non-mutating patch-creation step; `preview_style_revision_patch` remains its
-release-R alias, and only `apply_style_revision_patch` writes prose.
+writing an audit record. The release-R `preview_refresh_style_profile`,
+`preview_apply_style_profile`, and `preview_style_revision_patch` aliases are
+removed in R+1; use the canonical dry-run and `create_style_revision_patch`
+routes. Only `apply_style_revision_patch` writes prose.
 
 ### Typed entity updates
 
@@ -77,12 +75,12 @@ names delegate to them as one-release compatibility aliases.
 
 ### Profiles
 
-Unset and `legacy-all` keep the full compatibility catalog except the
-operator-only commands above. The generated workflow/specialist profiles remain
-opt-in. Select a profile with `SPINDLE_TOOL_PROFILE` and reconnect; reading a
-skill never grants tools or changes the active profile. `spindle-mcp profiles
---json` prints the catalog, units, and required tools without opening a project
-database.
+Unset starts the generated `workflow-write` profile. The legacy `minimal`,
+`write`, `import`, `authoring`, and `legacy-all` names are removed and fail
+closed; select a generated workflow/specialist profile with
+`SPINDLE_TOOL_PROFILE` and reconnect. Reading a skill never grants tools or
+changes the active profile. `spindle-mcp profiles --json` prints the catalog,
+units, and required tools without opening a project database.
 
 ## Compatibility aliases during R
 
@@ -91,23 +89,25 @@ at the service boundary rather than treated as simple renames:
 
 - Save/revise/authoring-save/commit-changes/annotate-beats: save-only and
   branch semantics are preserved; `commit_scene` is the canonical atomic write.
-- Preview refresh/apply and preview revision patch: kept as preview/alias routes;
-  dry-run and `create_style_revision_patch` are the canonical routes.
+- Preview refresh/apply and preview revision patch: removed in R+1; use
+  `dry_run` on refresh/apply and `create_style_revision_patch`.
 - Branch, save-point, scene-version restore, alternative selection, and style
   rollback: kept; history/undo consolidation continues after R where its
   scoped adapters are not yet universal.
 - Legacy skill names and resource URIs: kept; the shortened manifest-aligned
   skills are the canonical loading routes.
 
-## R+1 removal
+## R+1 removal (shipped)
 
-After the full compatibility release, R+1 will:
+This R+1 release:
 
-- remove the deprecated preview twins and remaining compatibility aliases;
-- switch the unset default profile to the generated `write` profile;
-- remove `legacy-all` and the legacy compatibility profiles;
-- keep stored history, record IDs, and scene/version data readable, with
-  migration or continued read support rather than discarding history.
+- removes the deprecated style preview twins; `dry_run` and
+  `create_style_revision_patch` are the canonical routes;
+- switches the unset default profile to the generated `workflow-write` profile;
+- removes `legacy-all` and the legacy `minimal`/`write`/`import`/`authoring`
+  profiles; unknown or removed profile names fail closed;
+- keeps stored history, record IDs, and scene/version data readable, with no
+  history-destroying migration.
 
 Unknown or removed names return a concise migration error and never route to a
 different mutation.

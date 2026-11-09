@@ -247,23 +247,28 @@ fn smallest_covering_profile(
     unit_name: &str,
     required_tools: &std::collections::BTreeSet<&str>,
 ) -> Option<String> {
-    if required_tools
+    let profiles = spindle_adapters::guidance::list_profiles();
+    if let Some(profile) = profiles
         .iter()
-        .all(|tool| super::profile_has_tool(Some("minimal"), tool))
+        .filter(|profile| profile.units.contains(&unit_name))
+        .filter(|profile| {
+            required_tools
+                .iter()
+                .all(|tool| profile.tools.contains(tool))
+        })
+        .min_by_key(|profile| (profile.tools.len(), profile.name))
     {
-        return Some("minimal".to_string());
+        return Some(profile.name.to_string());
     }
-    spindle_adapters::guidance::list_profiles()
+    profiles
         .iter()
         .filter(|profile| {
-            profile.units.contains(&unit_name)
-                || required_tools
-                    .iter()
-                    .all(|tool| profile.tools.contains(tool))
+            required_tools
+                .iter()
+                .all(|tool| profile.tools.contains(tool))
         })
         .min_by_key(|profile| (profile.tools.len(), profile.name))
         .map(|profile| profile.name.to_string())
-        .or_else(|| Some("default".to_string()))
 }
 
 fn uncovered_unit_message(
@@ -284,7 +289,7 @@ fn uncovered_unit_message(
          - Required profile: `{required_profile}`\n\
          - Missing capabilities: {}\n\
          - Available units in active profile: {available}\n\n\
-         Reconnect with `SPINDLE_TOOL_PROFILE={required_profile}` (or unset `SPINDLE_TOOL_PROFILE` for the full catalog) to load and run this workflow.",
+         Reconnect with `SPINDLE_TOOL_PROFILE={required_profile}` (or unset `SPINDLE_TOOL_PROFILE` for the default `workflow-write` profile) to load and run this workflow.",
         missing_capabilities.join(", ")
     )
 }

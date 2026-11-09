@@ -15,22 +15,22 @@ modes. Directly constructed unknown-profile routers list nothing and deny calls.
 The internal manifest label `default` means an unset environment variable; it is
 not a startup profile name.
 
-Unset, `minimal`, `write`, `import`, and `authoring` keep their compatibility
-catalogs while the canonical `commit_scene` facade is added to the scene-writing
-profiles. Explicit `legacy-all` gives the same complete catalog as unset. New
-generated profiles are opt-in:
+Unset starts the generated `workflow-write` profile. The legacy `minimal`,
+`write`, `import`, `authoring`, and `legacy-all` names are removed in R+1 and
+fail closed. Select a generated workflow or specialist profile with
+`SPINDLE_TOOL_PROFILE`:
 
 | Profile | Enabled work | Tools | Input bytes | Full bytes |
 | --- | --- | ---: | ---: | ---: |
-| workflow-write | Scene-writer core + craft/packet/research refs + setup | 44 | 57,268 | 112,186 |
-| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 74 | 85,869 | 181,002 |
+| workflow-write | Scene-writer core + craft/packet/research refs + setup | 42 | 55,374 | 104,790 |
+| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 74 | 87,564 | 177,916 |
 | workflow-import | Manuscript importer and source sync | 20 | 12,306 | 30,747 |
-| revision | Branch/revision/history workflow | 32 | 20,950 | 54,185 |
-| worldbuilding | Worldbuilder + character creator | 50 | 48,325 | 82,626 |
-| planning | Plot architect | 38 | 32,352 | 62,362 |
+| revision | Branch/revision/history workflow | 31 | 20,456 | 53,512 |
+| worldbuilding | Worldbuilder + character creator | 43 | 40,080 | 61,514 |
+| planning | Plot architect | 33 | 25,883 | 49,437 |
 | new-book | New-book entry: planning sessions, human gates and handoff | 14 | 20,204 | 26,534 |
 | research | Researcher | 15 | 7,584 | 20,051 |
-| style | Editor core + style reference | 43 | 34,159 | 94,206 |
+| style | Editor core + style reference | 40 | 31,991 | 83,070 |
 | release | Editor + bible librarian + canon steward | 62 | 45,475 | 90,729 |
 | setup | New-book setup reference | 9 | 4,180 | 9,074 |
 
@@ -46,8 +46,8 @@ return structured coverage metadata (`covered`, `required_profile`,
 Generated import has no style dependency; style is a separately selected profile.
 Operator-only commands (`configure_agents`, `init_grok_skills`, `test_agent`,
 `rebuild_search_index`, `backfill_scene_source_offsets`, and
-`operator_delete_scene`) are omitted from every model profile, including unset
-and `legacy-all`, and denied by name on stdio and HTTP model transports. Use the
+`operator_delete_scene`) are omitted from every model profile, including unset,
+and denied by name on stdio and HTTP model transports. Use the
 CLI commands in the [release R migration guide](tool-migration-r.md). The
 authoring harness reaches `test_agent` only through a server-issued internal
 token; an external caller cannot. This is discovery/invocation filtering, not

@@ -1342,7 +1342,12 @@ mod tests {
 
     #[test]
     fn operator_tools_are_denied_in_every_model_profile() {
-        for profile in [None, Some("legacy-all"), Some("write"), Some("authoring")] {
+        for profile in [
+            None,
+            Some("workflow-write"),
+            Some("workflow-authoring"),
+            Some("workflow-import"),
+        ] {
             for tool in crate::tools::OPERATOR_ONLY_TOOLS {
                 assert!(
                     !crate::tools::profile_has_tool(profile, tool),
@@ -1351,7 +1356,7 @@ mod tests {
             }
         }
         assert!(crate::tools::profile_has_tool(
-            Some("write"),
+            Some("workflow-write"),
             "save_scene_draft"
         ));
     }

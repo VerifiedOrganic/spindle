@@ -237,7 +237,7 @@ async fn get_skill_and_get_reference_enforce_profile_coverage_without_mutating_p
     assert!(!router.has_tool("continue_generation"));
 
     // Minimal profile covers spindle entry and global craft references, but not spindle/setup or scene-writer.
-    router.tool_profile = Some("minimal".to_owned());
+    router.tool_profile = Some("workflow-import".to_owned());
     let spindle_entry = structured_json(
         router
             .call_tool(
@@ -248,7 +248,7 @@ async fn get_skill_and_get_reference_enforce_profile_coverage_without_mutating_p
             .unwrap(),
     );
     assert_eq!(spindle_entry["covered"], true);
-    assert_eq!(spindle_entry["required_profile"], "minimal");
+    assert_eq!(spindle_entry["required_profile"], "setup");
 
     let setup_ref = structured_json(
         router
@@ -263,8 +263,8 @@ async fn get_skill_and_get_reference_enforce_profile_coverage_without_mutating_p
     assert_eq!(setup_ref["required_profile"], "setup");
     assert_eq!(
         setup_ref["missing_capabilities"],
-        serde_json::json!(["create_book", "create_chapter"])
+        serde_json::json!(["create_book", "create_chapter", "create_project"])
     );
-    assert_eq!(router.tool_profile.as_deref(), Some("minimal"));
+    assert_eq!(router.tool_profile.as_deref(), Some("workflow-import"));
     assert!(!router.has_tool("create_book"));
 }

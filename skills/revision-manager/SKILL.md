@@ -43,7 +43,7 @@ Manage structural revisions, "what-if" exploration branches, multi-candidate sce
 ## Style Learning from Operator Edits
 
 When a project enables `style_learning` via `update_entity` (`changes: { "style_learning": 1 }`), operator re-saves over agent-drafted scenes are captured as style-edit candidates:
-- Call `preview_refresh_style_profile` to inspect pending candidates (`included_count`, `withheld_count`, and prose-free diff summaries).
+- Call `refresh_style_profile` with `dry_run: true` to inspect pending candidates (`included_count`, `withheld_count`, and prose-free diff summaries).
 - Call `refresh_style_profile` (with optional `dismiss_candidate_ids`) to fold approved edits into a new style profile version.
 
 ## Read-Only Subagent Candidate Evaluation
@@ -63,7 +63,6 @@ When comparing branches or alternatives with subagents, dispatch one read-only s
 <!-- tool: list_revision_markers -->
 <!-- tool: list_scene_versions -->
 <!-- tool: merge_branch -->
-<!-- tool: preview_refresh_style_profile -->
 <!-- tool: record_note -->
 <!-- tool: refresh_style_profile -->
 <!-- tool: resolve_revision_marker -->

@@ -8,9 +8,8 @@ use spindle_core::models::{
 use spindle_core::style::{
     ApplyStyleProfileInput, ApplyStyleRevisionPatchInput, ArchiveStyleProfileInput,
     CheckStyleProfileSourcesInput, CompareStyleProfilesInput, CreateStyleProfileFromMarkdownInput,
-    GetStyleProfileInput, ListStyleProfilesInput, PreviewRefreshStyleProfileInput,
-    PreviewStyleRevisionPatchInput, RefreshStyleProfileInput, StyleDriftSummaryScore,
-    StyleProfileApplyMode,
+    CreateStyleRevisionPatchInput, GetStyleProfileInput, ListStyleProfilesInput,
+    RefreshStyleProfileInput, StyleDriftSummaryScore, StyleProfileApplyMode,
 };
 use tempfile::TempDir;
 
@@ -452,15 +451,19 @@ async fn test_style_profile_audit_rollback_and_drift_lifecycle() {
         .unwrap();
     let profile = create_out.profile;
 
-    // 3. Test PreviewApplyStyleProfile
+    // 3. Test an apply dry run with ReplaceGeneratedStyleNotes.
     let preview_out = svc
-        .preview_apply_style_profile(spindle_core::style::PreviewApplyStyleProfileInput {
+        .apply_style_profile(ApplyStyleProfileInput {
+            force: None,
             project_id: project_id.clone(),
             profile_id: profile.profile_id.clone(),
             mode: StyleProfileApplyMode::ReplaceGeneratedStyleNotes,
+            dry_run: true,
         })
         .await
-        .unwrap();
+        .unwrap()
+        .preview
+        .expect("apply dry run returns a preview");
 
     // Verify preview returns expected changes
     assert!(
@@ -2238,7 +2241,7 @@ async fn test_style_revision_patch_lifecycle() {
 
     // A. Preview for single scene
     let preview_scene_out = svc
-        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+        .create_style_revision_patch(CreateStyleRevisionPatchInput {
             project_id: project_id.clone(),
             scene_id: Some(scene_id_1.clone()),
             chapter_id: None,
@@ -2269,7 +2272,7 @@ async fn test_style_revision_patch_lifecycle() {
 
     // B. Preview for chapter (returns per-scene patches)
     let preview_chapter_out = svc
-        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+        .create_style_revision_patch(CreateStyleRevisionPatchInput {
             project_id: project_id.clone(),
             scene_id: None,
             chapter_id: Some(chapter_id.clone()),
@@ -2389,7 +2392,7 @@ async fn test_style_revision_patch_lifecycle() {
     // D. Stale patch rejection
     // Let's do another preview
     let preview_stale = svc
-        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+        .create_style_revision_patch(CreateStyleRevisionPatchInput {
             project_id: project_id.clone(),
             scene_id: Some(scene_id_1.clone()),
             chapter_id: None,
@@ -2455,7 +2458,7 @@ async fn test_style_revision_patch_lifecycle() {
     .unwrap();
 
     let preview_archived_res = svc
-        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+        .create_style_revision_patch(CreateStyleRevisionPatchInput {
             project_id: project_id.clone(),
             scene_id: Some(scene_id_1.clone()),
             chapter_id: None,
@@ -2511,7 +2514,7 @@ async fn test_style_revision_patch_lifecycle() {
     let project_other_id = project_other_out.project_id;
 
     let preview_cross_res = svc
-        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+        .create_style_revision_patch(CreateStyleRevisionPatchInput {
             project_id: project_other_id.clone(),
             scene_id: Some(scene_id_1.clone()), // scene_1 belongs to project_id, not project_other_id
             chapter_id: None,
@@ -2655,7 +2658,7 @@ async fn test_style_revision_patch_rollback_lifecycle() {
 
     // 2. Preview style revision patch
     let preview_out = svc
-        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+        .create_style_revision_patch(CreateStyleRevisionPatchInput {
             project_id: project_id.clone(),
             scene_id: Some(scene_id.clone()),
             chapter_id: None,
@@ -2782,7 +2785,7 @@ async fn test_style_revision_patch_rollback_lifecycle() {
     // 7. Test stale rollback rejection
     // Let's create a new patch, apply it, mutate the scene text, then try to rollback.
     let preview_out2 = svc
-        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
+        .create_style_revision_patch(CreateStyleRevisionPatchInput {
             project_id: project_id.clone(),
             scene_id: Some(scene_id.clone()),
             chapter_id: None,
@@ -3412,19 +3415,22 @@ async fn test_style_profile_refresh_workflow() {
     let old_count = old_profiles_list.profiles.len();
 
     let preview_out = svc
-        .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+        .refresh_style_profile(RefreshStyleProfileInput {
             project_id: project_id.clone(),
             profile_id: profile.profile_id.clone(),
+            apply_after_refresh: None,
+            force_apply: None,
             metrics_only: None,
+            dismiss_candidate_ids: Vec::new(),
+            dry_run: true,
         })
         .await
-        .unwrap();
+        .unwrap()
+        .preview
+        .expect("refresh dry run returns a preview");
 
-    assert_eq!(
-        preview_out.old_profile_summary.profile_id,
-        profile.profile_id
-    );
-    assert_eq!(preview_out.candidate_profile_summary.name, profile.name);
+    assert_eq!(preview_out.old_profile_id, profile.profile_id);
+    assert_eq!(preview_out.candidate_name, profile.name);
 
     let new_profiles_list = svc
         .list_style_profiles(ListStyleProfilesInput {
@@ -3505,10 +3511,14 @@ async fn test_style_profile_refresh_workflow() {
     );
 
     let preview_archived_res = svc
-        .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
+        .refresh_style_profile(RefreshStyleProfileInput {
             project_id: project_id.clone(),
             profile_id: refreshed_profile.profile_id.clone(),
+            apply_after_refresh: None,
+            force_apply: None,
             metrics_only: None,
+            dismiss_candidate_ids: Vec::new(),
+            dry_run: true,
         })
         .await;
     assert!(
