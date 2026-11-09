@@ -750,7 +750,6 @@ mod batch;
 mod canon_cutover;
 mod canon_events;
 mod canon_policy;
-mod history;
 mod memory;
 pub(crate) use canon_policy::{legacy_claim, legacy_snapshot_claim};
 mod characters;

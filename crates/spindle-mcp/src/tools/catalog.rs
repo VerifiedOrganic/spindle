@@ -627,7 +627,7 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         ),
         tool::<UndoChangeInput, UndoChangeOutput>(
             "undo_change",
-            "Undo a recorded scene-version or style operation with an expected-head check. Creates a compensating operation and never deletes audit history. Branch save points are checkpoint_only and must use restore_save_point.",
+            "Resolve a history operation id to its explicit revision scope. Automatic undo is not yet atomic for scene continuity or multi-step style rollback, so this tool refuses those scopes with a recovery path to restore_scene_version, restore_save_point, rollback_style_profile_application, or rollback_style_revision_patch.",
         ),
         tool::<ListSceneVersionsInput, ListSceneVersionsOutput>(
             "list_scene_versions",

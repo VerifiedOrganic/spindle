@@ -769,7 +769,7 @@ name = "undo_change"
 classification = "retained"
 owner = "revision-manager"
 review_by = "R+1"
-reason = "Unified compensating undo for scene versions and style operations with expected-head checks."
+reason = "Unified history scope check: refuses unsafe automatic undo and directs callers to the explicit revision tool."
 
 [[tools]]
 name = "list_scene_versions"

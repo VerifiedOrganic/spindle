@@ -1,7 +1,7 @@
 use super::*;
 use spindle_core::models::{
-    ChangeReceipt, ListChangesInput, ListChangesOutput, UndoAffected, UndoChangeInput,
-    UndoChangeOutput, UndoSupport,
+    ChangeReceipt, ListChangesInput, ListChangesOutput, UndoChangeInput, UndoChangeOutput,
+    UndoSupport,
 };
 
 fn micros_to_rfc3339(micros: i64) -> String {
@@ -11,8 +11,9 @@ fn micros_to_rfc3339(micros: i64) -> String {
 }
 
 impl SqliteSpindleService {
-    /// Unified, paginated history over scene versions, branch checkpoints,
-    /// style applications, style revision patches, and prior undo records.
+    /// Unified, paginated discovery over scene versions, branch checkpoints,
+    /// style applications, and style revision patches. Each receipt states
+    /// whether the existing explicit revision tool is safe to use.
     pub async fn list_changes(&self, input: ListChangesInput) -> Result<ListChangesOutput> {
         self.repository.get_project(&input.project_id).await?;
         let branch_id = match input.branch_id {
@@ -36,11 +37,11 @@ impl SqliteSpindleService {
         let mut changes = Vec::new();
 
         if kind_filter.is_none_or(|kind| kind == "scene_save") {
-            let versions = self
+            for version in self
                 .repository
                 .list_scene_versions_by_project(&input.project_id)
-                .await?;
-            for version in versions {
+                .await?
+            {
                 if version.branch_id != branch_id {
                     continue;
                 }
@@ -67,7 +68,8 @@ impl SqliteSpindleService {
                     created_at: version.created_at.to_rfc3339(),
                     undo_support: UndoSupport::CheckpointOnly,
                     undo_reason: Some(
-                        "scene snapshots preserve prose only; approved continuity deltas require explicit review before restore_scene_version".to_string(),
+                        "snapshot preserves prose but not approved continuity deltas; review and use restore_scene_version explicitly"
+                            .to_string(),
                     ),
                     undone: false,
                 });
@@ -87,7 +89,7 @@ impl SqliteSpindleService {
                     kind: "branch_checkpoint".to_string(),
                     subject_id: save_point.id.clone(),
                     summary: save_point.name,
-                    created_at: save_point.created_at.to_rfc3339(),
+                    created_at: micros_to_rfc3339(save_point.created_at.timestamp_micros()),
                     undo_support: UndoSupport::CheckpointOnly,
                     undo_reason: Some(
                         "branch snapshot; use restore_save_point with the original checkpoint scope"
@@ -97,15 +99,6 @@ impl SqliteSpindleService {
                 });
             }
         }
-
-        let mut undo_records = self
-            .repository
-            .list_history_undo_by_project_and_branch(&input.project_id, &branch_id)
-            .await?;
-        let undone_sources: std::collections::BTreeSet<String> = undo_records
-            .iter()
-            .map(|record| record.source_operation_id.clone())
-            .collect();
 
         if kind_filter.is_none_or(|kind| kind == "style_apply") && input.scene_id.is_none() {
             for app in self
@@ -122,15 +115,14 @@ impl SqliteSpindleService {
                     subject_id: app.profile_id.clone(),
                     summary: format!("style application {}", app.id),
                     created_at: app.applied_at,
-                    undo_support: if reversible {
-                        UndoSupport::Reversible
+                    undo_support: UndoSupport::CheckpointOnly,
+                    undo_reason: Some(if reversible {
+                        "multi-step style rollback; use rollback_style_profile_application explicitly"
+                            .to_string()
                     } else {
-                        UndoSupport::Irreversible
-                    },
-                    undo_reason: (!reversible)
-                        .then(|| format!("already rolled back ({})", app.rollback_status)),
-                    undone: !reversible
-                        || undone_sources.contains(&format!("style_application:{}", app.id)),
+                        format!("already rolled back ({})", app.rollback_status)
+                    }),
+                    undone: !reversible,
                 });
             }
         }
@@ -154,39 +146,14 @@ impl SqliteSpindleService {
                         audit.target_ids.len()
                     ),
                     created_at: audit.applied_at,
-                    undo_support: if reversible {
-                        UndoSupport::Reversible
+                    undo_support: UndoSupport::CheckpointOnly,
+                    undo_reason: Some(if reversible {
+                        "multi-scene style patch rollback; use rollback_style_revision_patch explicitly"
+                            .to_string()
                     } else {
-                        UndoSupport::Irreversible
-                    },
-                    undo_reason: (!reversible)
-                        .then(|| format!("already rolled back ({})", audit.rollback_status)),
-                    undone: !reversible
-                        || undone_sources.contains(&format!("style_patch:{}", audit.id)),
-                });
-            }
-        }
-
-        if kind_filter.is_none_or(|kind| kind == "undo") && input.scene_id.is_none() {
-            for record in undo_records.drain(..) {
-                changes.push(ChangeReceipt {
-                    operation_id: record.id.clone(),
-                    project_id: record.project_id,
-                    branch_id: record.branch_id,
-                    kind: "undo".to_string(),
-                    subject_id: record.source_operation_id,
-                    summary: record.summary,
-                    created_at: micros_to_rfc3339(record.created_at),
-                    undo_support: UndoSupport::Irreversible,
-                    undo_reason: Some(if record.status == "completed" {
-                        "undo records are audit history".to_string()
-                    } else {
-                        format!(
-                            "undo audit is {}; retry undo_change to reconcile",
-                            record.status
-                        )
+                        format!("already rolled back ({})", audit.rollback_status)
                     }),
-                    undone: false,
+                    undone: !reversible,
                 });
             }
         }
@@ -209,291 +176,32 @@ impl SqliteSpindleService {
         })
     }
 
-    /// Undo one recorded operation with an optimistic head check. Unsupported
-    /// scopes (branch checkpoints) are refused explicitly rather than pretending
-    /// their ids are single-record operations.
+    /// Unified undo is a scope check, not a mutating adapter yet: the existing
+    /// scene/style revivers are multi-step and are not atomic with their own
+    /// audits, so this surface refuses to pretend a single operation id can
+    /// safely replay them. Callers use the named tool after reviewing effects.
     pub async fn undo_change(&self, input: UndoChangeInput) -> Result<UndoChangeOutput> {
         self.repository.get_project(&input.project_id).await?;
-        let Some((prefix, id)) = input.operation_id.split_once(':') else {
+        let Some((prefix, _id)) = input.operation_id.split_once(':') else {
             anyhow::bail!(
-                "operation_id must be prefix-qualified; supported: scene_version, style_application, style_patch"
+                "operation_id must be prefix-qualified; supported scopes: scene_version, save_point, style_application, style_patch"
             );
         };
         match prefix {
             "scene_version" => anyhow::bail!(
-                "checkpoint_only: scene_version:{id} restores prose but not the approved continuity state; review the deltas and use restore_scene_version explicitly"
+                "checkpoint_only: scene snapshots do not capture approved continuity deltas; review them and use restore_scene_version explicitly"
             ),
-            "style_application" => {
-                let apps = self
-                    .repository
-                    .list_style_profile_applications(&input.project_id)
-                    .await?;
-                let app = apps
-                    .iter()
-                    .find(|app| app.id == id)
-                    .ok_or_else(|| anyhow::anyhow!("style application not found"))?;
-                let existing = self
-                    .repository
-                    .find_history_undo_by_source(&input.project_id, &input.operation_id)
-                    .await?;
-                if app.rollback_status == "rolled_back" {
-                    if let Some(existing) = existing.clone() {
-                        if existing.status != "completed" {
-                            self.repository.complete_history_undo(&existing.id).await?;
-                        }
-                        return Ok(UndoChangeOutput {
-                            operation_id: input.operation_id,
-                            kind: "style_apply".to_string(),
-                            project_id: input.project_id,
-                            branch_id: existing.branch_id,
-                            affected: vec![UndoAffected {
-                                table: "style_profile_application".to_string(),
-                                id: app.id.clone(),
-                                summary: "already rolled back; undo audit reconciled".to_string(),
-                            }],
-                            compensating_operation_id: existing.compensating_operation_id,
-                            dry_run: false,
-                            message:
-                                "style application was already rolled back; undo audit completed"
-                                    .to_string(),
-                        });
-                    }
-                    anyhow::bail!(
-                        "style application is not reversible ({})",
-                        app.rollback_status
-                    );
-                }
-                let head = apps
-                    .iter()
-                    .filter(|candidate| candidate.rollback_status != "rolled_back")
-                    .max_by(|a, b| a.applied_at.cmp(&b.applied_at))
-                    .expect("at least one applied style application");
-                anyhow::ensure!(
-                    app.id == head.id,
-                    "style application is not the current applied head; undo {} first",
-                    head.id
-                );
-                anyhow::ensure!(
-                    input.expected_head == head.id,
-                    "stale expected_head: current applied style application is {}",
-                    head.id
-                );
-                let branch_id = self
-                    .repository
-                    .active_branch_id_public(&input.project_id)
-                    .await?;
-                let affected = vec![UndoAffected {
-                    table: "style_profile_application".to_string(),
-                    id: app.id.clone(),
-                    summary: "restore narrator voice, style notes, and style rule".to_string(),
-                }];
-                if input.dry_run {
-                    return Ok(UndoChangeOutput {
-                        operation_id: input.operation_id,
-                        kind: "style_apply".to_string(),
-                        project_id: input.project_id,
-                        branch_id,
-                        affected,
-                        compensating_operation_id: None,
-                        dry_run: true,
-                        message: "dry run: would roll back the captured style effects".to_string(),
-                    });
-                }
-                let compensating = format!("style_application_rollback:{}", app.id);
-                let undo_id = match existing {
-                    Some(existing) if existing.status != "completed" => existing.id,
-                    _ => {
-                        self.repository
-                            .begin_history_undo(
-                                &input.project_id,
-                                &branch_id,
-                                &input.operation_id,
-                                Some(&compensating),
-                                "style_apply",
-                                &format!("rolled back style application {}", app.id),
-                            )
-                            .await?
-                    }
-                };
-                let rolled = match self
-                    .rollback_style_profile_application(
-                        spindle_core::style::RollbackStyleProfileApplicationInput {
-                            project_id: input.project_id.clone(),
-                            application_id: app.id.clone(),
-                        },
-                    )
-                    .await
-                {
-                    Ok(rolled) => rolled,
-                    Err(error) => {
-                        let _ = self.repository.fail_history_undo(&undo_id).await;
-                        return Err(error);
-                    }
-                };
-                let audit_pending = self
-                    .repository
-                    .complete_history_undo(&undo_id)
-                    .await
-                    .is_err();
-                Ok(UndoChangeOutput {
-                    operation_id: input.operation_id,
-                    kind: "style_apply".to_string(),
-                    project_id: input.project_id,
-                    branch_id,
-                    affected,
-                    compensating_operation_id: Some(compensating),
-                    dry_run: false,
-                    message: if audit_pending {
-                        format!(
-                            "style rollback applied; undo audit {} is pending recovery; {} findings invalidated",
-                            undo_id, rolled.invalidated_validator_findings
-                        )
-                    } else {
-                        format!(
-                            "style rollback recorded; {} findings invalidated",
-                            rolled.invalidated_validator_findings
-                        )
-                    },
-                })
-            }
-            "style_patch" => {
-                let audits = self
-                    .repository
-                    .list_style_revision_patch_audits(&input.project_id)
-                    .await?;
-                let audit = audits
-                    .iter()
-                    .find(|audit| audit.id == id)
-                    .ok_or_else(|| anyhow::anyhow!("style revision patch audit not found"))?;
-                let existing = self
-                    .repository
-                    .find_history_undo_by_source(&input.project_id, &input.operation_id)
-                    .await?;
-                if audit.rollback_status == "rolled_back" {
-                    if let Some(existing) = existing.clone() {
-                        if existing.status != "completed" {
-                            self.repository.complete_history_undo(&existing.id).await?;
-                        }
-                        return Ok(UndoChangeOutput {
-                            operation_id: input.operation_id,
-                            kind: "style_patch".to_string(),
-                            project_id: input.project_id,
-                            branch_id: existing.branch_id,
-                            affected: vec![UndoAffected {
-                                table: "style_revision_patch_audit".to_string(),
-                                id: audit.id.clone(),
-                                summary: "already rolled back; undo audit reconciled".to_string(),
-                            }],
-                            compensating_operation_id: existing.compensating_operation_id,
-                            dry_run: false,
-                            message: "style patch was already rolled back; undo audit completed"
-                                .to_string(),
-                        });
-                    }
-                    anyhow::bail!(
-                        "style revision patch is not reversible ({})",
-                        audit.rollback_status
-                    );
-                }
-                let head = audits
-                    .iter()
-                    .filter(|candidate| candidate.rollback_status != "rolled_back")
-                    .max_by(|a, b| a.applied_at.cmp(&b.applied_at))
-                    .expect("at least one applied style patch");
-                anyhow::ensure!(
-                    audit.id == head.id,
-                    "style revision patch is not the current applied head; undo {} first",
-                    head.id
-                );
-                anyhow::ensure!(
-                    input.expected_head == head.id,
-                    "stale expected_head: current applied style patch is {}",
-                    head.id
-                );
-                let branch_id = self
-                    .repository
-                    .active_branch_id_public(&input.project_id)
-                    .await?;
-                let affected = vec![UndoAffected {
-                    table: "style_revision_patch_audit".to_string(),
-                    id: audit.id.clone(),
-                    summary: format!("restore {} patched scenes", audit.target_ids.len()),
-                }];
-                if input.dry_run {
-                    return Ok(UndoChangeOutput {
-                        operation_id: input.operation_id,
-                        kind: "style_patch".to_string(),
-                        project_id: input.project_id,
-                        branch_id,
-                        affected,
-                        compensating_operation_id: None,
-                        dry_run: true,
-                        message: "dry run: would restore the captured scene text".to_string(),
-                    });
-                }
-                let compensating = format!("style_patch_rollback:{}", audit.id);
-                let undo_id = match existing {
-                    Some(existing) if existing.status != "completed" => existing.id,
-                    _ => {
-                        self.repository
-                            .begin_history_undo(
-                                &input.project_id,
-                                &branch_id,
-                                &input.operation_id,
-                                Some(&compensating),
-                                "style_patch",
-                                &format!("rolled back style revision patch {}", audit.id),
-                            )
-                            .await?
-                    }
-                };
-                let rolled = match self
-                    .rollback_style_revision_patch(
-                        spindle_core::style::RollbackStyleRevisionPatchInput {
-                            project_id: input.project_id.clone(),
-                            audit_id: audit.id.clone(),
-                        },
-                    )
-                    .await
-                {
-                    Ok(rolled) => rolled,
-                    Err(error) => {
-                        let _ = self.repository.fail_history_undo(&undo_id).await;
-                        return Err(error);
-                    }
-                };
-                let audit_pending = self
-                    .repository
-                    .complete_history_undo(&undo_id)
-                    .await
-                    .is_err();
-                Ok(UndoChangeOutput {
-                    operation_id: input.operation_id,
-                    kind: "style_patch".to_string(),
-                    project_id: input.project_id,
-                    branch_id,
-                    affected,
-                    compensating_operation_id: Some(compensating),
-                    dry_run: false,
-                    message: if audit_pending {
-                        format!(
-                            "style patch rollback applied; undo audit {} is pending recovery; {} scenes restored",
-                            undo_id,
-                            rolled.restored_scene_ids.len()
-                        )
-                    } else {
-                        format!(
-                            "style patch rollback recorded; {} scenes restored",
-                            rolled.restored_scene_ids.len()
-                        )
-                    },
-                })
-            }
             "save_point" => anyhow::bail!(
-                "checkpoint_only: save_point:{id} restores a whole branch snapshot; use restore_save_point with the checkpoint's original scope"
+                "checkpoint_only: use restore_save_point with the checkpoint's original branch scope"
+            ),
+            "style_application" => anyhow::bail!(
+                "checkpoint_only: style rollback is multi-step; use rollback_style_profile_application explicitly"
+            ),
+            "style_patch" => anyhow::bail!(
+                "checkpoint_only: style patch rollback restores multiple scenes; use rollback_style_revision_patch explicitly"
             ),
             _ => anyhow::bail!(
-                "unsupported history scope '{prefix}'; supported: scene_version, style_application, style_patch"
+                "unsupported history scope '{prefix}'; supported: scene_version, save_point, style_application, style_patch"
             ),
         }
     }
