@@ -14,6 +14,7 @@ be matched without relying on a private detector implementation.
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
@@ -21,11 +22,18 @@ from typing import Any, Iterable
 from continuity_recall import McpClient
 
 EXPECTED_CHECKS = {
-    "character_attribute": {"character_consistency", "character_attribute"},
+    "character_attribute": {
+        "character_consistency",
+        "character_attribute",
+        "canonical_fact_prose_drift",
+    },
     "dead_character_acting": {"dead_character_acting"},
     "timeline_chronology_rewind": {"chronology", "timeline_continuity"},
     "knowledge_leak_before_learned": {"knowledge_timing"},
-    "world_rule_cost_violation": {"world_rule_cost_violation"},
+    # Main emits world-rule prose findings as world_rule_semantic_drift.
+    # A dedicated warning-level cost check can be added to this set when the
+    # scanner ships one.
+    "world_rule_cost_violation": {"world_rule_semantic_drift"},
     "quantity_affordability": {"affordability"},
     "secret_leak": {"secret_leak"},
 }
@@ -39,9 +47,19 @@ ALL_CHECK_TYPES = {
     name for names in EXPECTED_CHECKS.values() for name in names
 } | BROAD_CHECKS
 
+# A broad check promoted into a category set still has to concern the plant's
+# own subject; the others can localize by scene once they are the category's
+# typed check.
+SUBJECT_SCOPED_CHECKS = {"canonical_fact_prose_drift"}
 
-def c(kind: str, keyword: str, text: str) -> dict[str, Any]:
-    return {"type": kind, "keyword": keyword, "text": text}
+
+def c(
+    kind: str, keyword: str, text: str, evidence: list[str] | None = None
+) -> dict[str, Any]:
+    plant = {"type": kind, "keyword": keyword, "text": text}
+    if evidence:
+        plant["evidence"] = evidence
+    return plant
 
 
 SALT_CHAPTERS: list[dict[str, Any]] = [
@@ -52,7 +70,7 @@ SALT_CHAPTERS: list[dict[str, Any]] = [
     {
         "base": "A squall came in low over the mole, and Mara spent the morning redrawing the shoal line. Ilya Brant, the harbor master, held the lantern while she worked. Cress brought up tea and complained about the price of wicks.",
         "plants": [
-            c("character_attribute", "right hand", "Mara wrote with her right hand, though the ink blotted at every turn."),
+            c("character_attribute", "right hand", "Mara wrote with her right hand, though the ink blotted at every turn.", ["handedness"]),
             c("secret_leak", "forged the tide charts", "Everyone on the quay already knew that Lord Vale had forged the tide charts."),
         ],
     },
@@ -60,13 +78,13 @@ SALT_CHAPTERS: list[dict[str, Any]] = [
         "base": "The gate jammed at noon and the ferry missed the tide. Mara found a brass token wedged in the lock and pocketed it. Soren asked why the harbor office kept two sets of charts.",
         "plants": [
             c("knowledge_leak_before_learned", "charts were forged", "Soren said the charts were forged, and Mara did not correct him."),
-            c("world_rule_cost_violation", "without a brass token", "The tide gate swung open without a brass token."),
+            c("world_rule_cost_violation", "without a brass token", "The tide gate swung open without a brass token.", ["tide gate cost"]),
         ],
     },
     {
         "base": "Mara walked the market with her compass and a list of soundings. The chandler's boy sold her a new needle, and she checked the bearing twice before she paid.",
         "plants": [
-            c("character_attribute", "five feet nine", "Mara stood five feet nine in her boots and had to duck under the sailmaker's awning."),
+            c("character_attribute", "five feet nine", "Mara stood five feet nine in her boots and had to duck under the sailmaker's awning.", ["height"]),
             c("quantity_affordability", "twelve marks", "She paid twelve marks for the compass, though her purse held three."),
         ],
     },
@@ -81,13 +99,13 @@ SALT_CHAPTERS: list[dict[str, Any]] = [
         "base": "They buried Cress on the hill above the chandlery. The harbor closed for the afternoon. Mara packed her aunt's account books into a crate and found a note in the margins about Vale's payments.",
         "plants": [
             c("dead_character_acting", "Aunt Cress met her", "Aunt Cress met her at the door and took her coat."),
-            c("world_rule_cost_violation", "without giving up a memory", "Mara bound the salt-ink map without giving up a memory."),
+            c("world_rule_cost_violation", "without giving up a memory", "Mara bound the salt-ink map without giving up a memory.", ["tide gate cost"]),
         ],
     },
     {
         "base": "Ilya showed her the gate's ledger. Someone had been paying the lock keeper in brass tokens that were not in the harbor accounts. Mara copied the entries by lamplight.",
         "plants": [
-            c("character_attribute", "left hand", "Ilya raised his left hand to stop her, though he had lost the fingers on that side years ago."),
+            c("character_attribute", "left hand", "Ilya raised his left hand to stop her, though he had lost the fingers on that side years ago.", ["handedness", "fingers"]),
             c("secret_leak", "Vale's charts were false", "A dockworker shouted that Vale's charts were false."),
         ],
     },
@@ -108,8 +126,8 @@ SALT_CHAPTERS: list[dict[str, Any]] = [
     {
         "base": "Vale's clerk came for the harbor accounts. Mara gave him the clean copy and kept the ledger with the brass-token entries. The gate opened at dusk, on time, with a token she had seen the lock keeper feed into the slot.",
         "plants": [
-            c("world_rule_cost_violation", "without a token", "The gate opened without a token and the lock keeper did not notice."),
-            c("character_attribute", "scar had never existed", "The scar over Mara's brow had never existed, and the mirror showed smooth skin."),
+            c("world_rule_cost_violation", "without a token", "The gate opened without a token and the lock keeper did not notice.", ["tide gate cost"]),
+            c("character_attribute", "scar had never existed", "The scar over Mara's brow had never existed, and the mirror showed smooth skin.", ["scar"]),
         ],
     },
     {
@@ -137,7 +155,7 @@ SALT_CHAPTERS: list[dict[str, Any]] = [
         "base": "At the hearing, Mara spread the two charts side by side. Vale's seal was on the false one; the lock keeper's brass tokens were in her pocket. The harbor board asked for a full account.",
         "plants": [
             c("secret_leak", "Vale forged the charts", "The clerk announced that Vale forged the charts before the board had heard the evidence."),
-            c("world_rule_cost_violation", "without a memory", "Mara sealed the hearing map with salt ink without a memory and felt nothing."),
+            c("world_rule_cost_violation", "without a memory", "Mara sealed the hearing map with salt ink without a memory and felt nothing.", ["tide gate cost"]),
         ],
     },
     {
@@ -157,7 +175,7 @@ ORCHARD_CHAPTERS: list[dict[str, Any]] = [
     {
         "base": "The first copper shard goes into the old tree at dawn. It rings once, a clean note that travels down the row. Rook, our blind arborist, says the glass remembers every hand that has touched it.",
         "plants": [
-            c("character_attribute", "left-handed", "I am left-handed, so I hold the shard in my left hand and tap the trunk with my right."),
+            c("character_attribute", "left-handed", "I am left-handed, so I hold the shard in my left hand and tap the trunk with my right.", ["handedness"]),
             c("secret_leak", "Cassian had cut the roots", "Everyone at the south wall already knew that Cassian had cut the roots."),
         ],
     },
@@ -165,13 +183,13 @@ ORCHARD_CHAPTERS: list[dict[str, Any]] = [
         "base": "The survey office sends a new map of the orchard every spring. This year the lines run through the old well, which has been dry since before I was born. I walk the rows and mark the trees that still ring.",
         "plants": [
             c("knowledge_leak_before_learned", "Cassian cut the roots", "I tell the survey clerk that Cassian cut the roots, though I have not yet seen the shed."),
-            c("world_rule_cost_violation", "without a copper shard", "The tree rings without a copper shard and the note hangs in the air."),
+            c("world_rule_cost_violation", "without a copper shard", "The tree rings without a copper shard and the note hangs in the air.", ["glass signal cost"]),
         ],
     },
     {
         "base": "The pickers bring in the first baskets at noon. Nia, my sister, counts them twice and writes the totals on the shed door. We have two copper coins between us and a week before the carrier comes.",
         "plants": [
-            c("character_attribute", "six feet", "I stand six feet in my boots and still cannot reach the highest branch."),
+            c("character_attribute", "six feet", "I stand six feet in my boots and still cannot reach the highest branch.", ["height"]),
             c("quantity_affordability", "five copper", "I pay five copper for the carrier's stamp and put the receipt in my pocket."),
         ],
     },
@@ -186,13 +204,13 @@ ORCHARD_CHAPTERS: list[dict[str, Any]] = [
         "base": "Nia dies before the carrier comes. The fever takes her in three days, and we bury her under the oldest tree. I write the date in the ledger and press the page flat with my palm.",
         "plants": [
             c("dead_character_acting", "Nia counts", "Nia counts the baskets at the shed door and calls me Tam."),
-            c("world_rule_cost_violation", "without a living relay", "The signal crosses the salt marsh without a living relay and arrives clear."),
+            c("world_rule_cost_violation", "without a living relay", "The signal crosses the salt marsh without a living relay and arrives clear.", ["glass signal cost"]),
         ],
     },
     {
         "base": "Rook shows me how to read the ring pattern by touch. A healthy tree gives a low note; a dying one gives a tick like a clock. We walk the south row together and he names each tree from memory.",
         "plants": [
-            c("character_attribute", "Rook saw", "Rook saw the crack in the glass before I did."),
+            c("character_attribute", "Rook saw", "Rook saw the crack in the glass before I did.", ["sight", "vision", "blind"]),
             c("secret_leak", "Cassian cut the roots", "A picker says Cassian cut the roots and the whole row goes quiet."),
         ],
     },
@@ -213,8 +231,8 @@ ORCHARD_CHAPTERS: list[dict[str, Any]] = [
     {
         "base": "The glass trees ring all afternoon without a wind. Rook says that means the roots are touching something they should not. We dig along the south wall and find a copper wire running under the fence.",
         "plants": [
-            c("world_rule_cost_violation", "without a relay", "The signal reaches the survey office without a relay and the wire stays cold."),
-            c("character_attribute", "burn scar", "The burn scar on my right forearm is gone, and the skin is smooth."),
+            c("world_rule_cost_violation", "without a relay", "The signal reaches the survey office without a relay and the wire stays cold.", ["glass signal cost"]),
+            c("character_attribute", "burn scar", "The burn scar on my right forearm is gone, and the skin is smooth.", ["scar"]),
         ],
     },
     {
@@ -242,7 +260,7 @@ ORCHARD_CHAPTERS: list[dict[str, Any]] = [
         "base": "The logbook names every tree Cassian sold and every buyer at the survey office. I copy the list and take it to the carrier. The orchard is quiet; the glass trees have stopped ringing.",
         "plants": [
             c("secret_leak", "Cassian cut the roots", "The carrier says Cassian cut the roots before I show her the logbook."),
-            c("world_rule_cost_violation", "without a living relay", "The signal crosses the marsh without a living relay and the office answers at once."),
+            c("world_rule_cost_violation", "without a living relay", "The signal crosses the marsh without a living relay and the office answers at once.", ["glass signal cost"]),
         ],
     },
     {
@@ -578,6 +596,34 @@ def _build_manuscript(
     }
 
 
+def _word_boundary_contains(haystack: str, needle: str) -> bool:
+    pattern = rf"(?<![a-z0-9]){re.escape(needle.lower())}(?![a-z0-9])"
+    return re.search(pattern, haystack.lower()) is not None
+
+
+def _broad_subject_match(issue: dict[str, Any], plant: dict[str, Any]) -> bool:
+    """Whether a broad finding concerns this plant's own subject.
+
+    Exact plant wording is accepted only at the planted scene. Otherwise the
+    finding must cite one of the plant's explicit subject-evidence tokens (for
+    example the canonical key ``scar`` or rule name ``tide gate cost``) at the
+    planted scene. A generic keyword token, a same-character but different
+    attribute, or a repeat elsewhere does not match.
+    """
+    scene_id = plant.get("scene_id")
+    entity_ids = issue.get("entity_ids", [])
+    if scene_id and scene_id not in entity_ids:
+        return False
+    message = str(issue.get("message", "")).lower()
+    keyword = str(plant.get("keyword", "")).lower()
+    if keyword and keyword in message:
+        return True
+    return any(
+        _word_boundary_contains(message, evidence)
+        for evidence in plant.get("evidence", [])
+    )
+
+
 def _score(issues: Iterable[dict[str, Any]], plants: Iterable[dict[str, Any]]) -> dict[str, Any]:
     issue_list = list(issues)
     plant_list = list(plants)
@@ -597,21 +643,31 @@ def _score(issues: Iterable[dict[str, Any]], plants: Iterable[dict[str, Any]]) -
             check_type = issue.get("check_type")
             if check_type not in (expected | BROAD_CHECKS):
                 return False
+            if check_type in SUBJECT_SCOPED_CHECKS or (
+                check_type in BROAD_CHECKS and check_type not in expected
+            ):
+                # A broad check must concern this plant's own subject, not
+                # just share a scene with another plant.
+                return _broad_subject_match(issue, plant)
             message = str(issue.get("message", "")).lower()
-            if check_type in BROAD_CHECKS:
-                # A broad check must name the planted evidence; sharing a
-                # scene with another plant is not category evidence.
-                return keyword in message
             return keyword in message or bool(
                 scene_id and scene_id in issue.get("entity_ids", [])
             )
 
         localized = any(localizes(issue) for issue in issue_list)
-        type_present = any(
-            issue.get("severity") in {"error", "warning"}
-            and issue.get("check_type") in expected
-            for issue in issue_list
-        )
+        type_present = False
+        for issue in issue_list:
+            if issue.get("severity") not in {"error", "warning"}:
+                continue
+            check_type = issue.get("check_type")
+            if check_type not in expected:
+                continue
+            if check_type in SUBJECT_SCOPED_CHECKS and not _broad_subject_match(
+                issue, plant
+            ):
+                continue
+            type_present = True
+            break
         per_type[kind]["localized"] += int(localized)
         per_type[kind]["type_present"] += int(type_present)
     relevant_issues = [
@@ -763,7 +819,7 @@ def held_out_2_self_test() -> None:
     info = _score(
         [
             {
-                "check_type": "world_rule_cost_violation",
+                "check_type": "world_rule_semantic_drift",
                 "severity": "info",
                 "message": "scene references world rule 'x' (no violation context detected)",
                 "entity_ids": [],
@@ -792,6 +848,135 @@ def held_out_2_self_test() -> None:
     assert shared_scene["per_type"]["character_attribute"]["localized"] == 1
     assert shared_scene["per_type"]["world_rule_cost_violation"]["localized"] == 0
 
+    exact_wrong_scene = _score(
+        [
+            {
+                "check_type": "canonical_fact_prose_drift",
+                "severity": "warning",
+                "message": "canonical key conflicts: scar had never existed",
+                "entity_ids": ["scene:other"],
+            }
+        ],
+        [
+            {
+                "type": "character_attribute",
+                "keyword": "scar had never existed",
+                "scene_id": "scene:shared",
+                "evidence": ["scar"],
+            }
+        ],
+    )
+    assert exact_wrong_scene["per_type"]["character_attribute"]["localized"] == 0
+    assert exact_wrong_scene["per_type"]["character_attribute"]["type_present"] == 0
+
+    wrong_attribute = _score(
+        [
+            {
+                "check_type": "canonical_fact_prose_drift",
+                "severity": "warning",
+                "message": "canonical height differs for Rook",
+                "entity_ids": ["scene:rook"],
+            }
+        ],
+        [
+            {
+                "type": "character_attribute",
+                "keyword": "Rook saw",
+                "scene_id": "scene:rook",
+                "evidence": ["sight", "vision", "blind"],
+            }
+        ],
+    )
+    assert wrong_attribute["per_type"]["character_attribute"]["localized"] == 0
+    assert wrong_attribute["per_type"]["character_attribute"]["type_present"] == 0
+
+    # The existing warning-level world-rule check is the actual contract today;
+    # a warning at the planted scene counts, while the info-only variant above
+    # does not.
+    world_warning = _score(
+        [
+            {
+                "check_type": "world_rule_semantic_drift",
+                "severity": "warning",
+                "message": "scene likely violates world rule 'Tide gate cost'",
+                "entity_ids": ["scene:rule"],
+            }
+        ],
+        [
+            {
+                "type": "world_rule_cost_violation",
+                "keyword": "without a token",
+                "scene_id": "scene:rule",
+                "evidence": ["tide gate cost"],
+            }
+        ],
+    )
+    assert world_warning["per_type"]["world_rule_cost_violation"]["localized"] == 1
+    assert world_warning["per_type"]["world_rule_cost_violation"]["type_present"] == 1
+
+    # Broad credit is subject-scoped: same scene but a different attribute (or
+    # a different scene with the right token) must not count.
+    unrelated_scene = _score(
+        [
+            {
+                "check_type": "canonical_fact_prose_drift",
+                "severity": "warning",
+                "message": "canonical height differs from the record",
+                "entity_ids": ["scene:shared"],
+            }
+        ],
+        [
+            {
+                "type": "character_attribute",
+                "keyword": "scar had never existed",
+                "scene_id": "scene:shared",
+            }
+        ],
+    )
+    assert unrelated_scene["per_type"]["character_attribute"]["localized"] == 0
+    assert unrelated_scene["per_type"]["character_attribute"]["type_present"] == 0
+
+    wrong_scene = _score(
+        [
+            {
+                "check_type": "canonical_fact_prose_drift",
+                "severity": "warning",
+                "message": "canonical scar differs from the record",
+                "entity_ids": ["scene:other"],
+            }
+        ],
+        [
+            {
+                "type": "character_attribute",
+                "keyword": "scar had never existed",
+                "scene_id": "scene:shared",
+            }
+        ],
+    )
+    assert wrong_scene["per_type"]["character_attribute"]["localized"] == 0
+    assert wrong_scene["per_type"]["character_attribute"]["type_present"] == 0
+
+    subject_scene = _score(
+        [
+            {
+                "check_type": "canonical_fact_prose_drift",
+                "severity": "warning",
+                "message": "canonical key 'scar' conflicts with the left-brow value",
+                "entity_ids": ["scene:shared"],
+            }
+        ],
+        [
+            {
+                "type": "character_attribute",
+                "keyword": "burn scar",
+                "scene_id": "scene:shared",
+                "evidence": ["scar"],
+            }
+        ],
+    )
+    assert subject_scene["per_type"]["character_attribute"]["localized"] == 1
+    assert subject_scene["per_type"]["character_attribute"]["type_present"] == 1
+
     # A broad check with evidence can localize, but still cannot stand in for
     # the category-specific type-present lane.
     broad_positive = _score(
@@ -800,7 +985,7 @@ def held_out_2_self_test() -> None:
                 "check_type": "canonical_fact_prose_drift",
                 "severity": "warning",
                 "message": "Cress appears after the recorded death",
-                "entity_ids": [],
+                "entity_ids": ["scene:1"],
             }
         ],
         [{"type": "dead_character_acting", "keyword": "Cress", "scene_id": "scene:1"}],
