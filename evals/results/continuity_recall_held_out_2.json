@@ -7,18 +7,18 @@
       "genre": "coastal literary mystery",
       "voice": "wry close third, past tense",
       "planted": 28,
-      "localized_detected": 9,
-      "type_detected": 20,
+      "localized_detected": 8,
+      "type_detected": 4,
       "per_type": {
         "character_attribute": {
           "planted": 4,
           "localized": 2,
-          "type_present": 4
+          "type_present": 0
         },
         "dead_character_acting": {
           "planted": 4,
           "localized": 0,
-          "type_present": 4
+          "type_present": 0
         },
         "timeline_chronology_rewind": {
           "planted": 4,
@@ -28,12 +28,12 @@
         "knowledge_leak_before_learned": {
           "planted": 4,
           "localized": 0,
-          "type_present": 4
+          "type_present": 0
         },
         "world_rule_cost_violation": {
           "planted": 4,
-          "localized": 3,
-          "type_present": 4
+          "localized": 1,
+          "type_present": 0
         },
         "quantity_affordability": {
           "planted": 4,
@@ -42,7 +42,7 @@
         },
         "secret_leak": {
           "planted": 4,
-          "localized": 0,
+          "localized": 1,
           "type_present": 0
         }
       },
@@ -52,8 +52,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 3) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70G0JA7PNT20YA4HVAYZP98",
-            "scene:01M70G0JAPQY2NC9N9AESHQRYF"
+            "scene:01M70GA6NWY485YGWR22DEAE7R",
+            "scene:01M70GA6P446HG4HQX2MT38N5W"
           ]
         },
         {
@@ -61,8 +61,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 6) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70G0JBYKVVGKJB8Y2XEAQYA",
-            "scene:01M70G0JCDG94S8KX1VTR33KF7"
+            "scene:01M70GA6PV6DZGD3QKCRXMPXTC",
+            "scene:01M70GA6Q29HVTTNFQ279GNEBQ"
           ]
         },
         {
@@ -70,8 +70,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 5) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70G0JD62A4HC59N2WNGB6TM",
-            "scene:01M70G0JDHN2ZWV5HZBQM2E9SA"
+            "scene:01M70GA6QQVK0SGMBT5AEFMZSM",
+            "scene:01M70GA6QYVX74FKVMC82R612C"
           ]
         },
         {
@@ -79,32 +79,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 9) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70G0JE33KPHAEVRCX8MKBMB",
-            "scene:01M70G0JEE8VD55K6RWSJ2YCMB"
-          ]
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "severity": "info",
-          "message": "scene references world rule 'Tide gate cost' (no violation context detected) (bytes 81..90)",
-          "entity_ids": [
-            "scene:01M70G0J4N73HB26H16PPED7VN"
-          ]
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "severity": "info",
-          "message": "scene references world rule 'Tide gate cost' (no violation context detected) (bytes 244..253)",
-          "entity_ids": [
-            "scene:01M70G0J9PE93YWAFXM2XMSXT5"
-          ]
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "severity": "info",
-          "message": "scene references world rule 'Tide gate cost' (no violation context detected) (bytes 258..266)",
-          "entity_ids": [
-            "scene:01M70G0JB5Q756BKW8436G4EWQ"
+            "scene:01M70GA6REQDCSF7BTMRRX9YYY",
+            "scene:01M70GA6RNJGDHAFYG0ARYHAQN"
           ]
         },
         {
@@ -112,7 +88,7 @@
           "severity": "warning",
           "message": "scene references canonical key 'fingers' but not canonical value 'missing two on the left hand' (bytes 229..236)",
           "entity_ids": [
-            "scene:01M70G0JBGFSJ3DCWFHKKAPZD6"
+            "scene:01M70GA6PNM5JXH0WDZ9SHJ0PS"
           ]
         },
         {
@@ -120,7 +96,7 @@
           "severity": "warning",
           "message": "scene references canonical key 'scar' but not canonical value 'left brow' (bytes 290..294)",
           "entity_ids": [
-            "scene:01M70G0JCSMXGFYXQ7MT36NM45"
+            "scene:01M70GA6QFHSCA2ZXS59RE0TEX"
           ]
         }
       ]
@@ -130,18 +106,18 @@
       "genre": "pastoral science fantasy",
       "voice": "lyrical first person, present tense",
       "planted": 28,
-      "localized_detected": 10,
-      "type_detected": 20,
+      "localized_detected": 6,
+      "type_detected": 4,
       "per_type": {
         "character_attribute": {
           "planted": 4,
-          "localized": 2,
-          "type_present": 4
+          "localized": 1,
+          "type_present": 0
         },
         "dead_character_acting": {
           "planted": 4,
           "localized": 0,
-          "type_present": 4
+          "type_present": 0
         },
         "timeline_chronology_rewind": {
           "planted": 4,
@@ -151,12 +127,12 @@
         "knowledge_leak_before_learned": {
           "planted": 4,
           "localized": 0,
-          "type_present": 4
+          "type_present": 0
         },
         "world_rule_cost_violation": {
           "planted": 4,
-          "localized": 4,
-          "type_present": 4
+          "localized": 1,
+          "type_present": 0
         },
         "quantity_affordability": {
           "planted": 4,
@@ -175,8 +151,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 3) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70G0NJDXZSNQM9N7S2A0392",
-            "scene:01M70G0NJVNADJSTN7FQ4WEFTD"
+            "scene:01M70GA99KEGFF9ECA95K3RCNV",
+            "scene:01M70GA99XJD5QQ3STS970XPWK"
           ]
         },
         {
@@ -184,8 +160,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 6) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70G0NKZ6KYAG6VN8BZ1DPVD",
-            "scene:01M70G0NMD4XFX0AF0ZWR3Z902"
+            "scene:01M70GA9AS0G5SK0HBF6F5WSD5",
+            "scene:01M70GA9B2RQ9CXYY3TA4PXG4G"
           ]
         },
         {
@@ -193,8 +169,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 5) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70G0NPMPPAZQCP0A6D2NJ10",
-            "scene:01M70G0NQ3D3CNCY837KEA3C4P"
+            "scene:01M70GA9BTGNMXPHPWH42X2ANM",
+            "scene:01M70GA9C3KN7E0DE6MQDXR6ZT"
           ]
         },
         {
@@ -202,32 +178,8 @@
           "severity": "warning",
           "message": "scene is set earlier in story time (day 9) than the previous scene on thread 'main' but is not marked as a flashback",
           "entity_ids": [
-            "scene:01M70G0NSZ503MKVEVY7MVRJKV",
-            "scene:01M70G0NTQG0639H27CVDNSAXV"
-          ]
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "severity": "info",
-          "message": "scene references world rule 'Glass signal cost' (no violation context detected) (bytes 10..22)",
-          "entity_ids": [
-            "scene:01M70G0NHNKMKTVGXDWXR53CD6"
-          ]
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "severity": "info",
-          "message": "scene references world rule 'Glass signal cost' (no violation context detected) (bytes 319..331)",
-          "entity_ids": [
-            "scene:01M70G0NJ0917P4N0S6PD3PQFP"
-          ]
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "severity": "info",
-          "message": "scene references world rule 'Glass signal cost' (no violation context detected) (bytes 280..292)",
-          "entity_ids": [
-            "scene:01M70G0NK839EY8185JG3B2VGD"
+            "scene:01M70GA9CMHMDXZPYM3TN4NGMA",
+            "scene:01M70GA9CW693205QGNDHWJGE1"
           ]
         },
         {
@@ -235,15 +187,7 @@
           "severity": "warning",
           "message": "scene references canonical key 'scar' but not canonical value 'burn on the right forearm' (bytes 285..289)",
           "entity_ids": [
-            "scene:01M70G0NNMX8YX9DQ8T1D3BWQ6"
-          ]
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "severity": "info",
-          "message": "scene references world rule 'Glass signal cost' (no violation context detected) (bytes 293..305)",
-          "entity_ids": [
-            "scene:01M70G0NSZ503MKVEVY7MVRJKV"
+            "scene:01M70GA9BH5MK9Z0KFHCEH4G68"
           ]
         }
       ]
@@ -252,17 +196,17 @@
   "per_type": {
     "character_attribute": {
       "planted": 8,
-      "localized": 4,
-      "type_present": 8,
-      "localized_recall": 0.5,
-      "type_level_recall": 1.0
+      "localized": 3,
+      "type_present": 0,
+      "localized_recall": 0.375,
+      "type_level_recall": 0.0
     },
     "dead_character_acting": {
       "planted": 8,
       "localized": 0,
-      "type_present": 8,
+      "type_present": 0,
       "localized_recall": 0.0,
-      "type_level_recall": 1.0
+      "type_level_recall": 0.0
     },
     "timeline_chronology_rewind": {
       "planted": 8,
@@ -274,16 +218,16 @@
     "knowledge_leak_before_learned": {
       "planted": 8,
       "localized": 0,
-      "type_present": 8,
+      "type_present": 0,
       "localized_recall": 0.0,
-      "type_level_recall": 1.0
+      "type_level_recall": 0.0
     },
     "world_rule_cost_violation": {
       "planted": 8,
-      "localized": 7,
-      "type_present": 8,
-      "localized_recall": 0.875,
-      "type_level_recall": 1.0
+      "localized": 2,
+      "type_present": 0,
+      "localized_recall": 0.25,
+      "type_level_recall": 0.0
     },
     "quantity_affordability": {
       "planted": 8,
@@ -294,29 +238,18 @@
     },
     "secret_leak": {
       "planted": 8,
-      "localized": 0,
+      "localized": 1,
       "type_present": 0,
-      "localized_recall": 0.0,
+      "localized_recall": 0.125,
       "type_level_recall": 0.0
     }
   },
   "planted_total": 56,
-  "localized_detected": 19,
-  "type_level_detected": 40,
-  "overall_localized_recall": 0.3393,
-  "overall_type_level_recall": 0.7143,
+  "localized_detected": 14,
+  "type_level_detected": 8,
+  "overall_localized_recall": 0.25,
+  "overall_type_level_recall": 0.1429,
   "control_false_positive_count": 0,
   "control_info_count": 2,
-  "control_false_positives": [
-    {
-      "check_type": "world_rule_semantic_drift",
-      "severity": "info",
-      "message": "scene references world rule 'Tide gate cost' (no violation context detected) (bytes 81..90)"
-    },
-    {
-      "check_type": "world_rule_semantic_drift",
-      "severity": "info",
-      "message": "scene references world rule 'Glass signal cost' (no violation context detected) (bytes 10..22)"
-    }
-  ]
+  "control_false_positives": []
 }

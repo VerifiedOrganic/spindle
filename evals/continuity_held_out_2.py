@@ -21,32 +21,23 @@ from typing import Any, Iterable
 from continuity_recall import McpClient
 
 EXPECTED_CHECKS = {
-    "character_attribute": {
-        "character_consistency",
-        "character_attribute",
-        "canonical_fact_prose_drift",
-        "world_rule_semantic_drift",
-    },
-    "dead_character_acting": {
-        "dead_character_acting",
-        "character_consistency",
-        "canonical_fact_prose_drift",
-    },
-    "timeline_chronology_rewind": {"chronology", "temporal_coherence", "timeline_continuity"},
-    "knowledge_leak_before_learned": {
-        "knowledge_timing",
-        "knowledge_leak_before_learned",
-        "canonical_fact_prose_drift",
-    },
-    "world_rule_cost_violation": {
-        "world_rule_cost_violation",
-        "world_rule_semantic_drift",
-        "canonical_fact_prose_drift",
-    },
-    "quantity_affordability": {"affordability", "quantity_drift"},
+    "character_attribute": {"character_consistency", "character_attribute"},
+    "dead_character_acting": {"dead_character_acting"},
+    "timeline_chronology_rewind": {"chronology", "timeline_continuity"},
+    "knowledge_leak_before_learned": {"knowledge_timing"},
+    "world_rule_cost_violation": {"world_rule_cost_violation"},
+    "quantity_affordability": {"affordability"},
     "secret_leak": {"secret_leak"},
 }
-ALL_CHECK_TYPES = {name for names in EXPECTED_CHECKS.values() for name in names}
+
+BROAD_CHECKS = {
+    "canonical_fact_prose_drift",
+    "world_rule_semantic_drift",
+    "character_consistency",
+}
+ALL_CHECK_TYPES = {
+    name for names in EXPECTED_CHECKS.values() for name in names
+} | BROAD_CHECKS
 
 
 def c(kind: str, keyword: str, text: str) -> dict[str, Any]:
@@ -601,38 +592,40 @@ def _score(issues: Iterable[dict[str, Any]], plants: Iterable[dict[str, Any]]) -
         keyword = plant["keyword"].lower()
         scene_id = plant.get("scene_id")
         localized = any(
-            issue.get("check_type") in expected
+            issue.get("severity") in {"error", "warning"}
+            and issue.get("check_type") in (expected | BROAD_CHECKS)
             and (
                 keyword in str(issue.get("message", "")).lower()
                 or (scene_id and scene_id in issue.get("entity_ids", []))
             )
             for issue in issue_list
         )
-        type_present = any(issue.get("check_type") in expected for issue in issue_list)
+        type_present = any(
+            issue.get("severity") in {"error", "warning"}
+            and issue.get("check_type") in expected
+            for issue in issue_list
+        )
         per_type[kind]["localized"] += int(localized)
         per_type[kind]["type_present"] += int(type_present)
-    planted_count = sum(values["planted"] for values in per_type.values())
-    localized_count = sum(values["localized"] for values in per_type.values())
-    type_count = sum(values["type_present"] for values in per_type.values())
     relevant_issues = [
         issue
         for issue in issue_list
         if issue.get("check_type") in ALL_CHECK_TYPES
+        and issue.get("severity") in {"error", "warning"}
     ]
-    strict_issues = [
-        issue for issue in relevant_issues if issue.get("severity") in {"error", "warning"}
+    info_issues = [
+        issue
+        for issue in issue_list
+        if issue.get("check_type") in ALL_CHECK_TYPES
+        and issue.get("severity") not in {"error", "warning"}
     ]
     return {
         "per_type": per_type,
-        "planted": planted_count,
-        "localized_detected": localized_count,
-        "type_detected": type_count,
-        "control_false_positive_count": len(strict_issues)
-        if planted_count == 0
-        else 0,
-        "control_info_count": len(relevant_issues) - len(strict_issues)
-        if planted_count == 0
-        else 0,
+        "planted": len(plant_list),
+        "localized_detected": sum(values["localized"] for values in per_type.values()),
+        "type_detected": sum(values["type_present"] for values in per_type.values()),
+        "control_false_positive_count": len(relevant_issues) if not plant_list else 0,
+        "control_info_count": len(info_issues) if not plant_list else 0,
         "issues": [
             {
                 "check_type": issue.get("check_type"),
@@ -645,81 +638,29 @@ def _score(issues: Iterable[dict[str, Any]], plants: Iterable[dict[str, Any]]) -
     }
 
 
-def run_held_out_2_benchmark(
-    *,
-    binary: Path,
-    deep_check: bool = False,
-    agent_config: Path | None = None,
+def _aggregate_scores(
+    manuscript_scores: list[dict[str, Any]],
+    control_scores: list[dict[str, Any]],
+    manuscript_meta: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    if deep_check:
-        raise RuntimeError("held-out-2 currently runs the deterministic check surface only")
-    manuscripts = []
-    all_plants: list[dict[str, Any]] = []
-    all_issues: list[dict[str, Any]] = []
-    control_issues: list[dict[str, Any]] = []
-    with tempfile.TemporaryDirectory(prefix="spindle-held-out-2-") as temp:
-        root = Path(temp)
-        for spec in MANUSCRIPTS:
-            for planted in (True, False):
-                data_dir = root / f"{spec['name']}-{'planted' if planted else 'control'}"
-                data_dir.mkdir()
-                client = McpClient(binary, data_dir, agent_config=agent_config)
-                try:
-                    result = _build_manuscript(client, spec, planted=planted)
-                finally:
-                    client.close()
-                score = _score(result["issues"], result["plants"])
-                if planted:
-                    all_plants.extend(result["plants"])
-                    all_issues.extend(result["issues"])
-                    manuscripts.append(
-                        {
-                            "name": spec["name"],
-                            "genre": spec["genre"],
-                            "voice": spec["voice"],
-                            "planted": score["planted"],
-                            "localized_detected": score["localized_detected"],
-                            "type_detected": score["type_detected"],
-                            "per_type": score["per_type"],
-                            "issues": score["issues"],
-                        }
-                    )
-                else:
-                    control_issues.extend(result["issues"])
     per_type: dict[str, dict[str, int]] = {
         kind: {"planted": 0, "localized": 0, "type_present": 0}
         for kind in EXPECTED_CHECKS
     }
-    for plant in all_plants:
-        kind = plant["type"]
-        per_type[kind]["planted"] += 1
-        expected = EXPECTED_CHECKS[kind]
-        keyword = plant["keyword"].lower()
-        scene_id = plant.get("scene_id")
-        per_type[kind]["localized"] += int(
-            any(
-                issue.get("check_type") in expected
-                and (
-                    keyword in str(issue.get("message", "")).lower()
-                    or (scene_id and scene_id in issue.get("entity_ids", []))
-                )
-                for issue in all_issues
-            )
-        )
-        per_type[kind]["type_present"] += int(
-            any(issue.get("check_type") in expected for issue in all_issues)
-        )
-    relevant_control = [issue for issue in control_issues if issue.get("check_type") in ALL_CHECK_TYPES]
-    strict_control = [
-        issue for issue in relevant_control if issue.get("severity") in {"error", "warning"}
-    ]
+    for score in manuscript_scores:
+        for kind, values in score["per_type"].items():
+            per_type[kind]["planted"] += values["planted"]
+            per_type[kind]["localized"] += values["localized"]
+            per_type[kind]["type_present"] += values["type_present"]
     total = sum(values["planted"] for values in per_type.values())
     localized = sum(values["localized"] for values in per_type.values())
     type_level = sum(values["type_present"] for values in per_type.values())
+    control_issues = [issue for score in control_scores for issue in score["issues"]]
+    control_info = sum(score["control_info_count"] for score in control_scores)
     return {
         "corpus": "held-out-2",
         "description": "Two independently authored 15-chapter manuscripts; 4 planted contradictions per public category per manuscript; clean twin controls.",
-        "manuscripts": manuscripts,
+        "manuscripts": manuscript_meta,
         "per_type": {
             kind: {
                 **values,
@@ -737,17 +678,59 @@ def run_held_out_2_benchmark(
         "type_level_detected": type_level,
         "overall_localized_recall": round(localized / total, 4) if total else 0.0,
         "overall_type_level_recall": round(type_level / total, 4) if total else 0.0,
-        "control_false_positive_count": len(strict_control),
-        "control_info_count": len(relevant_control) - len(strict_control),
+        "control_false_positive_count": len(control_issues),
+        "control_info_count": control_info,
         "control_false_positives": [
             {
                 "check_type": issue.get("check_type"),
                 "severity": issue.get("severity"),
                 "message": issue.get("message"),
             }
-            for issue in relevant_control
+            for issue in control_issues
         ],
     }
+
+
+def run_held_out_2_benchmark(
+    *,
+    binary: Path,
+    deep_check: bool = False,
+    agent_config: Path | None = None,
+) -> dict[str, Any]:
+    if deep_check:
+        raise RuntimeError("held-out-2 currently runs the deterministic check surface only")
+    manuscript_scores: list[dict[str, Any]] = []
+    control_scores: list[dict[str, Any]] = []
+    manuscript_meta: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="spindle-held-out-2-") as temp:
+        root = Path(temp)
+        for spec in MANUSCRIPTS:
+            for planted in (True, False):
+                data_dir = root / f"{spec['name']}-{'planted' if planted else 'control'}"
+                data_dir.mkdir()
+                client = McpClient(binary, data_dir, agent_config=agent_config)
+                try:
+                    result = _build_manuscript(client, spec, planted=planted)
+                finally:
+                    client.close()
+                score = _score(result["issues"], result["plants"])
+                if planted:
+                    manuscript_scores.append(score)
+                    manuscript_meta.append(
+                        {
+                            "name": spec["name"],
+                            "genre": spec["genre"],
+                            "voice": spec["voice"],
+                            "planted": score["planted"],
+                            "localized_detected": score["localized_detected"],
+                            "type_detected": score["type_detected"],
+                            "per_type": score["per_type"],
+                            "issues": score["issues"],
+                        }
+                    )
+                else:
+                    control_scores.append(score)
+    return _aggregate_scores(manuscript_scores, control_scores, manuscript_meta)
 
 
 def held_out_2_self_test() -> None:
@@ -768,3 +751,74 @@ def held_out_2_self_test() -> None:
                 total_per_type[plant["type"]] += 1
         assert counts == {kind: 4 for kind in EXPECTED_CHECKS}, (spec["name"], counts)
     assert total_per_type == {kind: 8 for kind in EXPECTED_CHECKS}, total_per_type
+
+    # Info-only rule mentions are not contradiction credit.
+    info = _score(
+        [
+            {
+                "check_type": "world_rule_cost_violation",
+                "severity": "info",
+                "message": "scene references world rule 'x' (no violation context detected)",
+                "entity_ids": [],
+            }
+        ],
+        [{"type": "world_rule_cost_violation", "keyword": "without a token", "scene_id": "scene:1"}],
+    )
+    assert info["localized_detected"] == 0
+    assert info["type_detected"] == 0
+
+    # A broad check with evidence can localize, but still cannot stand in for
+    # the category-specific type-present lane.
+    broad_positive = _score(
+        [
+            {
+                "check_type": "canonical_fact_prose_drift",
+                "severity": "warning",
+                "message": "Cress appears after the recorded death",
+                "entity_ids": [],
+            }
+        ],
+        [{"type": "dead_character_acting", "keyword": "Cress", "scene_id": "scene:1"}],
+    )
+    assert broad_positive["per_type"]["dead_character_acting"]["localized"] == 1
+    assert broad_positive["per_type"]["dead_character_acting"]["type_present"] == 0
+
+    # A broad attribute warning cannot credit a death, knowledge, or cost plant.
+    broad = _score(
+        [
+            {
+                "check_type": "character_consistency",
+                "severity": "warning",
+                "message": "character texture is thin",
+                "entity_ids": [],
+            }
+        ],
+        [
+            {"type": "dead_character_acting", "keyword": "Nia", "scene_id": "scene:1"},
+            {"type": "knowledge_leak_before_learned", "keyword": "sabotage", "scene_id": "scene:1"},
+            {"type": "world_rule_cost_violation", "keyword": "relay", "scene_id": "scene:1"},
+        ],
+    )
+    for kind in (
+        "dead_character_acting",
+        "knowledge_leak_before_learned",
+        "world_rule_cost_violation",
+    ):
+        assert broad["per_type"][kind]["localized"] == 0
+        assert broad["per_type"][kind]["type_present"] == 0
+
+    # Aggregation keeps manuscript identity: one finding in one manuscript
+    # cannot credit another manuscript's plants.
+    empty = {kind: {"planted": 4, "localized": 0, "type_present": 0} for kind in EXPECTED_CHECKS}
+    found = {kind: dict(values) for kind, values in empty.items()}
+    found["dead_character_acting"]["type_present"] = 1
+    aggregate = _aggregate_scores(
+        [
+            {"per_type": found, "issues": []},
+            {"per_type": empty, "issues": []},
+        ],
+        [],
+        [],
+    )
+    assert aggregate["per_type"]["dead_character_acting"]["planted"] == 8
+    assert aggregate["per_type"]["dead_character_acting"]["type_present"] == 1
