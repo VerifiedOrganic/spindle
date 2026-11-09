@@ -822,7 +822,7 @@ def seed_held_out_manuscript(
                     chapter_number=bad_chapter,
                     description="quantity state drops two bands without a change reason",
                     expected_check_types=EXPECTED_CHECK_TYPES["quantity_affordability"],
-                    match_tokens=(ids.characters[character_key], "silver"),
+                    match_tokens=(ids.characters[character_key],),
                 )
             )
         for key, holder_key, leaker_key, _text, leak_chapter, _phrase in spec["secrets"]:
@@ -968,6 +968,28 @@ def held_out_self_test() -> None:
         ("knowledge_leak_before_learned", "knowledge_timing"),
         ("secret_leak", "secret_leak"),
     ]
+    # Quantity findings must match only their own subject, not every silver
+    # finding through a shared measure token.
+    quantity_items = [
+        PlantedContradiction(
+            contradiction_id=f"shape.quantity.{subject}",
+            contradiction_type="quantity_affordability",
+            variant="shape_test",
+            chapter_number=5,
+            description="shape test",
+            expected_check_types=("quantity_drift",),
+            match_tokens=(subject,),
+        )
+        for subject in ("character:quantity-a", "character:quantity-b")
+    ]
+    issue = {
+        "check_type": "quantity_drift",
+        "entity_ids": ["character:quantity-a"],
+        "message": "silver for 'character:quantity-a' jumped 2 tiers",
+    }
+    assert issue_matches_contradiction(issue, quantity_items[0])
+    assert not issue_matches_contradiction(issue, quantity_items[1])
+
     for contradiction_type, check_type in shape_cases:
         scene_id = "scene:held-out-shape"
         item = PlantedContradiction(
