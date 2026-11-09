@@ -10,7 +10,9 @@ CREATE TABLE history_undo (
     compensating_operation_id  TEXT,
     kind                       TEXT NOT NULL,
     summary                    TEXT NOT NULL,
-    created_at                 INTEGER NOT NULL
+    status                     TEXT NOT NULL DEFAULT 'completed',
+    created_at                 INTEGER NOT NULL,
+    updated_at                 INTEGER NOT NULL
 );
 
 CREATE INDEX idx_history_undo_project_branch

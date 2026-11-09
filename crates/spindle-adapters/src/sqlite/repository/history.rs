@@ -10,7 +10,9 @@ pub struct HistoryUndoRecord {
     pub compensating_operation_id: Option<String>,
     pub kind: String,
     pub summary: String,
+    pub status: String,
     pub created_at: i64,
+    pub updated_at: i64,
 }
 
 impl<'a> TryFrom<&Row<'a>> for HistoryUndoRecord {
@@ -25,13 +27,15 @@ impl<'a> TryFrom<&Row<'a>> for HistoryUndoRecord {
             compensating_operation_id: row::opt_text(row, 4)?,
             kind: row::text(row, 5)?,
             summary: row::text(row, 6)?,
-            created_at: row::int(row, 7)?,
+            status: row::text(row, 7)?,
+            created_at: row::int(row, 8)?,
+            updated_at: row::int(row, 9)?,
         })
     }
 }
 
 impl Repository {
-    pub async fn append_history_undo(
+    pub async fn begin_history_undo(
         &self,
         project_id: &str,
         branch_id: &str,
@@ -54,8 +58,8 @@ impl Repository {
             .write(move |conn| {
                 conn.execute(
                     "INSERT INTO history_undo (id, project_id, branch_id, source_operation_id, \
-                     compensating_operation_id, kind, summary, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                     compensating_operation_id, kind, summary, status, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?8)",
                     rusqlite::params![
                         &id,
                         &project_id,
@@ -73,6 +77,61 @@ impl Repository {
         Ok(id_for_return)
     }
 
+    pub async fn complete_history_undo(&self, id: &str) -> Result<()> {
+        let id = id.to_string();
+        let now = timestamp_to_micros(chrono::Utc::now());
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE history_undo SET status = 'completed', updated_at = ?1 WHERE id = ?2",
+                    rusqlite::params![now, &id],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn fail_history_undo(&self, id: &str) -> Result<()> {
+        let id = id.to_string();
+        let now = timestamp_to_micros(chrono::Utc::now());
+        self.inner
+            .pool
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE history_undo SET status = 'failed', updated_at = ?1 WHERE id = ?2",
+                    rusqlite::params![now, &id],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn find_history_undo_by_source(
+        &self,
+        project_id: &str,
+        source_operation_id: &str,
+    ) -> Result<Option<HistoryUndoRecord>> {
+        let project_id = project_id.to_string();
+        let source_operation_id = source_operation_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT id, project_id, branch_id, source_operation_id, \
+                     compensating_operation_id, kind, summary, status, created_at, updated_at \
+                     FROM history_undo WHERE project_id = ?1 AND source_operation_id = ?2 \
+                     ORDER BY created_at DESC LIMIT 1",
+                )?;
+                stmt.query_row(
+                    rusqlite::params![&project_id, &source_operation_id],
+                    |row| HistoryUndoRecord::try_from(row),
+                )
+                .optional_inner()
+            })
+            .await
+    }
+
     pub async fn list_history_undo_by_project_and_branch(
         &self,
         project_id: &str,
@@ -85,7 +144,7 @@ impl Repository {
             .read(move |conn| {
                 let mut stmt = conn.prepare_cached(
                     "SELECT id, project_id, branch_id, source_operation_id, \
-                     compensating_operation_id, kind, summary, created_at \
+                     compensating_operation_id, kind, summary, status, created_at, updated_at \
                      FROM history_undo WHERE project_id = ?1 AND branch_id = ?2 \
                      ORDER BY created_at DESC",
                 )?;

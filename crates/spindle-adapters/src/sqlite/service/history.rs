@@ -178,7 +178,14 @@ impl SqliteSpindleService {
                     summary: record.summary,
                     created_at: micros_to_rfc3339(record.created_at),
                     undo_support: UndoSupport::Irreversible,
-                    undo_reason: Some("undo records are audit history".to_string()),
+                    undo_reason: Some(if record.status == "completed" {
+                        "undo records are audit history".to_string()
+                    } else {
+                        format!(
+                            "undo audit is {}; retry undo_change to reconcile",
+                            record.status
+                        )
+                    }),
                     undone: false,
                 });
             }
@@ -225,11 +232,37 @@ impl SqliteSpindleService {
                     .iter()
                     .find(|app| app.id == id)
                     .ok_or_else(|| anyhow::anyhow!("style application not found"))?;
-                anyhow::ensure!(
-                    app.rollback_status != "rolled_back",
-                    "style application is not reversible ({})",
-                    app.rollback_status
-                );
+                let existing = self
+                    .repository
+                    .find_history_undo_by_source(&input.project_id, &input.operation_id)
+                    .await?;
+                if app.rollback_status == "rolled_back" {
+                    if let Some(existing) = existing.clone() {
+                        if existing.status != "completed" {
+                            self.repository.complete_history_undo(&existing.id).await?;
+                        }
+                        return Ok(UndoChangeOutput {
+                            operation_id: input.operation_id,
+                            kind: "style_apply".to_string(),
+                            project_id: input.project_id,
+                            branch_id: existing.branch_id,
+                            affected: vec![UndoAffected {
+                                table: "style_profile_application".to_string(),
+                                id: app.id.clone(),
+                                summary: "already rolled back; undo audit reconciled".to_string(),
+                            }],
+                            compensating_operation_id: existing.compensating_operation_id,
+                            dry_run: false,
+                            message:
+                                "style application was already rolled back; undo audit completed"
+                                    .to_string(),
+                        });
+                    }
+                    anyhow::bail!(
+                        "style application is not reversible ({})",
+                        app.rollback_status
+                    );
+                }
                 let head = apps
                     .iter()
                     .filter(|candidate| candidate.rollback_status != "rolled_back")
@@ -266,25 +299,42 @@ impl SqliteSpindleService {
                         message: "dry run: would roll back the captured style effects".to_string(),
                     });
                 }
-                let rolled = self
+                let compensating = format!("style_application_rollback:{}", app.id);
+                let undo_id = match existing {
+                    Some(existing) if existing.status != "completed" => existing.id,
+                    _ => {
+                        self.repository
+                            .begin_history_undo(
+                                &input.project_id,
+                                &branch_id,
+                                &input.operation_id,
+                                Some(&compensating),
+                                "style_apply",
+                                &format!("rolled back style application {}", app.id),
+                            )
+                            .await?
+                    }
+                };
+                let rolled = match self
                     .rollback_style_profile_application(
                         spindle_core::style::RollbackStyleProfileApplicationInput {
                             project_id: input.project_id.clone(),
                             application_id: app.id.clone(),
                         },
                     )
-                    .await?;
-                let compensating = format!("style_application_rollback:{}", app.id);
-                self.repository
-                    .append_history_undo(
-                        &input.project_id,
-                        &branch_id,
-                        &input.operation_id,
-                        Some(&compensating),
-                        "style_apply",
-                        &format!("rolled back style application {}", app.id),
-                    )
-                    .await?;
+                    .await
+                {
+                    Ok(rolled) => rolled,
+                    Err(error) => {
+                        let _ = self.repository.fail_history_undo(&undo_id).await;
+                        return Err(error);
+                    }
+                };
+                let audit_pending = self
+                    .repository
+                    .complete_history_undo(&undo_id)
+                    .await
+                    .is_err();
                 Ok(UndoChangeOutput {
                     operation_id: input.operation_id,
                     kind: "style_apply".to_string(),
@@ -293,10 +343,17 @@ impl SqliteSpindleService {
                     affected,
                     compensating_operation_id: Some(compensating),
                     dry_run: false,
-                    message: format!(
-                        "style rollback recorded; {} findings invalidated",
-                        rolled.invalidated_validator_findings
-                    ),
+                    message: if audit_pending {
+                        format!(
+                            "style rollback applied; undo audit {} is pending recovery; {} findings invalidated",
+                            undo_id, rolled.invalidated_validator_findings
+                        )
+                    } else {
+                        format!(
+                            "style rollback recorded; {} findings invalidated",
+                            rolled.invalidated_validator_findings
+                        )
+                    },
                 })
             }
             "style_patch" => {
@@ -308,11 +365,36 @@ impl SqliteSpindleService {
                     .iter()
                     .find(|audit| audit.id == id)
                     .ok_or_else(|| anyhow::anyhow!("style revision patch audit not found"))?;
-                anyhow::ensure!(
-                    audit.rollback_status != "rolled_back",
-                    "style revision patch is not reversible ({})",
-                    audit.rollback_status
-                );
+                let existing = self
+                    .repository
+                    .find_history_undo_by_source(&input.project_id, &input.operation_id)
+                    .await?;
+                if audit.rollback_status == "rolled_back" {
+                    if let Some(existing) = existing.clone() {
+                        if existing.status != "completed" {
+                            self.repository.complete_history_undo(&existing.id).await?;
+                        }
+                        return Ok(UndoChangeOutput {
+                            operation_id: input.operation_id,
+                            kind: "style_patch".to_string(),
+                            project_id: input.project_id,
+                            branch_id: existing.branch_id,
+                            affected: vec![UndoAffected {
+                                table: "style_revision_patch_audit".to_string(),
+                                id: audit.id.clone(),
+                                summary: "already rolled back; undo audit reconciled".to_string(),
+                            }],
+                            compensating_operation_id: existing.compensating_operation_id,
+                            dry_run: false,
+                            message: "style patch was already rolled back; undo audit completed"
+                                .to_string(),
+                        });
+                    }
+                    anyhow::bail!(
+                        "style revision patch is not reversible ({})",
+                        audit.rollback_status
+                    );
+                }
                 let head = audits
                     .iter()
                     .filter(|candidate| candidate.rollback_status != "rolled_back")
@@ -349,25 +431,42 @@ impl SqliteSpindleService {
                         message: "dry run: would restore the captured scene text".to_string(),
                     });
                 }
-                let rolled = self
+                let compensating = format!("style_patch_rollback:{}", audit.id);
+                let undo_id = match existing {
+                    Some(existing) if existing.status != "completed" => existing.id,
+                    _ => {
+                        self.repository
+                            .begin_history_undo(
+                                &input.project_id,
+                                &branch_id,
+                                &input.operation_id,
+                                Some(&compensating),
+                                "style_patch",
+                                &format!("rolled back style revision patch {}", audit.id),
+                            )
+                            .await?
+                    }
+                };
+                let rolled = match self
                     .rollback_style_revision_patch(
                         spindle_core::style::RollbackStyleRevisionPatchInput {
                             project_id: input.project_id.clone(),
                             audit_id: audit.id.clone(),
                         },
                     )
-                    .await?;
-                let compensating = format!("style_patch_rollback:{}", audit.id);
-                self.repository
-                    .append_history_undo(
-                        &input.project_id,
-                        &branch_id,
-                        &input.operation_id,
-                        Some(&compensating),
-                        "style_patch",
-                        &format!("rolled back style revision patch {}", audit.id),
-                    )
-                    .await?;
+                    .await
+                {
+                    Ok(rolled) => rolled,
+                    Err(error) => {
+                        let _ = self.repository.fail_history_undo(&undo_id).await;
+                        return Err(error);
+                    }
+                };
+                let audit_pending = self
+                    .repository
+                    .complete_history_undo(&undo_id)
+                    .await
+                    .is_err();
                 Ok(UndoChangeOutput {
                     operation_id: input.operation_id,
                     kind: "style_patch".to_string(),
@@ -376,10 +475,18 @@ impl SqliteSpindleService {
                     affected,
                     compensating_operation_id: Some(compensating),
                     dry_run: false,
-                    message: format!(
-                        "style patch rollback recorded; {} scenes restored",
-                        rolled.restored_scene_ids.len()
-                    ),
+                    message: if audit_pending {
+                        format!(
+                            "style patch rollback applied; undo audit {} is pending recovery; {} scenes restored",
+                            undo_id,
+                            rolled.restored_scene_ids.len()
+                        )
+                    } else {
+                        format!(
+                            "style patch rollback recorded; {} scenes restored",
+                            rolled.restored_scene_ids.len()
+                        )
+                    },
                 })
             }
             "save_point" => anyhow::bail!(

@@ -525,3 +525,81 @@ async fn unified_undo_only_rolls_back_the_current_applied_style_head() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn pending_style_undo_audit_reconciles_after_restart() {
+    let (tmp, svc) = fresh_service().await;
+    let project_id = project(&svc, "Style Undo Recovery").await;
+    let profile_id = profile(&svc, &tmp, &project_id).await;
+    svc.apply_style_profile(ApplyStyleProfileInput {
+        project_id: project_id.clone(),
+        profile_id,
+        mode: StyleProfileApplyMode::Merge,
+        force: None,
+        dry_run: false,
+    })
+    .await
+    .unwrap();
+    let app = svc
+        .list_style_profile_applications(ListStyleProfileApplicationsInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap()
+        .applications
+        .into_iter()
+        .next()
+        .expect("style application");
+
+    // Simulate a crash after the compensation persisted but before the unified
+    // undo audit was marked completed.
+    svc.rollback_style_profile_application(
+        spindle_core::style::RollbackStyleProfileApplicationInput {
+            project_id: project_id.clone(),
+            application_id: app.id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let branch_id = svc
+        .repository()
+        .active_branch_id_public(&project_id)
+        .await
+        .unwrap();
+    let source = format!("style_application:{}", app.id);
+    let undo_id = svc
+        .repository()
+        .begin_history_undo(
+            &project_id,
+            &branch_id,
+            &source,
+            Some(&format!("style_application_rollback:{}", app.id)),
+            "style_apply",
+            "interrupted style undo",
+        )
+        .await
+        .unwrap();
+
+    let recovered = svc
+        .undo_change(spindle_core::models::UndoChangeInput {
+            project_id: project_id.clone(),
+            operation_id: source.clone(),
+            expected_head: app.id.clone(),
+            dry_run: false,
+        })
+        .await
+        .unwrap();
+    assert!(
+        recovered.message.contains("already rolled back"),
+        "{}",
+        recovered.message
+    );
+    let audit = svc
+        .repository()
+        .find_history_undo_by_source(&project_id, &source)
+        .await
+        .unwrap()
+        .expect("undo audit");
+    assert_eq!(audit.id, undo_id);
+    assert_eq!(audit.status, "completed");
+}
