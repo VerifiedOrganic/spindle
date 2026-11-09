@@ -581,6 +581,113 @@ async fn commit_scene_concurrent_creates_with_expected_zero_only_one_wins() {
 }
 
 #[tokio::test]
+async fn commit_scene_rejects_stale_authoring_handoff_plan_revision() {
+    use crate::sqlite::records::{AuthoringRun, AuthoringRunChapter, AuthoringRunScene};
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let project = project(&svc, "commit-handoff").await;
+    let branch_id = svc
+        .repository
+        .active_branch_id_public(&project.project_id)
+        .await
+        .unwrap();
+    let run_id = format!(
+        "authoring_run:{}",
+        ulid::Ulid::new().to_string().to_lowercase()
+    );
+    let now = chrono::Utc::now();
+    svc.repository
+        .save_authoring_run(
+            AuthoringRun {
+                id: run_id.clone(),
+                project_id: project.project_id.clone(),
+                active_branch_id: branch_id,
+                book_number: 1,
+                start_chapter: 1,
+                end_chapter: 1,
+                checkpoint_interval: 1,
+                last_checkpoint_end_chapter: 0,
+                artifacts_dir: "../artifacts".to_string(),
+                editorial_directives: Vec::new(),
+                status: "active".to_string(),
+                created_at: now,
+                updated_at: now,
+                mining_policy: None,
+                max_revise_attempts: None,
+                checkpoint_policy: None,
+                replan_policy: None,
+            },
+            vec![AuthoringRunChapter {
+                authoring_run_id: run_id.clone(),
+                chapter_number: 1,
+                planned: true,
+                synopsis: "stale handoff".to_string(),
+                pov_character_id: None,
+                status: "in_progress".to_string(),
+                summary_saved: false,
+                summary_artifact_path: None,
+                replan_status: None,
+                replan_detail: None,
+            }],
+            vec![AuthoringRunScene {
+                authoring_run_id: run_id.clone(),
+                chapter_number: 1,
+                scene_order: 1,
+                character_ids: Vec::new(),
+                location_id: "location:x".to_string(),
+                content_rating: "general".to_string(),
+                tone: None,
+                source_path: None,
+                phase: "draft_saved".to_string(),
+                scene_id: None,
+                scene_artifact_path: None,
+                draft_diagnostics: Some(serde_json::json!({
+                    "superseded_handoff_plan_revision": 1,
+                    "handoff_plan_revision": 1
+                })),
+                blocked_reason: None,
+                research_required: None,
+                research_tags: Vec::new(),
+                explicit_query: None,
+                mine_status: None,
+                mine_detail: None,
+                verify_status: None,
+                verify_detail: None,
+                revise_attempts: 0,
+                last_finding_fingerprint: None,
+            }],
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut input = base_commit(&project.project_id, "Stale handoff prose must not commit.");
+    input.run_id = Some(run_id);
+    let error = svc.commit_scene(input).await.unwrap_err();
+    assert!(
+        error.to_string().contains("stale host draft handoff"),
+        "{error:#}"
+    );
+    assert!(
+        svc.repository
+            .find_scene_by_natural_key(
+                &project.project_id,
+                &svc.repository
+                    .active_branch_id_public(&project.project_id)
+                    .await
+                    .unwrap(),
+                1,
+                1,
+                1
+            )
+            .await
+            .unwrap()
+            .is_none(),
+        "a rejected handoff must not create a scene"
+    );
+}
+
+#[tokio::test]
 async fn commit_scene_retcon_scan_uses_proposed_revision_text() {
     let (_tmp, svc) = fresh_service_local().await;
     let project = project(&svc, "commit-retcon").await;

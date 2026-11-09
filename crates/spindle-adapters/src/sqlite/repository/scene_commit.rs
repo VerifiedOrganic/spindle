@@ -116,6 +116,16 @@ impl CanonTransaction<'_> {
                 crate::format::SCENE_RADIX
             );
         }
+        // An in-run commit must honor the same stale handoff-plan guard as
+        // save_scene_draft: a superseded handoff may not commit stale prose.
+        super::authoring::check_active_run_scene_handoff_plan_revision_in_conn(
+            self.raw_tx(),
+            project_id,
+            branch_id,
+            input.book_number,
+            input.chapter_number,
+            input.scene_order,
+        )?;
         let book_id = self.book_id_in_tx(project_id, input.book_number)?;
         let chapter_id =
             self.chapter_id_in_tx(project_id, input.book_number, input.chapter_number)?;
