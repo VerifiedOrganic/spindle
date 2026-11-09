@@ -519,22 +519,6 @@ impl SqliteSpindleService {
             .as_ref()
             .and_then(|clock| clock.temporal_mode.as_deref())
             .is_some_and(|mode| mode.eq_ignore_ascii_case("flashback"));
-        let framed_scene = [
-            "letter",
-            "dream",
-            "flashback",
-            "memory",
-            "remembered",
-            "recording",
-            "testimony",
-            "portrait",
-            "photograph",
-            "legend",
-            "rumor",
-            "rumour",
-        ]
-        .iter()
-        .any(|frame| contains_case_insensitive_word_boundary(&scene.full_text, frame));
         for (character_id, character) in &characters_by_id {
             if is_flashback {
                 continue;
@@ -604,9 +588,6 @@ impl SqliteSpindleService {
             // death even when the prose uses a pronoun or an unlisted verb.
             // Otherwise require a named/alive action to avoid mere mentions.
             if !has_action && !(current_scene_state && life_death.is_some()) {
-                continue;
-            }
-            if framed_scene && !current_scene_state && life_death.is_some() {
                 continue;
             }
             let dead_status = match (state_death, life_death) {
@@ -2191,6 +2172,21 @@ fn has_named_character_action(text: &str, aliases: &[String]) -> bool {
                         .trim_end()
                         .ends_with(frame)
                 });
+                let framed_prefix = [
+                    "letter",
+                    "memory",
+                    "remembered",
+                    "recording",
+                    "portrait",
+                    "photograph",
+                    "legend",
+                    "rumor",
+                    "rumour",
+                    "years ago",
+                    "before the death",
+                ]
+                .iter()
+                .any(|frame| contains_case_insensitive_word_boundary(before, frame));
                 let framed_subject = [
                     "on the recording,",
                     "in the recording,",
@@ -2201,7 +2197,7 @@ fn has_named_character_action(text: &str, aliases: &[String]) -> bool {
                 ]
                 .iter()
                 .any(|frame| before.trim_end().ends_with(frame));
-                if hypothetical || framed || framed_subject {
+                if hypothetical || framed || framed_prefix || framed_subject {
                     return false;
                 }
                 if lower[..start]
@@ -2236,12 +2232,15 @@ fn has_named_character_action(text: &str, aliases: &[String]) -> bool {
 /// narrative verb. Keep the phrase list tight so memory/negation controls do
 /// not become dead-character hits.
 fn has_named_character_alive_assertion(text: &str, aliases: &[String]) -> bool {
+    // Longest first so "was still alive" wins before "was alive" prefix checks.
     const ALIVE_PHRASES: &[&str] = &[
+        "was still alive",
+        "is still alive",
+        "was still breathing",
+        "is still breathing",
         "was alive",
         "is alive",
         "still alive",
-        "was still alive",
-        "is still alive",
         "was breathing",
         "is breathing",
         "still breathing",
@@ -2249,24 +2248,73 @@ fn has_named_character_alive_assertion(text: &str, aliases: &[String]) -> bool {
         "had survived",
         "has survived",
     ];
+    const NEGATED: &[&str] = &["was not", "wasn't", "is not", "isn't", "never", "no longer"];
+    const FRAMES: &[&str] = &[
+        "letter",
+        "dream",
+        "memory",
+        "remembered",
+        "flashback",
+        "recording",
+        "portrait",
+        "photograph",
+        "legend",
+        "rumor",
+        "rumour",
+        "years ago",
+        "before the death",
+        "before her death",
+        "before his death",
+    ];
+    const HISTORICAL: &[&str] = &["years ago", "long ago", "in the past", "before the death"];
     text.split(['.', '!', '?', '\n']).any(|sentence| {
         let lower = sentence.to_ascii_lowercase();
         aliases.iter().any(|alias| {
             let alias = alias.trim().to_ascii_lowercase();
-            !alias.is_empty()
-                && lower.match_indices(&alias).any(|(start, matched)| {
-                    lower[..start]
-                        .chars()
-                        .next_back()
-                        .is_none_or(|ch| !ch.is_alphanumeric())
-                        && lower[start + matched.len()..].starts_with(|ch: char| ch.is_whitespace())
-                        && ALIVE_PHRASES.iter().any(|phrase| lower.contains(phrase))
+            if alias.is_empty() {
+                return false;
+            }
+            lower.match_indices(&alias).any(|(start, matched)| {
+                let before_ok = lower[..start]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|ch| !ch.is_alphanumeric());
+                if !before_ok {
+                    return false;
+                }
+                let before = &lower[..start];
+                if FRAMES
+                    .iter()
+                    .any(|frame| contains_case_insensitive_word_boundary(before, frame))
+                    || ["if", "unless", "suppose", "supposing"]
+                        .iter()
+                        .any(|word| contains_case_insensitive_word_boundary(before, word))
+                {
+                    return false;
+                }
+                let tail = lower[start + matched.len()..].trim_start_matches(|ch: char| {
+                    ch.is_whitespace() || matches!(ch, ',' | ';' | ':')
+                });
+                if NEGATED.iter().any(|negation| tail.starts_with(negation)) {
+                    return false;
+                }
+                ALIVE_PHRASES.iter().any(|phrase| {
+                    tail.strip_prefix(phrase).is_some_and(|rest| {
+                        (rest.is_empty()
+                            || rest.starts_with(|ch: char| {
+                                ch.is_whitespace() || matches!(ch, ',' | ';' | '.')
+                            }))
+                            && !HISTORICAL
+                                .iter()
+                                .any(|marker| rest.to_ascii_lowercase().contains(marker))
+                    })
                 })
+            })
         })
     })
 }
 
-/// Broad, conservative verb shape fallback: past-tense/present-participle
+/// Broad, conservative verb shape fallback/// Broad, conservative verb shape fallback: past-tense/present-participle
 /// narrative verbs not enumerated above. State adjectives that happen to end
 /// in -ed are excluded so "was tired" is not an action.
 fn looks_like_narrative_verb(verb: &str) -> bool {
@@ -2280,7 +2328,7 @@ fn looks_like_narrative_verb(verb: &str) -> bool {
 
 #[cfg(test)]
 mod dead_action_tests {
-    use super::has_named_character_action;
+    use super::{has_named_character_action, has_named_character_alive_assertion};
 
     #[test]
     fn named_actions_require_unqualified_narrative_evidence() {
@@ -2315,5 +2363,43 @@ mod dead_action_tests {
         ] {
             assert!(!has_named_character_action(text, &aliases), "{text}");
         }
+    }
+
+    #[test]
+    fn alive_assertions_bind_to_the_named_subject_and_ignore_history() {
+        let aliases = vec!["Veyra Vale".to_string(), "Veyra".to_string()];
+        assert!(has_named_character_alive_assertion(
+            "Veyra was still alive when the door opened.",
+            &aliases
+        ));
+        assert!(!has_named_character_alive_assertion(
+            "At Veyra Vale's grave, Tomas was still alive.",
+            &aliases
+        ));
+        assert!(!has_named_character_alive_assertion(
+            "Veyra was alive years ago.",
+            &aliases
+        ));
+        assert!(!has_named_character_alive_assertion(
+            "Veyra was not alive.",
+            &aliases
+        ));
+        assert!(!has_named_character_alive_assertion(
+            "In the letter, Veyra said she was alive.",
+            &aliases
+        ));
+    }
+
+    #[test]
+    fn action_framing_is_candidate_local() {
+        let aliases = vec!["Veyra".to_string()];
+        assert!(!has_named_character_action(
+            "A letter from Veyra said she opened the door.",
+            &aliases
+        ));
+        assert!(has_named_character_action(
+            "A letter lay on the desk. Veyra opened the door.",
+            &aliases
+        ));
     }
 }
