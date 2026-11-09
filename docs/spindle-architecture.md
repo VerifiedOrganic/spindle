@@ -518,6 +518,42 @@ Three enforcement surfaces:
 - **Reader-visibility rule for reader artifacts** (below) is deliberately stricter
   than the character-facing context gate.
 
+## Search embedding index generations
+
+Migration V0056 replaces the single hard-coded `FLOAT[64]` vec0 table with
+provider/dimension-aware generations. A generation identity includes provider,
+model, dimension, metric, normalization and version; each generation owns a
+validated dynamic vec0 table (`vec_embedding_gen_<hash>`), while
+`search_embedding` stores `generation_id`, `dimension` and a variable-length
+`dimension * 4` BLOB. Existing token-hash-v1 rows are preserved as generation
+`token-hash-v1:64`; no vector is padded, truncated or reinterpreted.
+
+Every stored or queried vector is checked for emptiness, exact dimension,
+non-finite values and f32 overflow before it reaches vec0. Queries load the
+project's active generation and only search that generation's table, so a query
+from a different provider/model/dimension is rejected rather than compared;
+`search_bible`, semantic scene recall and fallback entity resolution all use
+`embed_query_for_active_generation`.
+
+Rebuilds are resumable and non-destructive: the target generation and its table
+are created first, already-written rows are skipped on restart, and the active
+generation keeps serving until completeness and an optional rank-based retrieval
+quality probe pass. Generation build/active/retired/failed lifecycle is tracked per project in
+`embedding_generation_project`, so the same shared spec/table can be migrated by
+different projects independently. Activation atomically updates the project's
+`embedding_index_state` and retires the previous generation with a rollback
+window; rollback replays the previous pointer while its window is open. Active
+document writes and source deletes/clears bump a per-project `write_epoch` in
+the same transaction; activation requires the epoch to be unchanged and a
+rebuild retries catch-up when it moves, so an edit, delete or new entity cannot
+be lost between the source snapshot and the pointer switch. Source rows and the
+epoch are read in one snapshot transaction. A provider
+failure or failed quality gate marks the target failed and leaves the serving
+index untouched. Per-project active state lets different projects migrate
+independently. The legacy token-hash fallback remains available when no HTTP
+embedding route is configured; an explicitly configured HTTP generation that
+fails degrades to honest unavailable status rather than fabricating a vector.
+
 ## Run journal, SSE & operator console
 
 Each authoring run appends an **append-only event journal** (`authoring_run_event`,
@@ -713,6 +749,7 @@ resume unchanged). The continuity and editorial-loop migrations:
 | V0050 | planning apply attempts, operation audit/output fields and deferred semantic-index refresh queue |
 | V0051 | append-only canon event store (`canon_claim`, `canon_decision`, `canon_event`, `canon_source_map`, rebuildable `canon_projection_state`, `canon_projection_checkpoint`) |
 | V0052 | planning route-generation attempt ledger (`planning_generation_attempt`) with prompt/schema hashes, usage receipts, JSON-pointer findings and host-fallback envelopes |
+| V0056 | provider/dimension-aware embedding index generations: variable-length `search_embedding`, generation registry, per-project active/previous state, legacy 64-dimension preservation |
 
 ## Where to make changes
 

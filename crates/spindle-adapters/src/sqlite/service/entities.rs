@@ -351,8 +351,10 @@ impl SqliteSpindleService {
             SearchBibleMode::Semantic => {
                 // Use the configured embedder to produce a query vector,
                 // then ask the vec0 mirror for the k nearest matches.
-                let embedding_session = self.repository.model_router().embedding_session()?;
-                let query_embedding = embedding_session.embed_text(&input.query).await?;
+                let query_embedding = self
+                    .repository
+                    .embed_query_for_active_generation(&project_id, &input.query)
+                    .await?;
                 let hits = self
                     .repository
                     .knn_search_embeddings(&project_id, Some(&branch_id), &query_embedding, limit)

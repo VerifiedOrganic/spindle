@@ -87,8 +87,10 @@ impl SqliteSpindleService {
 
         // If FTS turns up no hits, fall back to vec0 semantic search.
         if matches.is_empty() {
-            let embedding_session = self.repository.model_router().embedding_session()?;
-            let query_embedding = embedding_session.embed_text(query).await?;
+            let query_embedding = self
+                .repository
+                .embed_query_for_active_generation(&input.project_id, query)
+                .await?;
             let knn = self
                 .repository
                 .knn_search_embeddings(&input.project_id, Some(&branch_id), &query_embedding, limit)
@@ -232,8 +234,8 @@ impl SqliteSpindleService {
             .await?;
 
         // 2. Re-embed each searchable entity. Each refresh_entity_index call
-        //    upserts one row into search_embedding which the AFTER trigger
-        //    mirrors into vec_search_embedding.
+        //    upserts one row into search_embedding and the active generation's
+        //    validated vec0 table.
         let mut indexed = 0usize;
 
         for character in self

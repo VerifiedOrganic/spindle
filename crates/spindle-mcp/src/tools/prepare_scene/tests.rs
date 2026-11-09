@@ -1,5 +1,8 @@
 use super::*;
 use serde_json::json;
+use spindle_core::embeddings::{
+    EmbeddingGenerationSpecV1, EmbeddingMetricV1, EmbeddingNormalizationV1, EmbeddingProviderKindV1,
+};
 use spindle_core::models::{PrepareSceneOutput, StoryPlacement};
 
 async fn invoke_json(router: &ToolRouter, name: &str, args: Value) -> Value {
@@ -875,6 +878,45 @@ async fn prepare_scene_preserves_hard_constraints_and_reports_truncation_and_una
 
     // 4. When the semantic-recall embedding backend fails, prepare_scene degrades gracefully
     // and records semantic_references in coverage.unavailable_passes rather than aborting.
+    // Pin the project to an HTTP generation first: the preserved legacy index is
+    // token-hash and must keep working even when an unrelated HTTP route is broken.
+    let generation = router
+        .service
+        .repository()
+        .create_embedding_generation(EmbeddingGenerationSpecV1 {
+            provider: EmbeddingProviderKindV1::Http,
+            model: "embed-v1".into(),
+            dimension: 1536,
+            metric: EmbeddingMetricV1::Cosine,
+            normalization: EmbeddingNormalizationV1::L2,
+            version: "broken-http-v1".into(),
+        })
+        .await
+        .unwrap();
+    let previous = router
+        .service
+        .repository()
+        .active_embedding_generation(&project_id)
+        .await
+        .unwrap();
+    let write_epoch = router
+        .service
+        .repository()
+        .embedding_write_epoch(&project_id)
+        .await
+        .unwrap();
+    router
+        .service
+        .repository()
+        .activate_embedding_generation(
+            &project_id,
+            &generation.generation_id,
+            &previous.generation_id,
+            chrono::Utc::now().timestamp_micros() + 3_600_000_000,
+            write_epoch,
+        )
+        .await
+        .unwrap();
     let tmp_cfg =
         std::env::temp_dir().join(format!("spindle-broken-embed-{}.toml", std::process::id()));
     std::fs::write(
