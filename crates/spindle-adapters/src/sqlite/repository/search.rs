@@ -39,52 +39,45 @@ impl Repository {
         entity_id: &str,
         document: &SearchDocument,
     ) -> Result<()> {
-        let embedding_session = self.inner.model_router.embedding_session()?;
-        let embedding = embedding_session.embed_text(&document.content).await?;
-        let embedding_blob = pack_embedding(&embedding);
-        let version = self.inner.model_router.embedding_version()?;
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
-        let entity_id_owned = entity_id.to_string();
-        let entity_table = document.entity_table.clone();
-        let title = document.title.clone();
-        let excerpt = document.excerpt.clone();
-        let content = document.content.clone();
-        let now = timestamp_to_micros(chrono::Utc::now());
-        let new_id = mint_id("search_embedding");
-
-        self.inner
-            .pool
-            .write(move |conn| {
-                conn.execute(
-                    "INSERT INTO search_embedding (id, project_id, branch_id, entity_table, \
-                     entity_id, title, excerpt, content, embedding_version, embedding, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
-                     ON CONFLICT (project_id, branch_id, entity_table, entity_id) DO UPDATE SET \
-                        title = excluded.title, \
-                        excerpt = excluded.excerpt, \
-                        content = excluded.content, \
-                        embedding_version = excluded.embedding_version, \
-                        embedding = excluded.embedding, \
-                        updated_at = excluded.updated_at",
-                    rusqlite::params![
-                        &new_id,
-                        &project_id,
-                        &branch_id,
-                        &entity_table,
-                        &entity_id_owned,
-                        &title,
-                        &excerpt,
-                        &content,
-                        &version,
-                        &embedding_blob,
-                        now,
-                    ],
-                )?;
-                Ok(())
-            })
+        let generation = self.active_embedding_generation(project_id).await?;
+        let embedding = self
+            .inner
+            .model_router
+            .embed_for_generation(
+                &document.content,
+                generation.spec.provider,
+                generation.spec.dimension,
+            )
             .await?;
-        Ok(())
+        self.upsert_embedding_document_for_generation(
+            project_id,
+            Some(branch_id),
+            entity_id,
+            document,
+            &generation,
+            &embedding,
+        )
+        .await
+    }
+
+    /// Embed a query with the project's active generation identity. A query
+    /// from a different provider/model/dimension is rejected, never compared.
+    pub async fn embed_query_for_active_generation(
+        &self,
+        project_id: &str,
+        query: &str,
+    ) -> Result<spindle_core::embeddings::EmbeddingQueryVectorV1> {
+        let generation = self.active_embedding_generation(project_id).await?;
+        let vector = self
+            .inner
+            .model_router
+            .embed_for_generation(query, generation.spec.provider, generation.spec.dimension)
+            .await?;
+        Ok(spindle_core::embeddings::EmbeddingQueryVectorV1::new(
+            generation.generation_id,
+            generation.spec.dimension,
+            vector,
+        )?)
     }
 
     pub async fn list_search_embeddings_by_project_and_branch(
@@ -237,52 +230,11 @@ impl Repository {
         &self,
         project_id: &str,
         branch_id: Option<&str>,
-        query_embedding: &[f64],
+        query: &spindle_core::embeddings::EmbeddingQueryVectorV1,
         k: usize,
     ) -> Result<Vec<(SearchEmbedding, f64)>> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.map(|s| s.to_string());
-        let query_blob = pack_embedding(query_embedding);
-        let k = k as i64;
-        self.inner
-            .pool
-            .read(move |conn| {
-                // se.* explicitly to avoid `embedding` name collision with the
-                // vec0 table's own embedding column.
-                let qualified_cols = SEARCH_EMBEDDING_COLUMNS
-                    .split(',')
-                    .map(|c| format!("se.{}", c.trim()))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let mut sql = format!(
-                    "SELECT {qualified_cols}, vec.distance \
-                     FROM vec_search_embedding AS vec \
-                     JOIN search_embedding AS se ON se.id = vec.se_id \
-                     WHERE vec.embedding MATCH ?1 AND vec.k = ?2 \
-                       AND se.project_id = ?3"
-                );
-                if branch_id.is_some() {
-                    sql.push_str(" AND se.branch_id = ?4");
-                }
-                sql.push_str(" ORDER BY vec.distance");
-                let mut stmt = conn.prepare_cached(&sql)?;
-                let rows = if let Some(b) = &branch_id {
-                    stmt.query_map(rusqlite::params![&query_blob, k, &project_id, b], |r| {
-                        let se = SearchEmbedding::try_from(r)?;
-                        let dist: f64 = r.get(11)?;
-                        Ok((se, dist))
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?
-                } else {
-                    stmt.query_map(rusqlite::params![&query_blob, k, &project_id], |r| {
-                        let se = SearchEmbedding::try_from(r)?;
-                        let dist: f64 = r.get(11)?;
-                        Ok((se, dist))
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?
-                };
-                Ok(rows)
-            })
+        let generation = self.active_embedding_generation(project_id).await?;
+        self.knn_search_embeddings_for_generation(project_id, branch_id, &generation, query, k)
             .await
     }
 
@@ -291,19 +243,10 @@ impl Repository {
         project_id: &str,
         entity_id: &str,
     ) -> Result<bool> {
-        let project_id = project_id.to_string();
-        let entity_id = entity_id.to_string();
-        let n: usize = self
-            .inner
-            .pool
-            .write(move |conn| {
-                conn.execute(
-                    "DELETE FROM search_embedding WHERE project_id = ?1 AND entity_id = ?2",
-                    rusqlite::params![&project_id, &entity_id],
-                )
-            })
+        let deleted = self
+            .delete_embedding_rows_for_entity(project_id, entity_id)
             .await?;
-        Ok(n > 0)
+        Ok(deleted > 0)
     }
 
     pub async fn delete_search_embeddings_for_branch(
@@ -311,17 +254,7 @@ impl Repository {
         project_id: &str,
         branch_id: &str,
     ) -> Result<()> {
-        let project_id = project_id.to_string();
-        let branch_id = branch_id.to_string();
-        self.inner
-            .pool
-            .write(move |conn| {
-                conn.execute(
-                    "DELETE FROM search_embedding WHERE project_id = ?1 AND branch_id = ?2",
-                    rusqlite::params![&project_id, &branch_id],
-                )?;
-                Ok(())
-            })
+        self.delete_embedding_rows_for_branch(project_id, branch_id)
             .await?;
         Ok(())
     }
@@ -332,15 +265,42 @@ impl Repository {
     /// the number of rows removed.
     pub async fn rebuild_search_index_clear(&self, project_id: &str) -> Result<usize> {
         let branch_id = self.active_branch_id(project_id).await?;
+        let generation = self.active_embedding_generation(project_id).await?;
         let project_id = project_id.to_string();
+        let generation_id = generation.generation_id.clone();
+        let table_name = generation.table_name.clone();
+        anyhow::ensure!(
+            table_name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_'),
+            "unsafe embedding table name"
+        );
         let n: usize = self
             .inner
             .pool
             .write(move |conn| {
-                conn.execute(
-                    "DELETE FROM search_embedding WHERE project_id = ?1 AND branch_id = ?2",
-                    rusqlite::params![&project_id, &branch_id],
-                )
+                let tx = conn.transaction()?;
+                let ids: Vec<String> = {
+                    let mut stmt = tx.prepare(
+                        "SELECT id FROM search_embedding \
+                         WHERE project_id = ?1 AND branch_id = ?2 AND generation_id = ?3",
+                    )?;
+                    stmt.query_map(
+                        rusqlite::params![&project_id, &branch_id, &generation_id],
+                        |row| row.get(0),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                for id in &ids {
+                    tx.execute(&format!("DELETE FROM {table_name} WHERE se_id = ?1"), [id])?;
+                }
+                let deleted = tx.execute(
+                    "DELETE FROM search_embedding \
+                     WHERE project_id = ?1 AND branch_id = ?2 AND generation_id = ?3",
+                    rusqlite::params![&project_id, &branch_id, &generation_id],
+                )?;
+                tx.commit()?;
+                Ok(deleted)
             })
             .await?;
         Ok(n)

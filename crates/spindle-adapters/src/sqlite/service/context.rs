@@ -1833,9 +1833,10 @@ impl SqliteSpindleService {
                 } else {
                     let recall_result: Result<Vec<spindle_core::models::SearchBibleResultItem>> =
                         async {
-                            let embedding_session =
-                                self.repository.model_router().embedding_session()?;
-                            let query_embedding = embedding_session.embed_text(&query).await?;
+                            let query_embedding = self
+                                .repository
+                                .embed_query_for_active_generation(&input.project_id, &query)
+                                .await?;
                             // Over-fetch so excluding present-scene entities (which are
                             // already rendered in the scene layer) can't starve the slice.
                             let k = SEMANTIC_REFERENCE_LIMIT + ids.len() + 1;

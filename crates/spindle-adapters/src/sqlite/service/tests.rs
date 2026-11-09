@@ -1905,6 +1905,7 @@ mod consistency_temporal;
 mod context;
 #[path = "drafting/tests.rs"]
 mod drafting;
+mod embedding_generations;
 #[path = "entity_updates/tests.rs"]
 mod entity_updates;
 #[path = "export/tests.rs"]

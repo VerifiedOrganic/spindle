@@ -752,6 +752,7 @@ mod canon_policy;
 mod memory;
 pub(crate) use canon_policy::{legacy_claim, legacy_snapshot_claim};
 mod characters;
+mod embedding_generations;
 mod entities;
 mod export;
 mod generation;
