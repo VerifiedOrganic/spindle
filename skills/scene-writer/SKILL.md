@@ -42,14 +42,14 @@ Write with clear stimulus-response causality, concrete character-specific detail
 
 Choose `general`, `teen`, `mature`, or `explicit` deliberately and verify boundaries against the reader contract.
 
-- Pass `authorship: "assistant"` to `save_scene_draft` for host-composed or host-revised prose (`"human"` is reserved for the author's own writing).
-- **Explicit sexual prose origin gate**: `save_scene_draft` rejects client-authored explicit sexual prose without a server-side `generation_id` receipt. When drafting or revising `explicit` sexual prose, load `get_reference(name="scene-writer/offloaded-generation")`.
+- Pass `authorship: "assistant"` to `commit_scene` for host-composed or host-revised prose (`"human"` is reserved for the author's own writing), and the server `generation_receipt` when one is required.
+- **Explicit sexual prose origin gate**: `commit_scene` rejects client-authored explicit sexual prose without a server-side generation receipt. When drafting or revising `explicit` sexual prose, load `get_reference(name="scene-writer/offloaded-generation")`.
 
-## Step 5: Save, Self-Review, and Validate
+## Step 5: Self-Review and Preflight
 
-Call `save_scene_draft` (`chapter_id` or `book_number` + `chapter_number`, `scene_order`, `title`, `full_text`, `summary`, `content_rating`, `tone`, `location_id`, `authorship`) and inspect the receipt:
+Preflight with `commit_scene` (`dry_run: true`) using the payload you intend to commit, and inspect `issues`, `warnings`, `blocking_count`, and `coverage`; a blocking finding writes nothing. Review the prose against the checks below, then revise. `save_scene_draft` remains save-only compatibility: it applies no continuity, beats, summary, or cursor.
 
-1. **Receipt warnings**: Check `pacing_warnings`, `tone_deviation`, `style_warnings`, `agency_warning`, `content_rating_valid` / `content_rating_warnings`, `world_rule_hits`, `voice_drift`, `retcon_findings`, and advisory `temporal_findings`.
+1. **Findings**: Check world-rule, canonical-fact, retcon-reachability, style-contract, and advisory temporal findings from the preflight.
 2. **Step 5a — Genre & Style Gate**: Verify tone match, `narrator_voice` delivery, genre payload density, active co-leads, `chapter_ending_style`, and cadence. Rewrite and re-save if any check fails.
 3. **Step 5b — Fiction Anti-Slop & Craft Gate**: Check `anti_slop` against `compact_shelf_digest`, `voice_samples`, and `scene_negatives` (full 12-shelf catalog at `bible://references/anti-slop`):
    - **Hard shelves**: `contrast_not_x_but_y` (<=1/chapter), `emotion_cocktail` (0), `fishing_ending` (0).
@@ -57,11 +57,13 @@ Call `save_scene_draft` (`chapter_id` or `book_number` + `chapter_number`, `scen
    - When a shelf hits, rewrite from the scene beat in 1–2 passes (never synonym-swap) and re-save.
 4. **Consistency & Review**: Run `check_consistency` (`canonical_fact_prose_drift`, `world_rule_semantic_drift`, `voice_drift`, `retcon_reachability`, `style_compliance`, `temporal_coherence`, `chronology`, `knowledge_timing`; with `deep_check: true`, inspect `audit_coverage` and `next_offset`). Use `run_dual_persona_review` for Craft Technician, Literary Critic, and Target Reader evaluation.
 
-## Step 6: Commit Canon, Beats, Summary, and Cursor
+## Step 6: Commit the Scene Atomically
 
-1. **Batch commit**: Call `commit_scene_changes` (`continuity_gate: "block_errors"` by default; resolve `blocking_continuity_findings` / `retcon_findings` or record an explicit override rationale with `record_note`).
-2. **Targeted updates**: `set_scene_clock` (`day_index`, `time_of_day`, `duration_days`, `precision`, `temporal_mode`, `thread_key`), `commit_character_state`, `update_relationship` (`trust_delta`, `tension_delta`, `reason`, `scene_id`), `record_knowledge` (or `create_future_knowledge`), `update_promise_status`, `update_entity`, `update_world_rule` (`description`, not `summary`), `annotate_scene_beats` (`intensity` in `0.0..=1.0`), and `save_summary` on chapter end.
-3. **Incidental facts & cursor**: Propose new minor characters (`create_character`), world rules (`create_world_rule`), entity updates (`update_entity`, `allow_rename: true` for renames), or superseded facts (`register_canonical_fact` with `supersedes_fact_id`), then call `update_writer_position`. After any timeout or reconnect, inspect `get_writer_state` before retrying a write.
+Call `commit_scene` once with `full_text`, `summary`, `content_rating`, `authorship`, the preparation token and `expected_scene_version`, the typed `continuity` package, `beat_annotations`, an optional chapter-final `chapter_summary`, and a client `idempotency_key`. It applies prose, approved continuity, beats, summary, and cursor in one write.
+
+1. **Inspect the receipt**: Check `issues`, `warnings`, `blocking_count`, `coverage`, `applied`, `beat_count`, `chapter_summary_saved`, `writer_cursor`, `follow_ups`, and `undo_support`. Retry only with the same key and payload; a different payload fails.
+2. **Targeted repair**: Outside the ordinary loop, `set_scene_clock`, `commit_character_state`, `update_relationship`, `record_knowledge` (or `create_future_knowledge`), `update_promise_status`, `update_entity`, `update_world_rule`, `annotate_scene_beats`, `commit_scene_changes`, `save_summary`, and `update_writer_position` remain available.
+3. **Author decisions only**: Mined canon proposals never auto-ratify; use the ratification workflow in `scene-writer/authoring-runs`. After a timeout or reconnect, inspect `get_writer_state` before retrying.
 
 ## On-Demand References (Load Only When Triggered)
 
@@ -77,6 +79,7 @@ Never read every reference before drafting; call `get_reference` only when neede
 <!-- tool: annotate_scene_beats -->
 <!-- tool: check_consistency -->
 <!-- tool: commit_character_state -->
+<!-- tool: commit_scene -->
 <!-- tool: commit_scene_changes -->
 <!-- tool: create_character -->
 <!-- tool: create_future_knowledge -->

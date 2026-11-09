@@ -15,14 +15,15 @@ modes. Directly constructed unknown-profile routers list nothing and deny calls.
 The internal manifest label `default` means an unset environment variable; it is
 not a startup profile name.
 
-Unset, `minimal`, `write`, `import`, and `authoring` retain their exact existing
-catalogs for compatibility. Explicit `legacy-all` gives the same complete catalog
-as unset. New generated profiles are opt-in:
+Unset, `minimal`, `write`, `import`, and `authoring` keep their compatibility
+catalogs while the canonical `commit_scene` facade is added to the scene-writing
+profiles. Explicit `legacy-all` gives the same complete catalog as unset. New
+generated profiles are opt-in:
 
 | Profile | Enabled work | Tools | Input bytes | Full bytes |
 | --- | --- | ---: | ---: | ---: |
-| workflow-write | Scene-writer core + craft/packet/research refs + setup | 41 | 41,704 | 84,050 |
-| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 71 | 70,016 | 152,577 |
+| workflow-write | Scene-writer core + craft/packet/research refs + setup | 42 | 55,374 | 104,790 |
+| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 72 | 83,686 | 173,317 |
 | workflow-import | Manuscript importer and source sync | 20 | 12,306 | 30,747 |
 | revision | Branch/revision/history workflow | 32 | 20,661 | 53,896 |
 | worldbuilding | Worldbuilder + character creator | 43 | 40,080 | 61,514 |
@@ -36,8 +37,9 @@ Every generated profile includes the shared entry core (`spindle`, 6 entry tools
 Large context/analysis output schemas load optionally through versioned
 [response contracts](tool-response-contracts.md); actual results are unchanged.
 Their measured byte ceilings are explicit in `tools/profile-budgets.json`;
-canonical target caps remain unmet until prepare/commit and domain consolidation
-phases complete. `get_skill` and `get_reference` check active profile coverage and
+canonical target caps remain unmet until domain consolidation, operator
+migration, and compatibility cleanup complete; `commit_scene` is the first
+receipts-inline canonical write in these profiles. `get_skill` and `get_reference` check active profile coverage and
 return structured coverage metadata (`covered`, `required_profile`,
 `available_units`, `missing_capabilities`) without mutating the active profile.
 Generated import has no style dependency; style is a separately selected profile.

@@ -858,6 +858,10 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.prepare_scene(input))
                     .await
             }
+            "commit_scene" => {
+                self.invoke(arguments, |input| self.handle_commit_scene(input))
+                    .await
+            }
             "get_entity" => {
                 self.invoke(arguments, |input| self.service.get_entity(input))
                     .await

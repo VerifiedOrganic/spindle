@@ -500,6 +500,7 @@
       "annotate_scene_beats",
       "check_consistency",
       "commit_character_state",
+      "commit_scene",
       "commit_scene_changes",
       "create_character",
       "create_future_knowledge",
