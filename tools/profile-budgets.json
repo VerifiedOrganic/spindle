@@ -12,9 +12,9 @@
       "full_bytes": 26534
     },
     "planning": {
-      "tools": 35,
-      "input_bytes": 29333,
-      "full_bytes": 58389
+      "tools": 38,
+      "input_bytes": 32352,
+      "full_bytes": 63550
     },
     "release": {
       "tools": 62,
@@ -57,9 +57,9 @@
       "full_bytes": 112186
     },
     "worldbuilding": {
-      "tools": 47,
-      "input_bytes": 45321,
-      "full_bytes": 77759
+      "tools": 50,
+      "input_bytes": 48325,
+      "full_bytes": 83814
     }
   },
   "canonical": {
