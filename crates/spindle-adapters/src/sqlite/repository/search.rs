@@ -313,6 +313,11 @@ impl Repository {
                      WHERE project_id = ?1 AND branch_id = ?2 AND generation_id = ?3",
                     rusqlite::params![&project_id, &branch_id, &generation_id],
                 )?;
+                super::embedding_generations::bump_embedding_write_epoch(
+                    &tx,
+                    &project_id,
+                    timestamp_to_micros(chrono::Utc::now()),
+                )?;
                 tx.commit()?;
                 Ok(deleted)
             })

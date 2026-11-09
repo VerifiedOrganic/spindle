@@ -567,6 +567,84 @@ async fn live_source_edit_during_build_fails_activation_and_is_caught_up() {
 }
 
 #[tokio::test]
+async fn deletion_during_build_bumps_epoch_and_prunes_target() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, _seed, _) = project_with_scene(&svc, "Embedding Deletion").await;
+    seed_documents(&svc, &project.project_id).await;
+    let previous = svc
+        .active_embedding_generation(&project.project_id)
+        .await
+        .unwrap();
+    let (source, snapshot_epoch) = svc
+        .repository()
+        .embedding_source_snapshot(&project.project_id, &previous.generation_id)
+        .await
+        .unwrap();
+    assert_eq!(source.len(), 2);
+    let spec = fixture_spec(384);
+    let target = svc
+        .repository()
+        .create_embedding_generation(spec.clone())
+        .await
+        .unwrap();
+    // Complete a target snapshot, then delete one source entity through the
+    // normal delete path.
+    for row in &source {
+        let document = SearchDocument {
+            entity_table: row.entity_table.clone(),
+            title: row.title.clone(),
+            excerpt: row.excerpt.clone(),
+            content: row.content.clone(),
+        };
+        let vector = token_hash_embedding(&row.content, 384);
+        svc.repository()
+            .upsert_embedding_document_for_generation(
+                &project.project_id,
+                row.branch_id.as_deref(),
+                &row.entity_id,
+                &document,
+                &target,
+                &vector,
+            )
+            .await
+            .unwrap();
+    }
+    assert!(
+        svc.repository()
+            .delete_search_embedding_for_entity(&project.project_id, "character:poet")
+            .await
+            .unwrap()
+    );
+    let after_delete_epoch = svc
+        .repository()
+        .embedding_write_epoch(&project.project_id)
+        .await
+        .unwrap();
+    assert!(
+        after_delete_epoch > snapshot_epoch,
+        "delete must bump the source epoch ({snapshot_epoch} -> {after_delete_epoch})"
+    );
+    // The stale target snapshot must not resurrect the deleted entity.
+    let output = svc
+        .rebuild_embedding_generation(rebuild_input(&project.project_id, 384))
+        .await
+        .unwrap();
+    assert!(output.activated);
+    assert_eq!(output.indexed_records, 1);
+    let rebuilt = svc
+        .repository()
+        .list_embeddings_for_generation(&project.project_id, &spec.generation_id())
+        .await
+        .unwrap();
+    assert_eq!(rebuilt.len(), 1);
+    assert_eq!(rebuilt[0].entity_id, "character:veyra");
+    assert_eq!(
+        semantic_first(&svc, &project.project_id).await[0].entity_id,
+        "character:veyra"
+    );
+}
+
+#[tokio::test]
 async fn rollback_restores_previous_serving_generation() {
     let (_tmp, svc) = fresh_service_local().await;
     let (project, _seed, _) = project_with_scene(&svc, "Embedding Rollback").await;

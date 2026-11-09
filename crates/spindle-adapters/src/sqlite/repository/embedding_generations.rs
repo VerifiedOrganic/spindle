@@ -50,6 +50,28 @@ fn generation_sql_columns() -> &'static str {
      table_name, status, created_at, activated_at, retired_at, rollback_until"
 }
 
+pub(crate) fn bump_embedding_write_epoch(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO embedding_index_state (
+            project_id, active_generation_id, previous_generation_id,
+            rollback_until, updated_at
+         ) SELECT ?1, 'token-hash-v1:64', NULL, NULL, ?2
+         FROM project WHERE id = ?1
+         ON CONFLICT(project_id) DO NOTHING",
+        rusqlite::params![project_id, now],
+    )?;
+    conn.execute(
+        "UPDATE embedding_index_state SET write_epoch = write_epoch + 1, \
+            updated_at = ?2 WHERE project_id = ?1",
+        rusqlite::params![project_id, now],
+    )?;
+    Ok(())
+}
+
 impl Repository {
     pub async fn get_embedding_generation(
         &self,
@@ -127,6 +149,46 @@ impl Repository {
                     )
                     .optional_inner()?;
                 Ok(epoch.unwrap_or(0))
+            })
+            .await
+    }
+
+    /// Read source rows and their mutation epoch in one read transaction.
+    /// Callers must use the epoch as the snapshot version; a write before this
+    /// read is included, and a write after it changes the epoch used by the
+    /// activation check.
+    pub async fn embedding_source_snapshot(
+        &self,
+        project_id: &str,
+        generation_id: &str,
+    ) -> Result<(Vec<SearchEmbedding>, i64)> {
+        let project_id = project_id.to_string();
+        let generation_id = generation_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let tx = conn.unchecked_transaction()?;
+                let epoch: Option<i64> = tx
+                    .query_row(
+                        "SELECT write_epoch FROM embedding_index_state WHERE project_id = ?1",
+                        [&project_id],
+                        |row| row.get(0),
+                    )
+                    .optional_inner()?;
+                let sql = format!(
+                    "SELECT {SEARCH_EMBEDDING_COLUMNS} FROM search_embedding \
+                     WHERE project_id = ?1 AND generation_id = ?2 \
+                     ORDER BY entity_table, entity_id"
+                );
+                let rows = {
+                    let mut stmt = tx.prepare_cached(&sql)?;
+                    stmt.query_map(rusqlite::params![&project_id, &generation_id], |row| {
+                        SearchEmbedding::try_from(row)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                tx.commit()?;
+                Ok((rows, epoch.unwrap_or(0)))
             })
             .await
     }
@@ -679,11 +741,7 @@ impl Repository {
                     rusqlite::params![&id, &blob],
                 )?;
                 if expected_active_generation_id.is_some() {
-                    tx.execute(
-                        "UPDATE embedding_index_state SET write_epoch = write_epoch + 1, \
-                            updated_at = ?2 WHERE project_id = ?1",
-                        rusqlite::params![&project_id, now],
-                    )?;
+                    bump_embedding_write_epoch(&tx, &project_id, now)?;
                 }
                 tx.commit()?;
                 Ok(())
@@ -752,6 +810,7 @@ impl Repository {
         let project_id = project_id.to_string();
         let branch_id = branch_id.map(str::to_owned);
         let entity_id = entity_id.map(str::to_owned);
+        let now = timestamp_to_micros(chrono::Utc::now());
         self.inner
             .pool
             .write(move |conn| {
@@ -820,6 +879,7 @@ impl Repository {
                     }
                     (None, None) => tx.execute(&delete_sql, rusqlite::params![&project_id])?,
                 };
+                bump_embedding_write_epoch(&tx, &project_id, now)?;
                 tx.commit()?;
                 Ok(deleted)
             })

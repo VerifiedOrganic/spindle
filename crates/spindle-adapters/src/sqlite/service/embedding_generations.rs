@@ -96,13 +96,9 @@ impl SqliteSpindleService {
 
         let mut last_conflict = None;
         for attempt in 1..=8 {
-            let source = self
+            let (source, source_epoch) = self
                 .repository
-                .list_embeddings_for_generation(&input.project_id, &previous.generation_id)
-                .await?;
-            let source_epoch = self
-                .repository
-                .embedding_write_epoch(&input.project_id)
+                .embedding_source_snapshot(&input.project_id, &previous.generation_id)
                 .await?;
             let expected_records = source.len();
             let source_keys: BTreeSet<(Option<String>, String, String)> = source

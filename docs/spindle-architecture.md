@@ -543,10 +543,11 @@ quality probe pass. Generation build/active/retired/failed lifecycle is tracked 
 different projects independently. Activation atomically updates the project's
 `embedding_index_state` and retires the previous generation with a rollback
 window; rollback replays the previous pointer while its window is open. Active
-document writes bump a per-project `write_epoch` in the same transaction that
-checks the active generation; activation requires the epoch to be unchanged and
-a rebuild retries catch-up when live writes move it, so an edit or new entity
-cannot be lost between the source snapshot and the pointer switch. A provider
+document writes and source deletes/clears bump a per-project `write_epoch` in
+the same transaction; activation requires the epoch to be unchanged and a
+rebuild retries catch-up when it moves, so an edit, delete or new entity cannot
+be lost between the source snapshot and the pointer switch. Source rows and the
+epoch are read in one snapshot transaction. A provider
 failure or failed quality gate marks the target failed and leaves the serving
 index untouched. Per-project active state lets different projects migrate
 independently. The legacy token-hash fallback remains available when no HTTP
