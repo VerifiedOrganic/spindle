@@ -1,0 +1,155 @@
+{
+  "schema_version": "drafting_g_usage_v1",
+  "cost_usd": null,
+  "cost_note": "No per-token price is configured in the eval agent/judge configs; token and latency usage are recorded from the Rust model_call ledger and judge pass usage. Cost is left null rather than fabricated.",
+  "generation": {
+    "calls": 532,
+    "input_tokens": 3434646,
+    "output_tokens": 397376,
+    "elapsed_ms": 1949122,
+    "by_route_template": [
+      {
+        "route": "draft",
+        "prompt_template_id": "draft.packet",
+        "calls": 90,
+        "input_tokens": 295116,
+        "output_tokens": 53140,
+        "elapsed_ms": 402141
+      },
+      {
+        "route": "draft",
+        "prompt_template_id": "draft.revise_v1",
+        "calls": 14,
+        "input_tokens": 58774,
+        "output_tokens": 7879,
+        "elapsed_ms": 38692
+      },
+      {
+        "route": "draft",
+        "prompt_template_id": "token_count.ollama_probe",
+        "calls": 14,
+        "input_tokens": 58774,
+        "output_tokens": 14,
+        "elapsed_ms": 9586
+      },
+      {
+        "route": "review",
+        "prompt_template_id": "review.critique_v1",
+        "calls": 90,
+        "input_tokens": 590852,
+        "output_tokens": 160303,
+        "elapsed_ms": 658794
+      },
+      {
+        "route": "review",
+        "prompt_template_id": "review.critique_v1.repair",
+        "calls": 89,
+        "input_tokens": 789283,
+        "output_tokens": 159031,
+        "elapsed_ms": 582099
+      },
+      {
+        "route": "review",
+        "prompt_template_id": "review.pairwise_judge_v1.pass_1",
+        "calls": 14,
+        "input_tokens": 65428,
+        "output_tokens": 8580,
+        "elapsed_ms": 53338
+      },
+      {
+        "route": "review",
+        "prompt_template_id": "review.pairwise_judge_v1.pass_2",
+        "calls": 14,
+        "input_tokens": 65428,
+        "output_tokens": 8222,
+        "elapsed_ms": 49853
+      },
+      {
+        "route": "review",
+        "prompt_template_id": "token_count.ollama_probe",
+        "calls": 207,
+        "input_tokens": 1510991,
+        "output_tokens": 207,
+        "elapsed_ms": 154619
+      }
+    ],
+    "token_count_probes": {
+      "calls": 221,
+      "input_tokens": 1569765,
+      "output_tokens": 221,
+      "elapsed_ms": 164205
+    },
+    "excluding_token_count_probes": {
+      "calls": 311,
+      "input_tokens": 1864881,
+      "output_tokens": 397155,
+      "elapsed_ms": 1784917
+    }
+  },
+  "judging": {
+    "loop_vs_baseline": {
+      "ollama-glm-5.2": {
+        "calls": 180,
+        "input_tokens": 501014,
+        "output_tokens": 134317,
+        "elapsed_seconds": 802.0939999999999
+      },
+      "ollama-deepseek-v4.1-flash": {
+        "calls": 180,
+        "input_tokens": 506517,
+        "output_tokens": 154907,
+        "elapsed_seconds": 757.9630000000002
+      },
+      "ollama-gemma4-31b": {
+        "calls": 180,
+        "input_tokens": 507074,
+        "output_tokens": 113386,
+        "elapsed_seconds": 561.125
+      }
+    },
+    "loop_vs_packet_only": {
+      "ollama-glm-5.2": {
+        "calls": 180,
+        "input_tokens": 505460,
+        "output_tokens": 131309,
+        "elapsed_seconds": 797.8869999999995
+      },
+      "ollama-deepseek-v4.1-flash": {
+        "calls": 180,
+        "input_tokens": 510784,
+        "output_tokens": 154466,
+        "elapsed_seconds": 770.331
+      },
+      "ollama-gemma4-31b": {
+        "calls": 180,
+        "input_tokens": 511374,
+        "output_tokens": 111903,
+        "elapsed_seconds": 653.7499999999997
+      }
+    },
+    "loop_incremental_vs_own_initial": {
+      "ollama-glm-5.2": {
+        "calls": 180,
+        "input_tokens": 505956,
+        "output_tokens": 114925,
+        "elapsed_seconds": 738.6610000000004
+      },
+      "ollama-deepseek-v4.1-flash": {
+        "calls": 180,
+        "input_tokens": 511256,
+        "output_tokens": 119417,
+        "elapsed_seconds": 698.009
+      },
+      "ollama-gemma4-31b": {
+        "calls": 180,
+        "input_tokens": 512000,
+        "output_tokens": 98799,
+        "elapsed_seconds": 567.4179999999999
+      }
+    },
+    "loop_vs_baseline_total_calls": 540,
+    "loop_vs_packet_only_total_calls": 540,
+    "loop_incremental_total_calls": 540,
+    "total_calls": 1620
+  }
+}
