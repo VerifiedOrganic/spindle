@@ -52,6 +52,15 @@ full extended preview shapes. `create_style_revision_patch` is the canonical
 non-mutating patch-creation step; `preview_style_revision_patch` remains its
 release-R alias, and only `apply_style_revision_patch` writes prose.
 
+### Typed entity updates
+
+`update_character`, `update_location`, `update_conflict`, and
+`update_character_arc` are the canonical typed updates for those records. They
+reject unknown fields, leave omitted fields unchanged, and keep the existing
+validation/cache behavior. `update_entity` remains available as a compatibility
+path for entity types that do not have a typed replacement yet; do not use it
+for the four typed records when a typed tool covers the field.
+
 ### Profiles
 
 Unset and `legacy-all` keep the full compatibility catalog except the

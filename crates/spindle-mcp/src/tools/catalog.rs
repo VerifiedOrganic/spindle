@@ -277,6 +277,22 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "batch_set_character_voice_profiles",
             "Replace multiple character voice profiles in one call",
         ),
+        tool::<UpdateCharacterInput, UpdateEntityOutput>(
+            "update_character",
+            "Update a character's summary, role, realm, appearance, aliases, or (with allow_rename) primary name by character_id. Omitted fields are unchanged; a name change still moves the uniqueness key, aliases, search index, and stale-reference report together.",
+        ),
+        tool::<UpdateLocationInput, UpdateEntityOutput>(
+            "update_location",
+            "Update a location's summary, realm, or kind by location_id. Omitted fields are unchanged; names stay locked to the controlled rename path.",
+        ),
+        tool::<UpdateConflictInput, UpdateEntityOutput>(
+            "update_conflict",
+            "Update a conflict's stakes, type, resolution, escalation stages, try/fail cycles, stated consequences, or demonstrated markers by conflict_id. Omitted fields are unchanged.",
+        ),
+        tool::<UpdateCharacterArcInput, UpdateEntityOutput>(
+            "update_character_arc",
+            "Update a character arc's type, states, thematic purpose, connected themes, status, or milestones by character_arc_id. Omitted fields are unchanged.",
+        ),
         tool::<UpdateEntityInput, UpdateEntityOutput>(
             "update_entity",
             "Update a supported entity by record id. Character aliases are settable via changes {\"aliases\": [...]}. Renaming a character (changes {\"name\": ...}) is a controlled operation: pass allow_rename: true to move the name's uniqueness key, keep the old name as an alias, refresh the search index, and get a rename_report listing scenes/facts/knowledge/arcs still referencing the old name. Without allow_rename the rename is rejected. For entity_type=project, the reader contract is updatable via changes {\"reader_contract\": {...}} or the sub-fields {\"promise\", \"style_notes\", \"boundaries\"} (partial merge; unset fields are preserved); if the edit leaves the contract's word-count target contradicting the narrator voice or a style world rule, the response warnings flag it",

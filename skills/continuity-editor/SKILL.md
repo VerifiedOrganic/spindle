@@ -43,9 +43,9 @@ Keep the typed canonical fact ledger accurate:
 
 When continuity drift stems from missing or stale state records rather than bad prose, repair the ledger:
 - **Calendars & scene clocks (`set_project_calendar`, `set_scene_clock`)**: Declare the project calendar and stamp scene clocks (`day_index`, `time_of_day`, `duration_days`, and `temporal_mode` / `thread_key` for flashbacks or parallel threads).
-- **Character state & knowledge (`commit_scene_changes`, `commit_character_state`, `record_knowledge`, `update_entity`)**: Record missing post-scene state transitions or character knowledge acquisition (`learned_at`, optional `secret_of_fact_id` when expanding a secret's circle of trust).
+- **Character state & knowledge (`commit_scene_changes`, `commit_character_state`, `record_knowledge`, `update_character`, `update_location`)**: Record missing post-scene state transitions or character knowledge acquisition (`learned_at`, optional `secret_of_fact_id` when expanding a secret's circle of trust); use typed updates for character and location repairs and reserve `update_entity` for unsupported fields.
 - **Quantities (`set_project_quantity_scheme`, `derive_quantity_scheme_from_system_overlay`, `commit_quantity_state`)**: Configure or derive tracked counters and record scene-by-scene deltas (`change_reason` required on multi-band jumps).
-- **Promises, arcs & chapter plans (`update_promise_status`, `update_arc_milestone`, `set_arc_pacing_constraints`, `plan_chapter`)**: Update promise lifecycles (`planted`, `reinforced`, `paid_off`, `abandoned`), arc milestones, pacing constraints, or future chapter plans.
+- **Promises, arcs & chapter plans (`update_promise_status`, `update_arc_milestone`, `update_character_arc`, `update_conflict`, `set_arc_pacing_constraints`, `plan_chapter`)**: Update promise lifecycles (`planted`, `reinforced`, `paid_off`, `abandoned`), arc milestones or typed arc fields, conflict escalation evidence, pacing constraints, or future chapter plans.
 
 ---
 
@@ -84,5 +84,9 @@ When continuity drift stems from missing or stale state records rather than bad 
 <!-- tool: set_project_quantity_scheme -->
 <!-- tool: set_scene_clock -->
 <!-- tool: update_arc_milestone -->
+<!-- tool: update_character -->
+<!-- tool: update_character_arc -->
+<!-- tool: update_conflict -->
+<!-- tool: update_location -->
 <!-- tool: update_entity -->
 <!-- tool: update_promise_status -->
