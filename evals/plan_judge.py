@@ -105,6 +105,7 @@ RELEASE_GATE = {
     "candidate_win_rate_ci_low": 0.50,
     "max_contract_fidelity_regressions": 0,
 }
+CALIBRATION_MIN_AGREEMENT = 0.70
 
 WORD_RE = re.compile(r"[a-z0-9][a-z0-9'-]+")
 STOPWORDS = {
@@ -567,21 +568,29 @@ def check_entity_refs(plan: dict, brief: dict) -> tuple[bool, list[str], float]:
 def check_causality(plan: dict, brief: dict) -> tuple[bool, list[str], float]:
     failures: list[str] = []
     scenes = _scene_refs(plan)
-    scene_refs = {item["ref"] for item in scenes}
+    earlier: set[str] = set()
     connected = 0
     for index, item in enumerate(scenes):
         scene = item["scene"]
-        if index == 0:
-            connected += 1
-            continue
         antecedents = scene.get("causal_from", [])
-        if not antecedents:
-            failures.append(f"{item['ref']} has no causal antecedent")
+        if index == 0:
+            if antecedents:
+                failures.append(f"{item['ref']} is the opening scene but cites causal antecedents")
+            else:
+                connected += 1
+            earlier.add(item["ref"])
             continue
-        if all(ref not in scene_refs for ref in antecedents):
-            failures.append(f"{item['ref']} cites no resolvable causal antecedent")
-            continue
-        connected += 1
+        valid = [ref for ref in antecedents if ref in earlier]
+        invalid = [ref for ref in antecedents if ref not in earlier]
+        if invalid:
+            failures.append(
+                f"{item['ref']} cites non-preceding or unknown causal antecedents: {invalid}"
+            )
+        if not valid:
+            failures.append(f"{item['ref']} has no preceding causal antecedent")
+        else:
+            connected += 1
+        earlier.add(item["ref"])
     metric = 1.0 if not scenes else round(connected / len(scenes), 4)
     return not failures and metric >= 0.95, failures, metric
 
@@ -761,6 +770,20 @@ def mutate_plan(plan: dict, mutation: str) -> dict:
         mutated["chapters"][0]["scenes"][0]["cast_refs"].append("cast:unknown-person")
     elif mutation == "disconnected":
         mutated["chapters"][1]["scenes"][0]["causal_from"] = []
+    elif mutation == "self_causal":
+        scene = mutated["chapters"][1]["scenes"][0]
+        scene["causal_from"] = [f"chapter:{mutated['chapters'][1]['chapter_number']}:scene:{scene['scene_order']}"]
+    elif mutation == "forward_causal":
+        last_chapter = mutated["chapters"][-1]
+        last_scene = last_chapter["scenes"][-1]
+        mutated["chapters"][0]["scenes"][0]["causal_from"] = [
+            f"chapter:{last_chapter['chapter_number']}:scene:{last_scene['scene_order']}"
+        ]
+    elif mutation == "causal_cycle":
+        second = mutated["chapters"][1]["scenes"][0]
+        third = mutated["chapters"][1]["scenes"][1]
+        second["causal_from"] = [f"chapter:{mutated['chapters'][1]['chapter_number']}:scene:2"]
+        third["causal_from"] = [f"chapter:{mutated['chapters'][1]['chapter_number']}:scene:1"]
     elif mutation == "missing_payoff":
         mutated["schedule"]["promise_events"] = [
             event
@@ -782,6 +805,9 @@ NEGATIVE_CASES = {
     "schema_invalid": "schema_validity_rate",
     "unknown_ref": "entity_ref_integrity",
     "disconnected": "causality_connectivity",
+    "self_causal": "causality_connectivity",
+    "forward_causal": "causality_connectivity",
+    "causal_cycle": "causality_connectivity",
     "missing_payoff": "promise_coverage",
     "constraint_violation": "constraint_compliance",
     "duplicate_apply": "idempotent_apply",
@@ -1011,6 +1037,53 @@ def evaluate_single_judge_pass(
     return validated
 
 
+def _score_for(payload: dict, order: tuple[str, str], dim: str, arm: str) -> float:
+    """Resolve a pass's A/B score to an arm using that pass's actual order."""
+    value = payload["dimensions"][dim]
+    return float(value["score_a"] if order[0] == arm else value["score_b"])
+
+
+def combine_rubric(
+    pass_1: dict,
+    order_1: tuple[str, str],
+    pass_2: dict,
+    order_2: tuple[str, str],
+) -> dict:
+    combined = {}
+    for dim in RUBRIC_DIMENSIONS:
+        score_baseline = round(
+            (_score_for(pass_1, order_1, dim, "baseline") + _score_for(pass_2, order_2, dim, "baseline")) / 2.0,
+            2,
+        )
+        score_candidate = round(
+            (_score_for(pass_1, order_1, dim, "candidate") + _score_for(pass_2, order_2, dim, "candidate")) / 2.0,
+            2,
+        )
+        wins = []
+        for payload, order in ((pass_1, order_1), (pass_2, order_2)):
+            winner = payload["dimensions"][dim]["winner"]
+            if winner == "tie":
+                wins.append("tie")
+            else:
+                wins.append(order[0 if winner == "A" else 1])
+        if wins[0] == wins[1]:
+            winner = wins[0]
+        elif score_candidate > score_baseline:
+            winner = "candidate"
+        elif score_baseline > score_candidate:
+            winner = "baseline"
+        else:
+            winner = "tie"
+        combined[dim] = {
+            "winner": winner,
+            "baseline_score": score_baseline,
+            "candidate_score": score_candidate,
+            "evidence": pass_1["dimensions"][dim].get("evidence", [])
+            + pass_2["dimensions"][dim].get("evidence", []),
+        }
+    return combined
+
+
 def judge_pair_double(
     judge_cfg: dict,
     brief: dict,
@@ -1050,33 +1123,7 @@ def judge_pair_double(
             position_bias = "second_position"
         else:
             position_bias = "verdict_flip"
-    combined = {}
-    for dim in RUBRIC_DIMENSIONS:
-        r1 = pass_1["dimensions"][dim]
-        r2 = pass_2["dimensions"][dim]
-        score_baseline = round((r1["score_a"] + r2["score_b"]) / 2.0, 2)
-        score_candidate = round((r1["score_b"] + r2["score_a"]) / 2.0, 2)
-        wins = []
-        for payload, order in ((pass_1, initial_order), (pass_2, swapped_order)):
-            winner = payload["dimensions"][dim]["winner"]
-            if winner == "tie":
-                wins.append("tie")
-            else:
-                wins.append("baseline" if order[0 if winner == "A" else 1] == "baseline" else "candidate")
-        if wins[0] == wins[1]:
-            winner = wins[0]
-        elif score_candidate > score_baseline:
-            winner = "candidate"
-        elif score_baseline > score_candidate:
-            winner = "baseline"
-        else:
-            winner = "tie"
-        combined[dim] = {
-            "winner": winner,
-            "baseline_score": score_baseline,
-            "candidate_score": score_candidate,
-            "evidence": r1.get("evidence", []) + r2.get("evidence", []),
-        }
+    combined = combine_rubric(pass_1, initial_order, pass_2, swapped_order)
     return {
         "brief_id": brief["id"],
         "judge_id": judge_cfg["id"],
@@ -1398,6 +1445,81 @@ def self_test() -> None:
     assert report["agreement"] is not None
     assert report["synthetic_fixture"] is True
 
+    # Rubric scores must be deblinded through each pass's actual order. A
+    # disagreement where pass 1 starts with the candidate used to swap scores.
+    def dim_payload(score_a: int, score_b: int, winner: str) -> dict:
+        return {
+            "dimensions": {
+                dim: {"winner": winner, "score_a": score_a, "score_b": score_b, "evidence": []}
+                for dim in RUBRIC_DIMENSIONS
+            },
+            "overall_winner": winner,
+            "rationale": "fixture",
+        }
+
+    pass_candidate_first = dim_payload(5, 2, "A")   # A=candidate
+    pass_baseline_first = dim_payload(2, 5, "B")    # B=candidate
+    combined = combine_rubric(
+        pass_candidate_first,
+        ("candidate", "baseline"),
+        pass_baseline_first,
+        ("baseline", "candidate"),
+    )
+    for dim in RUBRIC_DIMENSIONS:
+        assert combined[dim]["baseline_score"] == 2.0, (dim, combined[dim])
+        assert combined[dim]["candidate_score"] == 5.0, (dim, combined[dim])
+        assert combined[dim]["winner"] == "candidate", (dim, combined[dim])
+
+    # CLI boundary: failing Layer 1, pairwise and calibration gates must exit
+    # non-zero, and the combined report must enforce all three.
+    import subprocess
+    import tempfile
+
+    def run_cli(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), *args],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+        )
+
+    with tempfile.TemporaryDirectory(prefix="plan-judge-selftest-") as directory:
+        directory = Path(directory)
+        broken = copy.deepcopy(plans)
+        broken["PJG01"]["candidate"] = mutate_plan(broken["PJG01"]["candidate"], "schema_invalid")
+        broken_path = directory / "broken_plans.json"
+        write_json(broken_path, broken)
+        result = run_cli("gate", "--plans", str(broken_path))
+        assert result.returncode != 0, result.stdout + result.stderr
+
+        tied = {
+            brief_id: {
+                "baseline": copy.deepcopy(pair["baseline"]),
+                "candidate": copy.deepcopy(pair["baseline"]),
+            }
+            for brief_id, pair in plans.items()
+        }
+        tied_path = directory / "tied_plans.json"
+        write_json(tied_path, tied)
+        result = run_cli("judge", "--plans", str(tied_path))
+        assert result.returncode != 0, result.stdout + result.stderr
+        result = run_cli("report", "--plans", str(tied_path))
+        assert result.returncode != 0, result.stdout + result.stderr
+
+        bad_calibration = load_calibration()
+        for pair in bad_calibration["pairs"]:
+            pair["human_preference"] = "baseline"
+        bad_calibration_path = directory / "bad_calibration.json"
+        write_json(bad_calibration_path, bad_calibration)
+        result = run_cli("calibrate", "--calibration", str(bad_calibration_path))
+        assert result.returncode != 0, result.stdout + result.stderr
+        result = run_cli(
+            "report",
+            "--calibration",
+            str(bad_calibration_path),
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+
     # Secret redaction boundary is inherited from the prose judge helper.
     os.environ["SPINDLE_PLAN_JUDGE_TEST_SECRET"] = "plan-secret-value"
     assert "plan-secret-value" not in prose_judge.redact_secrets("plan-secret-value")
@@ -1469,7 +1591,7 @@ def command_calibrate(args) -> int:
     if args.json_out:
         write_json(args.json_out, report)
     print(json.dumps(report, indent=2))
-    return 0 if report["agreement"] is not None and report["agreement"] >= 0.70 else 1
+    return 0 if report["agreement"] is not None and report["agreement"] >= CALIBRATION_MIN_AGREEMENT else 1
 
 
 def main() -> None:
@@ -1521,21 +1643,29 @@ def main() -> None:
         gate = gate_fixture_suite(briefs, plans)
         pairwise = run_pairwise_evaluation(briefs, plans, judges, seed=args.seed)
         calibration = calibration_report(pairwise, load_calibration(args.calibration))
+        calibration_passed = (
+            calibration["agreement"] is not None
+            and calibration["agreement"] >= CALIBRATION_MIN_AGREEMENT
+        )
+        release_ready = bool(
+            gate["summary"]["all_passed"]
+            and gate["negative_cases"]["all_passed"]
+            and pairwise["release_gate"]["passed"]
+            and calibration_passed
+        )
         combined = {
             "schema_version": SCHEMA_VERSION,
             "fixture_mode": pairwise["fixture_mode"],
             "layer1": gate["summary"],
             "layer2": {key: value for key, value in pairwise.items() if key not in ("rows", "judgments")},
-            "calibration": calibration,
-            "release_ready": bool(
-                gate["summary"]["all_passed"]
-                and gate["negative_cases"]["all_passed"]
-                and pairwise["release_gate"]["passed"]
-            ),
+            "calibration": {**calibration, "passed": calibration_passed},
+            "release_ready": release_ready,
         }
         if args.json_out:
             write_json(args.json_out, combined)
         print(json.dumps(combined, indent=2))
+        if not release_ready:
+            raise SystemExit(1)
         return
     raise SystemExit(args.func(args))
 
