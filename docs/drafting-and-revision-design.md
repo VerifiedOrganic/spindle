@@ -186,17 +186,27 @@ CritiqueV1 {
     anchor: { scene_id, base_text_hash, start_byte, end_byte, exact_quote },
     diagnosis, requested_change, preserve[], success_test,
     source_finding_ids[], scope: span|scene|chapter }],
-  strengths_to_preserve[], requires_author_decision[], no_edit_reason?
+  strengths_to_preserve[], requires_author_decision[],
+  no_change? { reason_code, explanation },
+  no_edit_reason?  // legacy mirror
 }
 ```
 
 Offsets are half-open UTF-8 byte ranges validated against exact quoted text.
-Insertions use zero-width anchors and surrounding context; scene-wide concerns
-anchor their evidence and declare scope explicitly. Reject malformed, stale or
-unverifiable anchors. One bounded schema repair is allowed inside the call cap;
-otherwise retain draft with `critic_invalid`. Select at most five actionable
-directives, prioritize continuity and author intent, deduplicate deterministic
-and reader concerns. Model suggestions cannot create new canon or override locks.
+`exact_quote` is authoritative: a unique quote resolves its byte offsets even
+when the model's initial offsets are approximate; repeated quotes require
+matching context, and a directive quote is capped at 800 bytes so it cannot
+target the whole draft. Insertions use zero-width anchors and surrounding
+context; scene-wide concerns anchor their evidence and declare scope explicitly.
+Reject malformed, stale or unverifiable anchors. An empty directive list
+requires a typed `no_change { reason_code, explanation }`; action, quiet-interior,
+dialogue-heavy, and reveal scenes require at least one directive unless
+`insufficient_evidence`, `author_intent_ambiguous`, or
+`hard_constraints_prevent_change` applies. One compact schema/anchor repair is
+allowed inside the call cap; otherwise retain draft with `critic_invalid`. Select
+at most five actionable directives, prioritize continuity and author intent,
+deduplicate deterministic and reader concerns. Model suggestions cannot create
+new canon or override locks.
 
 The revision prompt contains the full prior draft, compact packet, selected
 directives and strengths to preserve. Ask for targeted edits preserving unaffected
@@ -682,7 +692,8 @@ the empirical failure modes measured in the 90-pair live **G** experiment:
     `entry_exit_emotion`, `chapter_role`, with serde aliases for the
     `prose_judge.py` rubric keys), up to 5 ordered `CritiqueDirective` items,
     `strengths_to_preserve`, `requires_author_decision: Vec<AuthorDecisionItem>`,
-    and optional `no_edit_reason`.
+    optional typed `no_change: NoChangeV1 { reason_code, explanation }`, and the
+    legacy `no_edit_reason` mirror.
 - **UTF-8 byte-span, quote, and zero-width insertion validation
   (`validate_anchor`)**:
   - Every `CritiqueAnchor` is validated against `base_text` as a half-open UTF-8
@@ -691,6 +702,9 @@ the empirical failure modes measured in the 90-pair live **G** experiment:
     `scene_id`.
   - Non-empty spans (`start_byte < end_byte`) must have a non-empty
     `exact_quote` matching `&base_text[start_byte..end_byte]` byte-for-byte.
+    Before validation, a unique `exact_quote` is resolved to its actual byte
+    offsets; a repeated quote keeps an already-valid span or requires
+    `context_before`/`context_after`. Ambiguous quotes are a typed failure.
   - Zero-width insertion spans (`start_byte == end_byte`) must have
     `exact_quote == ""` and at least one non-empty surrounding context
     (`context_before` matching the bytes immediately preceding `start_byte`, or
@@ -726,9 +740,12 @@ the empirical failure modes measured in the 90-pair live **G** experiment:
   - Budgets the critic prompt (`CriticBudget::scene_default`: `input_limit = 16_000`,
     `output_reserve = 1_500`, `framing_reserve = 512`) and verifies token counts
     via the configured calibrated tokenizer when present.
-  - Executes at most 1 initial critic call plus at most 1 bounded repair call
-    (`max_calls` in `1..=2`) that includes the exact schema/anchor validation error.
-    If the repair output is still invalid or truncated, returns
+  - Executes at most 1 initial critic call plus at most 1 bounded compact repair
+    call (`max_calls` in `1..=2`) that includes the exact schema/anchor
+    validation error, scene card, constraints, knowledge boundaries, continuity,
+    and base draft — but not a duplicate of the full schema/template/rubric, so
+    the repair does not overflow when the draft is large. If the repair output is
+    still invalid or truncated, returns
     `ShadowCritiqueOutcome::CriticInvalid` and retains the original draft unchanged.
   - Persists `ShadowCritiqueArtifactV1` (`schema_version = "shadow_critique_artifact_v1"`)
     via atomic tempfile rename and verifies that the underlying
@@ -1088,6 +1105,29 @@ comparison, and the row-7 hybrid/agent per-execution-mode G remain **unrun**:
 there is no evals-only bridge/harness for those passes/modes in this tree, and
 this measurement PR intentionally did not add product code. Both optional passes
 remain off and neither host execution mode is activated.
+
+### Critic quality replay (pre-release fix)
+
+The pre-release critic fix was measured offline on the **same 90 saved initial
+drafts** from the row-6 G run, not with a new full G. Each draft was replayed
+through critic + prior-draft revision + the internal acceptance judge using
+`spindle-tokenizer revise-artifact`; the before column is the original G critic,
+the after column is the new quote-first / typed-no-change / scene-focus critic.
+Results are checked in at `evals/results/drafting_critic_quality.json`.
+
+| Metric | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| Invalid critic output | 22.2% (20/90) | 3.3% (3/90) | -18.9 pp |
+| Actionable directive | 15.6% (14/90) | 96.7% (87/90) | +81.1 pp |
+| Revision attempted | 15.6% (14/90) | 96.7% (87/90) | +81.1 pp |
+| Revision promoted by internal judge | 10.0% (9/90) | 42.2% (38/90) | +32.2 pp |
+
+Per-scene-type promoted rates before → after: action 11.1% → 27.8%,
+chapter-closer 11.1% → 44.4%, dialogue-heavy 5.6% → 44.4%, quiet-interior
+11.1% → 44.4%, reveal 11.1% → 50.0%. The internal judge is the same gemma
+review route used by the loop; this replay is a critic-quality measurement, not
+the 3-family G verdict. A full G on merged main is the next gate (PR 2), and no
+default is activated by this result.
 
 ### Gates and defaults
 

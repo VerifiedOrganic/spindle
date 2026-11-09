@@ -10,6 +10,9 @@ use std::path::Path;
 
 pub const CRITIC_RUBRIC_VERSION: &str = "scene-critic-v1";
 
+/// A directive must target a focused span, not the whole draft.
+const MAX_DIRECTIVE_ANCHOR_BYTES: usize = 800;
+
 /// Empirical scene-critic rubric calibrated against the 90-pair live G baseline
 /// (`action = 0.3611` and `reveal = 0.4167` weakest; `chapter-closer = 0.5556` strongest).
 pub const CRITIC_RUBRIC: &str = "\
@@ -39,6 +42,41 @@ critic rubric. Return ONLY a single valid JSON object matching CritiqueV1, with 
 fences or commentary. All anchor offsets (start_byte, end_byte) must be exact half-open UTF-8 \
 byte indices into the base draft such that base_text[start_byte..end_byte] == exact_quote. \
 Never mutate or rewrite the draft itself; never invent canon or override author locks.";
+
+const SCENE_FOCUS_ACTION: &str = "ACTION: protect immediate physical causality and kinetic momentum. Flag static spatial inventories, procedural recap, or constraint cataloging that stalls the scene before the turn; anchor the change to the exact stalled sentence or beat. Even when the scene is competent, find the single line where physical causality or sensory immediacy can be sharpened and return one focused minor/polish directive. Do not invent new action that changes the planned outcome.";
+const SCENE_FOCUS_QUIET_INTERIOR: &str = "QUIET-INTERIOR: protect concrete interiority, subtext, and an earned emotional turn. Flag abstract summary, generic feeling labels, repeated introspection, or a forced epiphany that replaces specific thought/gesture; anchor the change to the exact sentence where the interiority goes soft. Even when the scene is competent, find the single line where interiority or subtext can be made more specific and return one focused minor/polish directive. Do not import external action to manufacture stakes.";
+const SCENE_FOCUS_DIALOGUE: &str = "DIALOGUE-HEAVY: protect distinct voices, subtext, and turn-by-turn power shifts. Flag talking heads, on-the-nose exposition, or interchangeable registers; anchor the change to the exact exchange that stalls. Even when competent, find one exchange where subtext or register can be sharpened and return one focused minor/polish directive. Do not add new plot information.";
+const SCENE_FOCUS_REVEAL: &str = "REVEAL: protect earned perception and character reaction. Flag premature explanation before the dramatic beat lands, telegraphed turns, or discovery buried in abstract summary; anchor the change to the exact sentence where the reveal is pre-empted. Even when competent, find one line where perception or reaction can be more concrete and return one focused minor/polish directive. Do not change what is revealed.";
+const SCENE_FOCUS_CLOSER: &str = "CHAPTER-CLOSER: protect earned exit emotion, forward propulsion, and closing-image discipline. Flag tacked-on cliffhanger clichés, summary endings, or a closing image that restates rather than turns; anchor the change to the exact closing beat. Do not add a new plot event.";
+const SCENE_FOCUS_GENERIC: &str = "GENERIC SCENE: prioritize the scene card's goal, opposition, turn, intended outcome, and value shift over ornamental polish. Anchor every change to a concrete span and preserve the planned outcome.";
+
+fn scene_focus_requires_directive(packet: &DraftingPacketV1) -> bool {
+    if packet.scene_card.chapter.is_closer {
+        return false;
+    }
+    matches!(
+        packet.scene_card.value_shift.axis.to_lowercase().as_str(),
+        "action"
+            | "quiet-interior"
+            | "quiet_interior"
+            | "dialogue-heavy"
+            | "dialogue_heavy"
+            | "reveal"
+    )
+}
+
+fn scene_focus(packet: &DraftingPacketV1) -> &'static str {
+    if packet.scene_card.chapter.is_closer {
+        return SCENE_FOCUS_CLOSER;
+    }
+    match packet.scene_card.value_shift.axis.to_lowercase().as_str() {
+        "action" => SCENE_FOCUS_ACTION,
+        "quiet-interior" | "quiet_interior" => SCENE_FOCUS_QUIET_INTERIOR,
+        "dialogue-heavy" | "dialogue_heavy" => SCENE_FOCUS_DIALOGUE,
+        "reveal" => SCENE_FOCUS_REVEAL,
+        _ => SCENE_FOCUS_GENERIC,
+    }
+}
 
 /// Per-call token reservation for the scene critic (`docs/drafting-and-revision-design.md`:
 /// 16,000 input / 1,500 output / 512 framing reserve).
@@ -92,6 +130,10 @@ pub enum CritiqueError {
         actual: String,
     },
     #[error(
+        "ambiguous_anchor_quote: {occurrences} occurrences for {quote:?}; add context_before/context_after"
+    )]
+    AmbiguousAnchorQuote { quote: String, occurrences: usize },
+    #[error(
         "unanchored_insertion: zero-width anchor at byte {offset} requires matching context_before or context_after"
     )]
     UnanchoredInsertion { offset: usize },
@@ -111,6 +153,78 @@ pub enum CritiqueError {
 
 pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Resolve a quote-first anchor to exact UTF-8 byte offsets. Models are much
+/// better at quoting the draft than at computing byte offsets; when the quote is
+/// unique, its offsets are authoritative. A repeated quote keeps an already-valid
+/// current span, otherwise context_before/context_after must disambiguate it.
+fn resolve_anchor_offsets(
+    anchor: &mut CritiqueAnchor,
+    base_text: &str,
+) -> Result<(), CritiqueError> {
+    if anchor.exact_quote.is_empty() {
+        return Ok(());
+    }
+    let quote_len = anchor.exact_quote.len();
+    let matches: Vec<usize> = base_text
+        .match_indices(&anchor.exact_quote)
+        .map(|(start, _)| start)
+        .collect();
+    if matches.is_empty() {
+        return Err(CritiqueError::AnchorQuoteMismatch {
+            start: anchor.start_byte,
+            end: anchor.end_byte,
+            expected: anchor.exact_quote.clone(),
+            actual: "<quote not present in base_text>".into(),
+        });
+    }
+    if matches.len() == 1 {
+        anchor.start_byte = matches[0];
+        anchor.end_byte = matches[0] + quote_len;
+        return Ok(());
+    }
+    if base_text.get(anchor.start_byte..anchor.end_byte) == Some(anchor.exact_quote.as_str()) {
+        return Ok(());
+    }
+    let occurrences = matches.len();
+    let has_context = anchor
+        .context_before
+        .as_deref()
+        .is_some_and(|context| !context.is_empty())
+        || anchor
+            .context_after
+            .as_deref()
+            .is_some_and(|context| !context.is_empty());
+    if !has_context {
+        return Err(CritiqueError::AmbiguousAnchorQuote {
+            quote: anchor.exact_quote.clone(),
+            occurrences,
+        });
+    }
+    let candidate = matches.into_iter().find(|&start| {
+        let before_ok = anchor
+            .context_before
+            .as_deref()
+            .filter(|context| !context.is_empty())
+            .is_none_or(|context| base_text[..start].ends_with(context));
+        let after_ok = anchor
+            .context_after
+            .as_deref()
+            .filter(|context| !context.is_empty())
+            .is_none_or(|context| base_text[start + quote_len..].starts_with(context));
+        before_ok && after_ok
+    });
+    if let Some(start) = candidate {
+        anchor.start_byte = start;
+        anchor.end_byte = start + quote_len;
+        Ok(())
+    } else {
+        Err(CritiqueError::AmbiguousAnchorQuote {
+            quote: anchor.exact_quote.clone(),
+            occurrences,
+        })
+    }
 }
 
 /// Validate a `CritiqueAnchor` against the exact UTF-8 bytes of `base_text`,
@@ -472,7 +586,7 @@ pub fn validate_and_normalize_critique(
 
     // Validate all 10 diagnostic dimensions.
     let mut seen_dims = BTreeSet::new();
-    for dim_score in &critique.dimensions {
+    for dim_score in &mut critique.dimensions {
         if !seen_dims.insert(dim_score.dimension) {
             return Err(CritiqueError::InvalidDimensionCoverage(format!(
                 "duplicate dimension '{}'",
@@ -491,7 +605,8 @@ pub fn validate_and_normalize_critique(
                 dim_score.dimension.as_str()
             )));
         }
-        for span in &dim_score.evidence_spans {
+        for span in &mut dim_score.evidence_spans {
+            resolve_anchor_offsets(span, base_text)?;
             validate_anchor(span, base_text, expected_base_text_hash, expected_scene_id)?;
         }
     }
@@ -522,6 +637,15 @@ pub fn validate_and_normalize_critique(
             return Err(CritiqueError::InvalidDirective(format!(
                 "directive '{}' priority {} outside 1..=5",
                 directive.id, directive.priority
+            )));
+        }
+        resolve_anchor_offsets(&mut directive.anchor, base_text)?;
+        if directive.anchor.exact_quote.len() > MAX_DIRECTIVE_ANCHOR_BYTES {
+            return Err(CritiqueError::InvalidDirective(format!(
+                "directive '{}' anchor quote is {} bytes; use a focused span <= {} bytes",
+                directive.id,
+                directive.anchor.exact_quote.len(),
+                MAX_DIRECTIVE_ANCHOR_BYTES
             )));
         }
         validate_anchor(
@@ -592,9 +716,50 @@ pub fn validate_and_normalize_critique(
     }
     critique.directives = actionable;
 
-    if critique.directives.is_empty() && critique.no_edit_reason.is_none() {
-        critique.no_edit_reason = Some("no_actionable_directives".into());
-    } else if !critique.directives.is_empty() {
+    let any_below_five = critique
+        .dimensions
+        .iter()
+        .any(|dimension| dimension.score_1_to_5 < 5);
+    let focus_requires_directive = scene_focus_requires_directive(packet);
+    if critique.directives.is_empty() {
+        if let Some(no_change) = critique.no_change.as_ref() {
+            if no_change.explanation.trim().is_empty() {
+                return Err(CritiqueError::InvalidDirective(
+                    "no_change.explanation must be non-empty".into(),
+                ));
+            }
+            if matches!(
+                no_change.reason_code,
+                NoChangeReason::NoMaterialIssue | NoChangeReason::AlreadySatisfiesBrief
+            ) && (any_below_five || focus_requires_directive)
+            {
+                return Err(CritiqueError::InvalidDirective(
+                    "no_change reason conflicts with this critique: a score <=4, or an action/quiet-interior/dialogue-heavy/reveal scene, requires a focused directive unless insufficient_evidence/author_intent_ambiguous/hard_constraints_prevent_change applies".into(),
+                ));
+            }
+        } else if !critique.requires_author_decision.is_empty() {
+            critique.no_change = Some(NoChangeV1 {
+                reason_code: NoChangeReason::AuthorIntentAmbiguous,
+                explanation:
+                    "All proposed directives conflicted with author locks, canon, or planned outcomes."
+                        .into(),
+            });
+        } else {
+            return Err(CritiqueError::InvalidDirective(
+                "empty directives require an explicit typed no_change {reason_code, explanation}"
+                    .into(),
+            ));
+        }
+        critique.no_edit_reason = critique
+            .no_change
+            .as_ref()
+            .map(|no_change| no_change.explanation.clone());
+    } else {
+        if critique.no_change.is_some() {
+            return Err(CritiqueError::InvalidDirective(
+                "no_change must be absent when actionable directives are present".into(),
+            ));
+        }
         critique.no_edit_reason = None;
     }
 
@@ -716,7 +881,8 @@ pub fn critique_v1_output_template(
                 "source_finding_ids": []
             }
         ],
-        "no_edit_reason": null
+        "no_edit_reason": null,
+        "no_change": null
     })
 }
 
@@ -762,6 +928,7 @@ pub fn assemble_critic_messages(
     .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
     let schema_json = serde_json::to_string(&critique_v1_json_schema())
         .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
+    let scene_focus = scene_focus(packet);
 
     let render_critic_user = |continuity_sec: &str,
                               voice_sec: &str,
@@ -776,11 +943,19 @@ pub fn assemble_critic_messages(
                  scene_id: {:?}\n\
                  base_text_utf8_byte_len: {}\n\n\
                  CRITIQUE_V1 FIELD & ENUM REQUIREMENTS\n\
-                 - Top-level required fields: schema_version (\"critique_v1\"), base_text_hash, packet_hash, rubric_version (\"scene-critic-v1\"), dimensions (array of all 10 CriticDimensionScore objects), directives (0..=5 CritiqueDirective objects), strengths_to_preserve (array of strings), requires_author_decision (array of AuthorDecisionItem objects), no_edit_reason (string or null; required when directives is empty).\n\
+                 - Top-level required fields: schema_version (\"critique_v1\"), base_text_hash, packet_hash, rubric_version (\"scene-critic-v1\"), dimensions (array of all 10 CriticDimensionScore objects), directives (0..=5 CritiqueDirective objects), strengths_to_preserve (array of strings), requires_author_decision (array of AuthorDecisionItem objects), no_change (NoChangeV1 object or null; required when directives is empty), no_edit_reason (legacy string mirror; optional).\n\
+                 - DIRECTIVE QUALITY & NO-CHANGE CONTRACT:\n\
+                   * If the draft has a material issue, return at least one actionable directive. Every directive must quote a focused, verbatim exact_quote from the base draft and request ONE concrete change; no vague 'strengthen/improve/consider' instructions.\n\
+                   * If and only if there is no material issue, return directives=[] with no_change={{reason_code (no_material_issue | already_satisfies_brief | insufficient_evidence | author_intent_ambiguous | hard_constraints_prevent_change), explanation}}. A no_change verdict must be specific; 'it perfectly adheres' alone is not a reason.\n\
+                   * A 5 means the dimension has no actionable weakness. If any dimension scores <=4, propose a directive for the weakest dimension or use insufficient_evidence/author_intent_ambiguous/hard_constraints_prevent_change; no_material_issue and already_satisfies_brief are invalid.\n\
+                   * ACTION, QUIET-INTERIOR, DIALOGUE-HEAVY, and REVEAL scenes must return at least one focused minor/polish directive unless insufficient_evidence/author_intent_ambiguous/hard_constraints_prevent_change applies; no_material_issue and already_satisfies_brief are invalid for these scene types.\n\
+                   * Prefer quote-first anchoring: exact_quote is authoritative. start_byte/end_byte may be approximate for a unique quote and will be resolved; add context_before/context_after only when the quote repeats.\n\
+                   * JSON hygiene: return one JSON object with no duplicate keys (each directive has exactly one preserve array), no trailing commas, and no markdown.\n\
                  - dimensions[] required fields: dimension (one of: scene_purpose | tension_turn | pov | voice | dialogue | freshness | continuity | length | entry_exit_emotion | chapter_role), score_1_to_5 (integer 1..=5), evidence_spans (array of CritiqueAnchor), rationale (non-empty string).\n\
                  - directives[] required fields: id (non-empty string), dimension (CriticDimension enum), severity (one of: blocker | major | minor | polish), priority (integer 1..=5), anchor (CritiqueAnchor object), diagnosis (non-empty string), requested_change (non-empty string), preserve (array of strings), success_test (non-empty string), source_finding_ids (array of strings), scope (one of: span | scene | chapter).\n\
                  - CritiqueAnchor required fields: scene_id (matching scene_id above), base_text_hash (matching base_text_hash above), start_byte (usize), end_byte (usize), exact_quote (verbatim UTF-8 substring base_text[start_byte..end_byte]; empty string only when start_byte == end_byte), context_before (optional string; required if start_byte == end_byte and context_after is null), context_after (optional string; required if start_byte == end_byte and context_before is null).\n\
-                 - requires_author_decision[] fields: id, reason, blocking_constraint_id (string or null), proposed_change, source_finding_ids (array of strings).\n\n\
+                 - requires_author_decision[] fields: id, reason, blocking_constraint_id (string or null), proposed_change, source_finding_ids (array of strings).\n\
+                 - no_change fields: reason_code (enum above), explanation (non-empty string).\n\n\
                  CRITIQUE_V1 OUTPUT TEMPLATE\n\
                  {output_template_json}\n\n\
                  CRITIQUE_V1 JSON SCHEMA\n\
@@ -789,6 +964,8 @@ pub fn assemble_critic_messages(
                  {CRITIC_RUBRIC}\n\n\
                  SCENE CARD\n\
                  {scene_card_json}\n\n\
+                 SCENE-TYPE FOCUS\n\
+                 {scene_focus}\n\n\
                  HARD CONSTRAINTS\n\
                  {constraints_json}\n\n\
                  KNOWLEDGE BOUNDARIES (MANDATORY)\n\
@@ -954,10 +1131,18 @@ pub fn assemble_critic_messages(
     Ok((messages, messages_hash, input_tokens))
 }
 
-/// Assemble and token-verify the bounded one-shot schema/anchor repair prompt when
-/// the initial critic output is malformed or fails anchor/schema validation.
+/// Assemble and token-verify a compact one-shot schema/anchor repair prompt.
+/// The repair includes the scene card, hard constraints, knowledge boundaries,
+/// the exact base draft, and the invalid output, but not the full initial
+/// schema/template/rubric block. Repeating the entire initial prompt made the
+/// repair overflow exactly when a large draft most needed it.
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_critic_repair_messages(
     initial_messages: &DraftMessages,
+    packet: &DraftingPacketV1,
+    expected_packet_hash: &str,
+    base_text: &str,
+    expected_base_text_hash: &str,
     invalid_raw_output: &str,
     validation_error: &CritiqueError,
     budget: &CriticBudget,
@@ -971,14 +1156,18 @@ pub fn assemble_critic_repair_messages(
         ));
     }
 
+    let scene_card_json = serde_json::to_string(&packet.scene_card)
+        .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
+    let constraints_json = serde_json::to_string(&packet.hard_constraints)
+        .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
+    let knowledge_boundaries_json = serde_json::to_string(&packet.continuity.knowledge_boundaries)
+        .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
+    let continuity_json = serde_json::to_string(&packet.continuity)
+        .map_err(|e| CritiqueError::MalformedJson(e.to_string()))?;
+
     let mut quote_offset_hints = String::new();
-    if let Some(base_draft) = initial_messages
-        .user
-        .split("EXACT BASE DRAFT UTF-8\n")
-        .nth(1)
-        .map(|s| s.trim_end_matches('\n'))
-        && let Ok(parsed) =
-            serde_json::from_str::<serde_json::Value>(strip_thinking_and_fences(invalid_raw_output))
+    if let Ok(parsed) =
+        serde_json::from_str::<serde_json::Value>(strip_thinking_and_fences(invalid_raw_output))
     {
         let mut quotes = BTreeSet::new();
         if let Some(dims) = parsed.get("dimensions").and_then(|v| v.as_array()) {
@@ -1007,7 +1196,7 @@ pub fn assemble_critic_repair_messages(
             }
         }
         for q in quotes {
-            if let Some(start) = base_draft.find(&q) {
+            if let Some(start) = base_text.find(&q) {
                 let end = start + q.len();
                 quote_offset_hints.push_str(&format!(
                     "- start_byte: {start}, end_byte: {end} => exact_quote: {q:?}\n"
@@ -1024,20 +1213,38 @@ pub fn assemble_critic_repair_messages(
     };
 
     let user = format!(
-        "{}\n\n\
-         SCHEMA / ANCHOR REPAIR REQUIRED\n\
-         Your previous output failed CritiqueV1 validation with error:\n\
-         {validation_error}{offset_hint_block}\n\n\
-         Previous invalid output:\n\
+        "CRITIQUE_V1 REPAIR\n\
+         expected_packet_hash: {expected_packet_hash}\n\
+         expected_base_text_hash: {expected_base_text_hash}\n\
+         scene_id: {:?}\n\
+         base_text_utf8_byte_len: {}\n\n\
+         REPAIR CONTRACT\n\
+         - Return exactly one valid CritiqueV1 JSON object, no markdown, no duplicate keys (especially preserve), no trailing commas.\n\
+         - Top level: schema_version, base_text_hash, packet_hash, rubric_version, dimensions (all 10), directives (0..=5), strengths_to_preserve, requires_author_decision, no_change (required when directives is empty), no_edit_reason (optional legacy mirror).\n\
+         - Each directive: id, dimension, severity, priority, anchor, diagnosis, requested_change, preserve, success_test, source_finding_ids, scope. Each directive has exactly one preserve array.\n\
+         - Each anchor: scene_id, base_text_hash, start_byte, end_byte, exact_quote, context_before, context_after. exact_quote is authoritative: keep it verbatim and unique. You may leave start_byte/end_byte approximate; unique quotes are resolved to exact offsets. For a repeated quote or a zero-width insertion, provide matching context_before/context_after.\n\
+         - If there is a material issue, return at least one focused directive. If not, return directives=[] with no_change={{reason_code, explanation}}. Do not use no_material_issue/already_satisfies_brief when any dimension scores <=4 or for action/quiet-interior/dialogue-heavy/reveal scenes; those need a directive unless insufficient_evidence/author_intent_ambiguous/hard_constraints_prevent_change applies.\n\n\
+         SCENE CARD\n\
+         {scene_card_json}\n\n\
+         HARD CONSTRAINTS\n\
+         {constraints_json}\n\n\
+         KNOWLEDGE BOUNDARIES (MANDATORY)\n\
+         {knowledge_boundaries_json}\n\n\
+         CONTINUITY CONTEXT\n\
+         {continuity_json}\n\n\
+         EXACT BASE DRAFT UTF-8\n\
+         {base_text}\n\n\
+         PREVIOUS INVALID OUTPUT\n\
          {invalid_raw_output}\n\n\
-         Return a corrected CritiqueV1 JSON object conforming to CRITIQUE_V1 FIELD & ENUM \
-         REQUIREMENTS, CRITIQUE_V1 OUTPUT TEMPLATE, and CRITIQUE_V1 JSON SCHEMA above, where \
-         every anchor [start_byte, end_byte) is an exact UTF-8 byte slice of the base draft \
-         matching exact_quote, all 10 dimensions are present with score_1_to_5 in 1..=5 and \
-         non-empty rationale, every directive includes id/dimension/severity/priority/anchor/\
-         diagnosis/requested_change/preserve/success_test/source_finding_ids/scope, and \
-         base_text_hash/packet_hash/rubric_version match the contract values above.",
-        initial_messages.user
+         VALIDATION ERROR\n\
+         {validation_error}{offset_hint_block}\n\n\
+         REPAIR RULES\n\
+         - Fix the specific validation error above; do not rewrite the draft or add new canon.\n\
+         - If the error is a duplicate field, keep exactly one instance.\n\
+         - If a quote is not present, copy a shorter exact substring from the base draft.\n\
+         - If the output was truncated, return a smaller critique with fewer directives.\n",
+        packet.scene_id,
+        base_text.len()
     );
     let messages = DraftMessages {
         system: initial_messages.system.clone(),

@@ -39,6 +39,12 @@ workflow profiles for new sessions.
   measurement.
 - Optional line edits and bounded chapter passes help revise without turning a
   single instruction into an unbounded rewrite.
+- The scene critic now resolves quote-first anchors, requires a typed
+  `no_change` reason when it proposes nothing, applies action/quiet-interior/
+  dialogue/reveal focus, and uses a compact single repair prompt. Offline replay
+  on the 90 G drafts improved invalid output 22.2% → 3.3%, actionable directives
+  15.6% → 96.7%, and internal-judge promoted revisions 10.0% → 42.2%; a full G
+  remains the activation gate.
 
 **Tool surface**
 

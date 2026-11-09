@@ -709,6 +709,7 @@ pub(crate) fn valid_critique_fixture(
         strengths_to_preserve: vec!["Sharp river imagery.".into()],
         requires_author_decision: vec![],
         no_edit_reason: None,
+        no_change: None,
     }
 }
 
@@ -798,6 +799,177 @@ fn critique_v1_validates_utf8_byte_spans_quotes_and_zero_width_insertions() {
         validate_anchor(&zero_width, base_text, &base_hash, Some("scene-1")),
         Err(CritiqueError::UnanchoredInsertion { .. })
     ));
+}
+
+#[test]
+fn critique_resolves_quote_first_offsets_and_rejects_ambiguous_quotes() {
+    use critique::*;
+    let base_text = "The river rose. The bridge fell.";
+    let base_hash = sha256_hex(base_text.as_bytes());
+    let mut pkt = fixture();
+    pkt.scene_id = Some("scene-quote".into());
+
+    let mut raw = valid_critique_fixture(
+        base_text,
+        &base_hash,
+        "pkt-quote",
+        Some("scene-quote".into()),
+    );
+    raw.directives[0].anchor.start_byte = 0;
+    raw.directives[0].anchor.end_byte = 1;
+    raw.directives[0].anchor.exact_quote = "river rose".into();
+    let validated =
+        validate_and_normalize_critique(raw, &pkt, "pkt-quote", base_text, &base_hash).unwrap();
+    let expected_start = base_text.find("river rose").unwrap();
+    assert_eq!(validated.directives[0].anchor.start_byte, expected_start);
+    assert_eq!(
+        validated.directives[0].anchor.end_byte,
+        expected_start + "river rose".len()
+    );
+
+    // A repeated quote with no disambiguating context is an honest typed failure.
+    let mut ambiguous = valid_critique_fixture(
+        base_text,
+        &base_hash,
+        "pkt-quote",
+        Some("scene-quote".into()),
+    );
+    ambiguous.directives[0].anchor.start_byte = 0;
+    ambiguous.directives[0].anchor.end_byte = 1;
+    ambiguous.directives[0].anchor.exact_quote = "The ".into();
+    ambiguous.directives[0].anchor.context_before = None;
+    ambiguous.directives[0].anchor.context_after = None;
+    let error =
+        validate_and_normalize_critique(ambiguous, &pkt, "pkt-quote", base_text, &base_hash)
+            .unwrap_err();
+    assert!(matches!(error, CritiqueError::AmbiguousAnchorQuote { .. }));
+}
+
+#[test]
+fn critique_requires_typed_no_change_and_rejects_contradictions() {
+    use critique::*;
+    let base_text = "The river rose.";
+    let base_hash = sha256_hex(base_text.as_bytes());
+    let mut pkt = fixture();
+    pkt.scene_id = Some("scene-no-change".into());
+    let raw = valid_critique_fixture(
+        base_text,
+        &base_hash,
+        "pkt-no-change",
+        Some("scene-no-change".into()),
+    );
+    let directive = raw.directives[0].clone();
+    let mut no_change = raw.clone();
+    no_change.directives.clear();
+    no_change.no_change = Some(spindle_core::drafting::NoChangeV1 {
+        reason_code: spindle_core::drafting::NoChangeReason::NoMaterialIssue,
+        explanation: "All dimensions are publication-ready.".into(),
+    });
+    for dimension in &mut no_change.dimensions {
+        dimension.score_1_to_5 = 5;
+    }
+    let validated = validate_and_normalize_critique(
+        no_change.clone(),
+        &pkt,
+        "pkt-no-change",
+        base_text,
+        &base_hash,
+    )
+    .unwrap();
+    assert!(validated.directives.is_empty());
+    assert_eq!(
+        validated.no_edit_reason.as_deref(),
+        Some("All dimensions are publication-ready.")
+    );
+
+    let mut action_pkt = pkt.clone();
+    action_pkt.scene_card.value_shift.axis = "action".into();
+    let mut action_no_change = no_change.clone();
+    action_no_change.no_change = Some(spindle_core::drafting::NoChangeV1 {
+        reason_code: spindle_core::drafting::NoChangeReason::AlreadySatisfiesBrief,
+        explanation: "The action scene is already strong.".into(),
+    });
+    assert!(matches!(
+        validate_and_normalize_critique(
+            action_no_change,
+            &action_pkt,
+            "pkt-no-change",
+            base_text,
+            &base_hash
+        ),
+        Err(CritiqueError::InvalidDirective(_))
+    ));
+
+    let mut missing = no_change.clone();
+    missing.no_change = None;
+    assert!(matches!(
+        validate_and_normalize_critique(missing, &pkt, "pkt-no-change", base_text, &base_hash),
+        Err(CritiqueError::InvalidDirective(_))
+    ));
+
+    let mut low_score = no_change.clone();
+    low_score.dimensions[0].score_1_to_5 = 4;
+    assert!(matches!(
+        validate_and_normalize_critique(low_score, &pkt, "pkt-no-change", base_text, &base_hash),
+        Err(CritiqueError::InvalidDirective(_))
+    ));
+
+    let mut contradictory = no_change;
+    contradictory.directives = vec![directive];
+    assert!(matches!(
+        validate_and_normalize_critique(
+            contradictory,
+            &pkt,
+            "pkt-no-change",
+            base_text,
+            &base_hash
+        ),
+        Err(CritiqueError::InvalidDirective(_))
+    ));
+}
+
+#[test]
+fn critic_prompt_uses_scene_specific_focus_and_typed_no_change_contract() {
+    use critique::*;
+    let base_text = "The river rose.";
+    let base_hash = sha256_hex(base_text.as_bytes());
+    let mut pkt = fixture();
+    pkt.scene_id = Some("scene-focus".into());
+    let budget = CriticBudget::scene_default("fixture".into(), 20_000);
+
+    pkt.scene_card.value_shift.axis = "quiet-interior".into();
+    let (quiet, _, _) = assemble_critic_messages(
+        &pkt,
+        "pkt-focus",
+        base_text,
+        &base_hash,
+        &[],
+        &budget,
+        Some(&VerifiedFixtureTokenizer),
+        "",
+    )
+    .unwrap();
+    assert!(quiet.user.contains("QUIET-INTERIOR"));
+    assert!(
+        quiet
+            .user
+            .contains("DIRECTIVE QUALITY & NO-CHANGE CONTRACT")
+    );
+    assert!(quiet.user.contains("no_change"));
+
+    pkt.scene_card.value_shift.axis = "action".into();
+    let (action, _, _) = assemble_critic_messages(
+        &pkt,
+        "pkt-focus",
+        base_text,
+        &base_hash,
+        &[],
+        &budget,
+        Some(&VerifiedFixtureTokenizer),
+        "",
+    )
+    .unwrap();
+    assert!(action.user.contains("ACTION:"));
 }
 
 #[test]
@@ -1082,7 +1254,8 @@ fn critic_prompt_embeds_complete_json_schema_and_template_that_validates_without
         "SENTINEL_MEM_PACING_TWO_SLOW_SCENES",
     )];
 
-    let critic_budget = CriticBudget::scene_default("fixture".into(), 20_000);
+    let mut critic_budget = CriticBudget::scene_default("fixture".into(), 32_000);
+    critic_budget.input_limit = 24_000;
 
     let (initial_msgs, _, _) = assemble_critic_messages(
         &pkt,
@@ -1161,6 +1334,10 @@ fn critic_prompt_embeds_complete_json_schema_and_template_that_validates_without
         "blocking_constraint_id",
         "proposed_change",
         "no_edit_reason",
+        "no_change",
+        "reason_code",
+        "SCENE-TYPE FOCUS",
+        "DIRECTIVE QUALITY & NO-CHANGE CONTRACT",
         "blocker",
         "major",
         "minor",
@@ -1233,16 +1410,24 @@ fn critic_prompt_embeds_complete_json_schema_and_template_that_validates_without
     assert_eq!(validated.directives.len(), 1);
     assert_eq!(validated.directives[0].anchor.exact_quote, first_sentence);
 
-    // Verify the repair prompt retains the full schema and template as well
+    // The repair prompt is compact: it keeps the scene context and base draft,
+    // not a duplicate of the full schema/template block.
     let (repair_msgs, _, _) = assemble_critic_repair_messages(
         &initial_msgs,
+        &pkt,
+        "pkt-hash-contract",
+        base_text,
+        &base_hash,
         "{\"broken\":true}",
         &CritiqueError::MalformedJson("missing fields".into()),
         &critic_budget,
         Some(&VerifiedFixtureTokenizer),
     )
     .unwrap();
-    assert!(repair_msgs.user.contains("CRITIQUE_V1 OUTPUT TEMPLATE"));
-    assert!(repair_msgs.user.contains("CRITIQUE_V1 JSON SCHEMA"));
-    assert!(repair_msgs.user.contains("SCHEMA / ANCHOR REPAIR REQUIRED"));
+    assert!(repair_msgs.user.contains("CRITIQUE_V1 REPAIR"));
+    assert!(repair_msgs.user.contains("REPAIR CONTRACT"));
+    assert!(repair_msgs.user.contains("SCENE CARD"));
+    assert!(repair_msgs.user.contains("EXACT BASE DRAFT UTF-8"));
+    assert!(repair_msgs.user.contains("REPAIR RULES"));
+    assert!(!repair_msgs.user.contains("CRITIQUE_V1 OUTPUT TEMPLATE"));
 }
