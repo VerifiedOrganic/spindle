@@ -4,6 +4,11 @@
 
 ### Added
 
+- Unified history and undo scopes: `list_changes` paginates scene-version,
+  checkpoint, and style receipts with explicit undo support; `undo_change`
+  resolves an operation id and refuses automatic mutation for scopes whose
+  compensation is not atomic, directing callers to the explicit revision tool.
+
 - Canonical atomic batch creates: `create_terms`, `create_motifs`,
   `create_narrative_promises`, and `set_character_voice_profiles` accept 1-50
   items, support `dry_run`, preflight every item, and commit all-or-nothing in

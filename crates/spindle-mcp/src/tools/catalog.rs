@@ -621,6 +621,14 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "operator_delete_scene",
             "Delete an active-branch scene after removing scene_source_link records and invalidating stale chapter_plan/chapter_summary artifacts, but only when no other blockers or semantic risks remain. Accepts scene_id for unambiguous addressing, like delete_scene",
         ),
+        tool::<ListChangesInput, ListChangesOutput>(
+            "list_changes",
+            "List compact, paginated history receipts across scene versions, branch checkpoints, style applications/patches, and prior undo records. Each receipt names its undo support and an operation id accepted by undo_change.",
+        ),
+        tool::<UndoChangeInput, UndoChangeOutput>(
+            "undo_change",
+            "Resolve a history operation id to its explicit revision scope. Automatic undo is not yet atomic for scene continuity or multi-step style rollback, so this tool refuses those scopes with a recovery path to restore_scene_version, restore_save_point, rollback_style_profile_application, or rollback_style_revision_patch.",
+        ),
         tool::<ListSceneVersionsInput, ListSceneVersionsOutput>(
             "list_scene_versions",
             "List saved historical versions for a scene",

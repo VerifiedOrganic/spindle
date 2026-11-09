@@ -442,3 +442,71 @@ async fn create_style_revision_patch_is_non_mutating_and_matches_preview() {
         serde_json::to_value(&preview).unwrap()
     );
 }
+
+#[tokio::test]
+async fn style_undo_is_explicitly_checkpoint_only() {
+    use spindle_core::models::{ListChangesInput, UndoChangeInput};
+
+    let (tmp, svc) = fresh_service().await;
+    let project_id = project(&svc, "Style Undo Scope").await;
+    let profile_id = profile(&svc, &tmp, &project_id).await;
+    svc.apply_style_profile(ApplyStyleProfileInput {
+        project_id: project_id.clone(),
+        profile_id,
+        mode: StyleProfileApplyMode::Merge,
+        force: None,
+        dry_run: false,
+    })
+    .await
+    .unwrap();
+    let app = svc
+        .list_style_profile_applications(ListStyleProfileApplicationsInput {
+            project_id: project_id.clone(),
+        })
+        .await
+        .unwrap()
+        .applications
+        .into_iter()
+        .next()
+        .expect("style application");
+
+    let changes = svc
+        .list_changes(ListChangesInput {
+            project_id: project_id.clone(),
+            branch_id: None,
+            scene_id: None,
+            kind: Some("style_apply".to_string()),
+            limit: None,
+            offset: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        changes.changes[0].undo_support,
+        spindle_core::models::UndoSupport::CheckpointOnly
+    );
+
+    let refused = svc
+        .undo_change(UndoChangeInput {
+            project_id: project_id.clone(),
+            operation_id: format!("style_application:{}", app.id),
+            expected_head: app.id.clone(),
+            dry_run: false,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("checkpoint_only"),
+        "{refused:#}"
+    );
+
+    // The explicit rollback keeps its original scope.
+    svc.rollback_style_profile_application(
+        spindle_core::style::RollbackStyleProfileApplicationInput {
+            project_id,
+            application_id: app.id,
+        },
+    )
+    .await
+    .unwrap();
+}

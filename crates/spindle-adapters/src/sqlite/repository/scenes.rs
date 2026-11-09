@@ -789,6 +789,27 @@ impl Repository {
             .await
     }
 
+    pub async fn list_scene_versions_by_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<SceneVersion>> {
+        let project_id = project_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let sql = format!(
+                    "SELECT {SCENE_VERSION_COLUMNS} FROM scene_version \
+                     WHERE project_id = ?1 ORDER BY created_at DESC, version_number DESC"
+                );
+                let mut stmt = conn.prepare_cached(&sql)?;
+                let rows = stmt
+                    .query_map([&project_id], |r| SceneVersion::try_from(r))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
     pub async fn get_scene_version(&self, scene_version_id: &str) -> Result<SceneVersion> {
         let id = scene_version_id.to_string();
         self.inner
