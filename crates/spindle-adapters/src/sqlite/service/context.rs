@@ -4471,6 +4471,16 @@ fn scene_context_section_token_map(
         .collect()
 }
 
+fn normalize_scene_type(tone: Option<&str>) -> Option<String> {
+    let normalized = tone?.trim().to_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "action" | "quiet-interior" | "dialogue-heavy" | "reveal" | "chapter-closer" => {
+            Some(normalized)
+        }
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_drafting_packet_v1_for_prepare_scene(
     preparation_id: &str,
@@ -4613,7 +4623,8 @@ fn build_drafting_packet_v1_for_prepare_scene(
             },
             story_clock: String::new(),
             rating: purpose.content_rating.clone(),
-            tone: None,
+            tone: target_scene.and_then(|scene| scene.tone.clone()),
+            scene_type: normalize_scene_type(target_scene.and_then(|scene| scene.tone.as_deref())),
             participants,
             required_beats: purpose
                 .expected_beats

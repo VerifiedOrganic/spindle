@@ -111,6 +111,12 @@ pub struct SceneCardV1 {
     pub story_clock: String,
     pub rating: crate::models::ContentRating,
     pub tone: Option<String>,
+    /// Optional scene classification carried from the scene's explicit tone/tag
+    /// label when it names a recognized mode (action, quiet-interior,
+    /// dialogue-heavy, reveal, chapter-closer). Kept separate from `value_shift`,
+    /// which is the narrative value axis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_type: Option<String>,
     pub participants: Vec<PacketParticipant>,
     pub required_beats: Vec<String>,
     pub promises_due: Vec<String>,

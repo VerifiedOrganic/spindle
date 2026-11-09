@@ -34,6 +34,9 @@ workflow profiles for new sessions.
   `life_status` and recognize irregular/third-person finite verbs; attribute
   checks cover numeric heights, sight/vision, handedness, colour, scars and
   build.
+- Secret-leak detection also catches paraphrased disclosures through reported
+  speech, written notices/broadsheets/letters read aloud, and role or collective
+  actors, while holder/in-circle and framed sentences stay silent.
 
 **Drafting packets, critic, and revision (off by default)**
 
@@ -46,6 +49,12 @@ workflow profiles for new sessions.
   measurement.
 - Optional line edits and bounded chapter passes help revise without turning a
   single instruction into an unbounded rewrite.
+- The scene critic now resolves quote-first anchors, requires a typed
+  `no_change` reason when it proposes nothing, applies action/quiet-interior/
+  dialogue/reveal focus, and uses a compact single repair prompt. Offline replay
+  on the 90 G drafts improved invalid output 22.2% → 4.4%, actionable directives
+  15.6% → 95.6%, and internal-judge promoted revisions 10.0% → 45.6%; a full G
+  remains the activation gate.
 
 **Tool surface**
 

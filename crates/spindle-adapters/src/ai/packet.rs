@@ -795,6 +795,10 @@ impl ModelRouter {
                 let (repair_messages, repair_hash, repair_input_tokens) =
                     match assemble_critic_repair_messages(
                         &initial_messages,
+                        packet,
+                        expected_packet_hash,
+                        base_text,
+                        expected_base_text_hash,
                         &resp1.output,
                         &first_err,
                         budget,
@@ -2303,11 +2307,13 @@ max_tokens = 500
         let second_req_body: serde_json::Value =
             serde_json::from_str(&captured_reqs.lock().unwrap()[1]).unwrap();
         let second_user_msg = second_req_body["messages"][1]["content"].as_str().unwrap();
-        assert!(second_user_msg.contains("CRITIQUE_V1 OUTPUT TEMPLATE"));
-        assert!(second_user_msg.contains("CRITIQUE_V1 JSON SCHEMA"));
+        assert!(second_user_msg.contains("CRITIQUE_V1 REPAIR"));
+        assert!(second_user_msg.contains("REPAIR CONTRACT"));
+        assert!(second_user_msg.contains("SCENE CARD"));
+        assert!(second_user_msg.contains("EXACT BASE DRAFT UTF-8"));
         assert!(second_user_msg.contains("SHADOW_SENTINEL_KB_NO_TOWER_KEY"));
-        assert!(second_user_msg.contains("SHADOW_SENTINEL_VOICE_SHORT_CADENCE"));
-        assert!(second_user_msg.contains("SCHEMA / ANCHOR REPAIR REQUIRED"));
+        assert!(second_user_msg.contains("SHADOW_SENTINEL_FACT_ROPE_FRAYED"));
+        assert!(second_user_msg.contains("REPAIR RULES"));
 
         // Verify shadow mode did NOT mutate the draft artifact on disk
         assert_eq!(std::fs::read(&draft_path).unwrap(), draft_bytes_snapshot);
