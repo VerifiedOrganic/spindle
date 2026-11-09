@@ -2,9 +2,9 @@
   "version": 1,
   "compatibility": {
     "default": {
-      "tools": 172,
-      "input_bytes": 144686,
-      "full_bytes": 613420
+      "tools": 173,
+      "input_bytes": 149271,
+      "full_bytes": 642894
     },
     "minimal": {
       "tools": 22,
@@ -13,13 +13,13 @@
     },
     "write": {
       "tools": 124,
-      "input_bytes": 112960,
-      "full_bytes": 445773
+      "input_bytes": 116001,
+      "full_bytes": 468381
     },
     "import": {
       "tools": 40,
-      "input_bytes": 19648,
-      "full_bytes": 207901
+      "input_bytes": 21665,
+      "full_bytes": 229485
     },
     "authoring": {
       "tools": 78,
@@ -43,8 +43,8 @@
     },
     "revision": {
       "tools": 32,
-      "input_bytes": 20661,
-      "full_bytes": 53896
+      "input_bytes": 20950,
+      "full_bytes": 54185
     },
     "setup": {
       "tools": 9,
@@ -52,14 +52,14 @@
       "full_bytes": 9074
     },
     "style": {
-      "tools": 42,
-      "input_bytes": 29574,
-      "full_bytes": 76961
+      "tools": 43,
+      "input_bytes": 34159,
+      "full_bytes": 94206
     },
     "workflow-authoring": {
       "tools": 72,
-      "input_bytes": 83789,
-      "full_bytes": 173420
+      "input_bytes": 84078,
+      "full_bytes": 173709
     },
     "workflow-import": {
       "tools": 20,
@@ -77,9 +77,9 @@
       "full_bytes": 61514
     },
     "legacy-all": {
-      "tools": 172,
-      "input_bytes": 144686,
-      "full_bytes": 613420
+      "tools": 173,
+      "input_bytes": 149271,
+      "full_bytes": 642894
     }
   },
   "canonical": {

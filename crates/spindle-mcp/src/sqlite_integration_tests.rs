@@ -7493,6 +7493,7 @@ async fn explicit_candidate_withheld_when_style_route_not_explicit_cleared() {
             force_apply: None,
             metrics_only: Some(true),
             dismiss_candidate_ids: Vec::new(),
+            dry_run: false,
         })
         .await
         .unwrap();
@@ -7544,6 +7545,7 @@ async fn explicit_candidate_included_when_style_route_explicit_cleared() {
             force_apply: None,
             metrics_only: Some(true),
             dismiss_candidate_ids: Vec::new(),
+            dry_run: false,
         })
         .await
         .unwrap();

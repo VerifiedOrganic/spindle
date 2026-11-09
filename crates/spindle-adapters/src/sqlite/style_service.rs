@@ -7,11 +7,13 @@ use spindle_core::models::{CreateWorldRuleInput, UpdateWorldRuleInput};
 use spindle_core::style::{
     ApplyStyleProfileInput, ApplyStyleProfileOutput, CheckStyleProfileSourcesInput,
     CheckStyleProfileSourcesOutput, CreateStyleProfileFromMarkdownInput,
-    CreateStyleProfileFromMarkdownOutput, GetStyleProfileInput, GetStyleProfileOutput,
-    ListStyleProfilesInput, ListStyleProfilesOutput, PreviewRefreshStyleProfileInput,
-    PreviewRefreshStyleProfileOutput, RefreshStyleProfileInput, RefreshStyleProfileOutput,
-    StyleCorpusSummary, StyleEditCandidateRef, StyleEditCandidatesPreview, StyleProfileApplyMode,
-    StyleProfileCard, StyleProfileGuidance, StyleProfileModelReceipt, StyleProfileSourcePolicy,
+    CreateStyleProfileFromMarkdownOutput, CreateStyleRevisionPatchInput, GetStyleProfileInput,
+    GetStyleProfileOutput, ListStyleProfilesInput, ListStyleProfilesOutput,
+    PreviewApplyStyleProfileInput, PreviewApplyStyleProfileOutput, PreviewRefreshStyleProfileInput,
+    PreviewRefreshStyleProfileOutput, RefreshStyleMetricDelta, RefreshStyleProfileInput,
+    RefreshStyleProfileOutput, StyleCorpusSummary, StyleEditCandidateRef,
+    StyleEditCandidatesPreview, StyleProfileApplyMode, StyleProfileCard, StyleProfileGuidance,
+    StyleProfileModelReceipt, StyleProfileQualitySummary, StyleProfileSourcePolicy,
     StyleProfileStatus, StyleSourceRef,
 };
 use std::fs;
@@ -31,6 +33,16 @@ struct StyleEditCandidateResolution {
     included_corpus: Vec<(String, String)>,
     included_ids: Vec<String>,
 }
+/// Computed prose diff shared by a live `apply_style_profile` and its dry run.
+struct ComputedStyleApply {
+    after_narrator_voice: spindle_core::style::NarratorVoice,
+    added_style_notes: Vec<String>,
+    removed_style_notes: Vec<String>,
+    after_style_notes: Vec<String>,
+    style_rule_action: spindle_core::style::StyleWorldRuleAction,
+    validator_cache_ids: Vec<String>,
+}
+
 const MAX_STYLE_SYNTHESIS_SOURCE_WORDS: usize = 12_000;
 
 fn clean_json_response(raw: &str) -> &str {
@@ -801,6 +813,7 @@ impl SqliteSpindleService {
                         .application_mode
                         .unwrap_or(StyleProfileApplyMode::Merge),
                     force: input.force_apply,
+                    dry_run: false,
                 })
                 .await?;
             applied = true;
@@ -1089,13 +1102,15 @@ impl SqliteSpindleService {
         })
     }
 
-    pub async fn preview_refresh_style_profile(
+    async fn build_refresh_preview(
         &self,
-        input: PreviewRefreshStyleProfileInput,
+        project_id: &str,
+        profile_id: &str,
+        metrics_only: Option<bool>,
     ) -> Result<PreviewRefreshStyleProfileOutput> {
         let old_profile = self
             .repository()
-            .get_style_profile(&input.project_id, &input.profile_id)
+            .get_style_profile(project_id, profile_id)
             .await?
             .ok_or_else(|| anyhow!("style profile not found"))?;
 
@@ -1103,16 +1118,14 @@ impl SqliteSpindleService {
             return Err(anyhow!("Cannot preview refresh an archived style profile"));
         }
 
-        let candidate_resolution = self
-            .resolve_style_edit_candidates(&input.project_id)
-            .await?;
+        let candidate_resolution = self.resolve_style_edit_candidates(project_id).await?;
 
         let candidate = self
             .generate_candidate_style_profile_with_extra(
-                &input.project_id,
+                project_id,
                 &old_profile.name,
                 &old_profile.source_policy,
-                input.metrics_only,
+                metrics_only,
                 &candidate_resolution.included_corpus,
             )
             .await?;
@@ -1191,6 +1204,14 @@ impl SqliteSpindleService {
         })
     }
 
+    pub async fn preview_refresh_style_profile(
+        &self,
+        input: PreviewRefreshStyleProfileInput,
+    ) -> Result<PreviewRefreshStyleProfileOutput> {
+        self.build_refresh_preview(&input.project_id, &input.profile_id, input.metrics_only)
+            .await
+    }
+
     pub async fn refresh_style_profile(
         &self,
         input: RefreshStyleProfileInput,
@@ -1203,6 +1224,87 @@ impl SqliteSpindleService {
 
         if old_profile.archived_at.is_some() {
             return Err(anyhow!("Cannot refresh an archived style profile"));
+        }
+
+        if input.dry_run {
+            if input.apply_after_refresh.unwrap_or(false) {
+                return Err(anyhow!(
+                    "apply_after_refresh requires a live refresh; omit dry_run to apply the candidate"
+                ));
+            }
+            if !input.dismiss_candidate_ids.is_empty() {
+                return Err(anyhow!(
+                    "dismiss_candidate_ids requires a live refresh; omit dry_run to dismiss candidates"
+                ));
+            }
+            let preview = self
+                .build_refresh_preview(&input.project_id, &input.profile_id, input.metrics_only)
+                .await?;
+            let metric_deltas = vec![
+                RefreshStyleMetricDelta {
+                    metric: "average_sentence_words".to_string(),
+                    before: preview.old_profile_summary.metrics.average_sentence_words,
+                    after: preview
+                        .candidate_profile_summary
+                        .metrics
+                        .average_sentence_words,
+                    delta: preview.metric_deltas.average_sentence_words_delta,
+                },
+                RefreshStyleMetricDelta {
+                    metric: "average_paragraph_words".to_string(),
+                    before: preview.old_profile_summary.metrics.average_paragraph_words,
+                    after: preview
+                        .candidate_profile_summary
+                        .metrics
+                        .average_paragraph_words,
+                    delta: preview.metric_deltas.average_paragraph_words_delta,
+                },
+                RefreshStyleMetricDelta {
+                    metric: "dialogue_word_ratio".to_string(),
+                    before: preview.old_profile_summary.metrics.dialogue_word_ratio,
+                    after: preview
+                        .candidate_profile_summary
+                        .metrics
+                        .dialogue_word_ratio,
+                    delta: preview.metric_deltas.dialogue_word_ratio_delta,
+                },
+                RefreshStyleMetricDelta {
+                    metric: "first_person_pronoun_rate_per_1k_words".to_string(),
+                    before: preview
+                        .old_profile_summary
+                        .metrics
+                        .first_person_pronoun_rate_per_1k_words,
+                    after: preview
+                        .candidate_profile_summary
+                        .metrics
+                        .first_person_pronoun_rate_per_1k_words,
+                    delta: preview.metric_deltas.first_person_pronoun_rate_delta,
+                },
+            ];
+            let compact = spindle_core::style::RefreshStyleProfilePreview {
+                old_profile_id: preview.old_profile_summary.profile_id.clone(),
+                candidate_profile_id: preview.candidate_profile_summary.profile_id.clone(),
+                candidate_name: preview.candidate_profile_summary.name.clone(),
+                candidate_quality: StyleProfileQualitySummary {
+                    classification: preview.quality_report.classification,
+                    confidence_score: preview.quality_report.confidence_score,
+                    corpus_size_words: preview.quality_report.corpus_size_words,
+                    warnings: preview.quality_report.warnings.clone(),
+                },
+                material_change: preview.material_change,
+                apply_safety: preview.apply_safety.clone(),
+                metric_deltas,
+                style_edit_candidates: preview.style_edit_candidates.clone(),
+            };
+            return Ok(RefreshStyleProfileOutput {
+                new_profile: preview.candidate_profile_summary.clone(),
+                applied: false,
+                application: None,
+                consumed_candidate_ids: Vec::new(),
+                dismissed_candidate_ids: Vec::new(),
+                dry_run: true,
+                preview: Some(compact),
+            });
         }
 
         // Dismiss requested candidates FIRST so they are neither fed as examples
@@ -1281,6 +1383,7 @@ impl SqliteSpindleService {
                     profile_id: candidate.profile_id.clone(),
                     mode: StyleProfileApplyMode::Merge,
                     force: None,
+                    dry_run: false,
                 })
                 .await?;
             applied = true;
@@ -1293,6 +1396,8 @@ impl SqliteSpindleService {
             application,
             consumed_candidate_ids,
             dismissed_candidate_ids,
+            dry_run: false,
+            preview: None,
         })
     }
 
@@ -1364,28 +1469,16 @@ impl SqliteSpindleService {
             Vec::new()
         };
 
-        // Compute and apply the prose diff. When forcing a profile that has no
-        // application guidance (metrics-only), do NOT touch narrator voice,
-        // style notes, or the style world rule — activation is for drift
-        // detection only, and clobbering a project's real narrator voice with
-        // an empty one is exactly the incident this guards against.
-        let (
-            after_narrator_voice,
-            added_style_notes,
-            removed_style_notes,
-            after_style_notes,
-            style_rule_action,
-            style_rule_id,
-            db_rule_action_str,
-        ) = if has_guidance {
-            // Use helper
+        // Compute the proposed prose diff once. A dry run returns it without
+        // writing; a live apply consumes the same computed values.
+        let computed = if has_guidance {
             let (
                 after_narrator_voice,
                 added_style_notes,
                 removed_style_notes,
                 after_style_notes,
                 style_rule_action,
-                _cache_ids,
+                validator_cache_ids,
             ) = build_apply_style_profile_diff(
                 &profile,
                 &current_narrator_voice,
@@ -1394,22 +1487,87 @@ impl SqliteSpindleService {
                 &existing_world_rules,
                 branch_id.as_deref(),
             );
+            ComputedStyleApply {
+                after_narrator_voice,
+                added_style_notes,
+                removed_style_notes,
+                after_style_notes,
+                style_rule_action,
+                validator_cache_ids,
+            }
+        } else {
+            // Forced activation without prose guidance: leave every prose
+            // setting exactly as it is.
+            ComputedStyleApply {
+                after_narrator_voice: current_narrator_voice.clone(),
+                added_style_notes: Vec::new(),
+                removed_style_notes: Vec::new(),
+                after_style_notes: before_style_notes.clone(),
+                style_rule_action: spindle_core::style::StyleWorldRuleAction::NoOp,
+                validator_cache_ids: vec![
+                    "style_compliance".to_string(),
+                    "world_rule_semantic_drift".to_string(),
+                ],
+            }
+        };
 
-            // Perform narrator voice update
+        if input.dry_run {
+            let style_rule_id = match &computed.style_rule_action {
+                spindle_core::style::StyleWorldRuleAction::Update { rule_id, .. } => {
+                    Some(rule_id.clone())
+                }
+                spindle_core::style::StyleWorldRuleAction::Create { .. } => None,
+                spindle_core::style::StyleWorldRuleAction::NoOp => {
+                    // Match the live receipt: an unchanged existing rule still
+                    // reports its id.
+                    if branch_id.is_some() {
+                        let expected_name = format!("Style Profile: {}", profile.name);
+                        existing_world_rules
+                            .iter()
+                            .find(|r| r.rule_name == profile.name || r.rule_name == expected_name)
+                            .map(|r| r.id.clone())
+                    } else {
+                        None
+                    }
+                }
+            };
+            return Ok(ApplyStyleProfileOutput {
+                project_id: input.project_id.clone(),
+                profile_id: input.profile_id.clone(),
+                narrator_voice: computed.after_narrator_voice.clone(),
+                reader_contract_style_notes: computed.after_style_notes.clone(),
+                style_rule_id,
+                invalidated_validator_findings: 0,
+                dry_run: true,
+                preview: Some(PreviewApplyStyleProfileOutput {
+                    project_id: input.project_id.clone(),
+                    profile_id: input.profile_id.clone(),
+                    before_narrator_voice: current_narrator_voice,
+                    after_narrator_voice: computed.after_narrator_voice.clone(),
+                    added_style_notes: computed.added_style_notes.clone(),
+                    removed_style_notes: computed.removed_style_notes.clone(),
+                    style_rule_action: computed.style_rule_action.clone(),
+                    invalidated_validator_cache_ids: computed.validator_cache_ids.clone(),
+                }),
+            });
+        }
+
+        // 2. Apply the prose settings. A forced metrics-only activation leaves
+        // them untouched, exactly as before.
+        let mut style_rule_id: Option<String> = None;
+        let mut db_rule_action_str = "no_op".to_string();
+        if has_guidance {
             self.repository()
-                .set_narrator_voice(&input.project_id, after_narrator_voice.clone())
+                .set_narrator_voice(&input.project_id, computed.after_narrator_voice.clone())
                 .await?;
 
-            // Perform reader contract update
             let mut reader_contract = project.reader_contract.clone().into_core();
-            reader_contract.style_notes = after_style_notes.clone();
+            reader_contract.style_notes = computed.after_style_notes.clone();
             self.repository()
                 .update_project_reader_contract(&input.project_id, &reader_contract)
                 .await?;
 
-            // Perform world rule update
-            let mut rule_id: Option<String> = None;
-            let action_str = match style_rule_action.clone() {
+            db_rule_action_str = match computed.style_rule_action.clone() {
                 spindle_core::style::StyleWorldRuleAction::Create {
                     rule_name,
                     description,
@@ -1425,7 +1583,7 @@ impl SqliteSpindleService {
                             established_in: None,
                         })
                         .await?;
-                    rule_id = Some(rule_out.world_rule_id);
+                    style_rule_id = Some(rule_out.world_rule_id);
                     "created".to_string()
                 }
                 spindle_core::style::StyleWorldRuleAction::Update {
@@ -1441,14 +1599,14 @@ impl SqliteSpindleService {
                         changes,
                     })
                     .await?;
-                    rule_id = Some(update_rule_id);
+                    style_rule_id = Some(update_rule_id);
                     "updated".to_string()
                 }
                 spindle_core::style::StyleWorldRuleAction::NoOp => {
                     // If it exists but didn't change description, retrieve rule ID
                     if let Some(_bid) = &branch_id {
                         let expected_name = format!("Style Profile: {}", profile.name);
-                        rule_id = existing_world_rules
+                        style_rule_id = existing_world_rules
                             .iter()
                             .find(|r| r.rule_name == profile.name || r.rule_name == expected_name)
                             .map(|r| r.id.clone());
@@ -1456,28 +1614,7 @@ impl SqliteSpindleService {
                     "no_op".to_string()
                 }
             };
-            (
-                after_narrator_voice,
-                added_style_notes,
-                removed_style_notes,
-                after_style_notes,
-                style_rule_action,
-                rule_id,
-                action_str,
-            )
-        } else {
-            // Forced activation without prose guidance: leave every prose
-            // setting exactly as it is.
-            (
-                current_narrator_voice.clone(),
-                Vec::new(),
-                Vec::new(),
-                before_style_notes.clone(),
-                spindle_core::style::StyleWorldRuleAction::NoOp,
-                None,
-                "no_op".to_string(),
-            )
-        };
+        }
 
         // Invalidate caches
         let invalidated = self
@@ -1494,7 +1631,7 @@ impl SqliteSpindleService {
         let app_id = format!("style_profile_app:{}", ulid::Ulid::new());
         let applied_at = chrono::Utc::now().to_rfc3339();
 
-        let prev_rule_desc = match &style_rule_action {
+        let prev_rule_desc = match &computed.style_rule_action {
             spindle_core::style::StyleWorldRuleAction::Update {
                 previous_description,
                 ..
@@ -1509,11 +1646,11 @@ impl SqliteSpindleService {
             applied_at,
             apply_mode: input.mode,
             before_narrator_voice: current_narrator_voice,
-            after_narrator_voice,
+            after_narrator_voice: computed.after_narrator_voice,
             before_style_notes,
-            after_style_notes,
-            added_style_notes,
-            removed_style_notes,
+            after_style_notes: computed.after_style_notes,
+            added_style_notes: computed.added_style_notes,
+            removed_style_notes: computed.removed_style_notes,
             style_rule_id: style_rule_id.clone(),
             style_rule_action: db_rule_action_str,
             style_rule_previous_description: prev_rule_desc,
@@ -1537,75 +1674,27 @@ impl SqliteSpindleService {
             reader_contract_style_notes: audit_record.after_style_notes,
             style_rule_id,
             invalidated_validator_findings: invalidated,
+            dry_run: false,
+            preview: None,
         })
     }
 
     pub async fn preview_apply_style_profile(
         &self,
-        input: spindle_core::style::PreviewApplyStyleProfileInput,
-    ) -> Result<spindle_core::style::PreviewApplyStyleProfileOutput> {
-        // 1. Fetch style profile
-        let profile = self
-            .repository()
-            .get_style_profile(&input.project_id, &input.profile_id)
-            .await?
-            .ok_or_else(|| anyhow!("style profile not found"))?;
-        if profile.status != StyleProfileStatus::Ready {
-            return Err(anyhow!("style profile is not ready: {:?}", profile.status));
-        }
-        ensure_style_profile_not_archived(&profile)?;
-        if !has_application_guidance(&profile.guidance) {
-            return Err(anyhow!(
-                "style profile has no application guidance to preview: {}",
-                profile.profile_id
-            ));
-        }
-
-        // Fetch project state
-        let project = self.repository().get_project(&input.project_id).await?;
-        let current_narrator_voice = project
-            .narrator_voice
-            .clone()
-            .map(|v| v.into_core())
-            .unwrap_or_default();
-        let before_style_notes = project.reader_contract.style_notes.clone();
-
-        let branch_id = project.active_branch_id.clone();
-        let existing_world_rules = if let Some(ref bid) = branch_id {
-            self.repository()
-                .list_world_rules_by_project_and_branch(&input.project_id, bid)
-                .await?
-        } else {
-            Vec::new()
-        };
-
-        // Use helper
-        let (
-            after_narrator_voice,
-            added_style_notes,
-            removed_style_notes,
-            _after_style_notes,
-            style_rule_action,
-            validator_cache_ids,
-        ) = build_apply_style_profile_diff(
-            &profile,
-            &current_narrator_voice,
-            &before_style_notes,
-            input.mode,
-            &existing_world_rules,
-            branch_id.as_deref(),
-        );
-
-        Ok(spindle_core::style::PreviewApplyStyleProfileOutput {
-            project_id: input.project_id,
-            profile_id: input.profile_id,
-            before_narrator_voice: current_narrator_voice,
-            after_narrator_voice,
-            added_style_notes,
-            removed_style_notes,
-            style_rule_action,
-            invalidated_validator_cache_ids: validator_cache_ids,
-        })
+        input: PreviewApplyStyleProfileInput,
+    ) -> Result<PreviewApplyStyleProfileOutput> {
+        let output = self
+            .apply_style_profile(ApplyStyleProfileInput {
+                project_id: input.project_id,
+                profile_id: input.profile_id,
+                mode: input.mode,
+                force: None,
+                dry_run: true,
+            })
+            .await?;
+        output
+            .preview
+            .ok_or_else(|| anyhow!("style apply preview missing"))
     }
 
     pub async fn list_style_profile_applications(
@@ -2361,6 +2450,16 @@ impl SqliteSpindleService {
             profile_id: input.profile_id,
             archived_at,
         })
+    }
+
+    /// Canonical non-mutating patch creation. Produces proposed scene patches
+    /// for later evaluation and `apply_style_revision_patch`; it never writes
+    /// prose. The release-R `preview_style_revision_patch` name delegates here.
+    pub async fn create_style_revision_patch(
+        &self,
+        input: CreateStyleRevisionPatchInput,
+    ) -> Result<spindle_core::style::PreviewStyleRevisionPatchOutput> {
+        self.preview_style_revision_patch(input.into()).await
     }
 
     pub async fn preview_style_revision_patch(

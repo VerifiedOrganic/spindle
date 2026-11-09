@@ -666,3 +666,12 @@ idempotency keys replay the stored receipt and reject a reused key with differen
 content. Authoring calls may name a run and expected phase, and the harness
 advances its scene phase only after a live success. Legacy save-only and
 branch/revision tools keep their existing semantics for release R.
+
+Style previews now converge on `dry_run`: `refresh_style_profile` and
+`apply_style_profile` compute their proposed candidate or prose diff without
+persisting a version, consuming candidates, activating a profile, invalidating
+caches, or writing an audit record. The release-R preview twins delegate to the
+same paths and keep their full extended shapes; the live outputs add a compact,
+fully described preview. `create_style_revision_patch` is the canonical non-mutating patch-creation
+step, `preview_style_revision_patch` remains a release-R alias, and only
+`apply_style_revision_patch` writes prose.

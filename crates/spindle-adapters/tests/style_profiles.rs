@@ -200,6 +200,7 @@ async fn test_create_and_apply_style_profile_lifecycle() {
             project_id: project_id.clone(),
             profile_id: profile.profile_id.clone(),
             mode: StyleProfileApplyMode::Merge,
+            dry_run: false,
         })
         .await
         .unwrap();
@@ -481,6 +482,7 @@ async fn test_style_profile_audit_rollback_and_drift_lifecycle() {
             project_id: project_id.clone(),
             profile_id: profile.profile_id.clone(),
             mode: StyleProfileApplyMode::ReplaceGeneratedStyleNotes,
+            dry_run: false,
         })
         .await
         .unwrap();
@@ -876,6 +878,7 @@ async fn test_active_style_profile_lifecycle() {
             project_id: project_id.clone(),
             profile_id: profile_a.profile_id.clone(),
             mode: StyleProfileApplyMode::Merge,
+            dry_run: false,
         })
         .await
         .unwrap();
@@ -908,6 +911,7 @@ async fn test_active_style_profile_lifecycle() {
             project_id: project_id.clone(),
             profile_id: profile_b.profile_id.clone(),
             mode: StyleProfileApplyMode::Merge,
+            dry_run: false,
         })
         .await
         .unwrap();
@@ -3443,6 +3447,7 @@ async fn test_style_profile_refresh_workflow() {
             force_apply: Some(true),
             metrics_only: None,
             dismiss_candidate_ids: Vec::new(),
+            dry_run: false,
         })
         .await
         .unwrap();
@@ -3519,6 +3524,7 @@ async fn test_style_profile_refresh_workflow() {
             force_apply: None,
             metrics_only: None,
             dismiss_candidate_ids: Vec::new(),
+            dry_run: false,
         })
         .await;
     assert!(
@@ -3672,6 +3678,7 @@ async fn test_apply_style_profile_force_activates_empty_guidance_without_clobber
             project_id: project_id.clone(),
             profile_id: stuck.profile_id.clone(),
             mode: StyleProfileApplyMode::Merge,
+            dry_run: false,
         })
         .await
         .unwrap_err();
@@ -3688,6 +3695,7 @@ async fn test_apply_style_profile_force_activates_empty_guidance_without_clobber
             project_id: project_id.clone(),
             profile_id: stuck.profile_id.clone(),
             mode: StyleProfileApplyMode::Merge,
+            dry_run: false,
         })
         .await
         .expect("force=true must apply a NeedsReview/empty-guidance profile");

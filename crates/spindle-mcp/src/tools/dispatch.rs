@@ -287,6 +287,12 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.archive_style_profile(input))
                     .await
             }
+            "create_style_revision_patch" => {
+                self.invoke(arguments, |input| {
+                    self.service.create_style_revision_patch(input)
+                })
+                .await
+            }
             "preview_style_revision_patch" => {
                 self.invoke(arguments, |input| {
                     self.service.preview_style_revision_patch(input)
