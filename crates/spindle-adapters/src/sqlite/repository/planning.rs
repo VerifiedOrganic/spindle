@@ -318,6 +318,67 @@ impl Repository {
             .await?
     }
 
+    /// Replace the session premise before anything accepted it. Staged
+    /// proposals become superseded history so a replacement cannot be accepted
+    /// under the old intent hash.
+    pub async fn revise_planning_premise(
+        &self,
+        session_id: String,
+        scope: Option<PlanningScope>,
+        premise: String,
+        actor: String,
+        note: String,
+    ) -> Result<PlanningSession> {
+        anyhow::ensure!(
+            !premise.trim().is_empty() && premise.len() <= 32_000,
+            "premise must contain 1..32000 bytes"
+        );
+        anyhow::ensure!(
+            !actor.trim().is_empty() && !actor.trim_start().starts_with("policy:"),
+            "human actor required to revise the planning premise"
+        );
+        anyhow::ensure!(!note.trim().is_empty(), "premise revision note required");
+        self.pool()
+            .write(move |conn| {
+                Ok((|| -> Result<PlanningSession> {
+                    let tx = conn.transaction()?;
+                    let mut s = match scope.as_ref() {
+                        Some(scope) => check_session(&tx, &session_id, &Some(scope.clone()))?,
+                        None => {
+                            let s = session(&tx, &session_id)?;
+                            check_scope(&tx, &s.scope)?;
+                            s
+                        }
+                    };
+                    let mut all = proposals(&tx, &s.id)?;
+                    anyhow::ensure!(
+                        !all.iter()
+                            .any(|p| p.status == PlanningProposalStatus::Applied),
+                        "cannot revise the premise after a planning level was accepted; start a new session or use a plan amendment"
+                    );
+                    let now = timestamp_to_micros(chrono::Utc::now());
+                    for p in &mut all {
+                        if p.status == PlanningProposalStatus::Staged {
+                            p.status = PlanningProposalStatus::Superseded;
+                            p.decided_by = Some(actor.clone());
+                            p.decision_note = Some(note.clone());
+                            p.decided_at = Some(now);
+                            save(&tx, p)?;
+                        }
+                    }
+                    s.premise = premise;
+                    s.intent_hash = hash(&s.premise)?;
+                    tx.execute(
+                        "UPDATE planning_session SET data=?2 WHERE id=?1",
+                        rusqlite::params![s.id, serde_json::to_string(&s)?],
+                    )?;
+                    tx.commit()?;
+                    Ok(s)
+                })())
+            })
+            .await?
+    }
+
     pub async fn list_planning_proposals(
         &self,
         id: &str,

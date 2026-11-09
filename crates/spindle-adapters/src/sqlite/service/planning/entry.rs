@@ -169,6 +169,17 @@ fn gate_for(session: &PlanningSession, level: PlanningLevel) -> PlanningGate {
     PlanningGatePolicy::from_gates(&session.policy.gates).gate_for(level)
 }
 
+/// The active gate belongs to a proposal awaiting a decision, not to the next
+/// unfilled level. Falling through to `next_level` would report Scene's gate
+/// while a human-gated Chapter proposal is still staged.
+fn gate_level(proposals: &[PlanningProposal]) -> PlanningLevel {
+    proposals
+        .iter()
+        .find(|p| p.status == PlanningProposalStatus::Staged)
+        .map(|p| p.artifact.level)
+        .unwrap_or_else(|| next_level(proposals))
+}
+
 fn review_next_action(session: &PlanningSession, proposals: &[PlanningProposal]) -> String {
     if session.projection_stale {
         return "Resolve the stale planning projection before continuing: review the staged reconciliation proposal and record a human decision."
@@ -286,6 +297,27 @@ impl SqliteSpindleService {
                     input.project_id.as_deref(),
                     input.branch_id.as_deref(),
                 )?;
+                // Resuming with a different premise is a deliberate intent
+                // change; persist it and supersede staged work so the next
+                // generation cannot be accepted under the old intent hash.
+                let session = match input
+                    .premise
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|premise| !premise.is_empty() && *premise != session.premise)
+                {
+                    Some(premise) => {
+                        self.revise_planning_premise(
+                            session.id.clone(),
+                            session.scope.clone(),
+                            premise.to_string(),
+                            "author".to_string(),
+                            "Premise revised while resuming the planning session.".to_string(),
+                        )
+                        .await?
+                    }
+                    None => session,
+                };
                 let session = self
                     .configure_planning_session(ConfigurePlanningSessionInput {
                         session_id: session.id.clone(),
@@ -614,7 +646,7 @@ impl SqliteSpindleService {
             .iter()
             .map(proposal_summary)
             .collect::<Result<Vec<_>>>()?;
-        let gate = Some(gate_for(&session, next_level(&proposals)));
+        let gate = Some(gate_for(&session, gate_level(&proposals)));
 
         let readiness = if include_readiness {
             match session.scope.clone() {

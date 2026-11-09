@@ -9477,40 +9477,99 @@ async fn new_book_agent_entry_reaches_scene_one_one_ready_through_mcp_tools() {
     )
     .await;
 
-    planning_advance_and_accept(
+    // Mixed policy check: a staged Chapter proposal is human-gated even when
+    // Scene detail is delegated. Status must report the pending proposal's gate.
+    planning_call(
         &router,
-        &session_id,
-        "chapter",
+        "planning_advance",
         serde_json::json!({
-            "schema_version": 1,
-            "level": "chapter",
-            "rationale": "Two causal chapter turns for the near horizon.",
-            "target_range": range,
-            "operations": [
-                {"output_ref": "chapter:1", "operation": {"operation": "create_chapter", "input": {
-                    "book_id": {"kind": "proposal_ref", "value": "project:root:book"},
-                    "book_number": 1, "chapter_number": 1, "title": "The First Watch"
-                }}},
-                {"output_ref": "outline:chapter:1", "operation": {"operation": "set_chapter_outline", "input": {
-                    "entity_id": {"kind": "proposal_ref", "value": "chapter:1"},
-                    "book_number": 1, "chapter_number": 1,
-                    "content": "Mara hears the impossible bell.",
-                    "beats": [{"order": 1, "summary": "Hear the bell", "status": "planned"}]
-                }}},
-                {"output_ref": "chapter:2", "operation": {"operation": "create_chapter", "input": {
-                    "book_id": {"kind": "proposal_ref", "value": "project:root:book"},
-                    "book_number": 1, "chapter_number": 2, "title": "The Second Watch"
-                }}},
-                {"output_ref": "outline:chapter:2", "operation": {"operation": "set_chapter_outline", "input": {
-                    "entity_id": {"kind": "proposal_ref", "value": "chapter:2"},
-                    "book_number": 1, "chapter_number": 2,
-                    "content": "Mara decodes the bell's logbook.",
-                    "beats": [{"order": 1, "summary": "Decode the logbook", "status": "planned"}]
-                }}}
-            ]
+            "session_id": session_id,
+            "action": "set_policy",
+            "policy": {"gates": {"chapter": "human", "scene": "delegate_if_valid"}, "policy_id": "detail", "policy_version": 1},
+            "policy_actor": "author:test",
+            "policy_note": "Delegate scene detail but keep chapter review human."
         }),
-        "entry-chapter",
-        Some(range.clone()),
+    )
+    .await;
+    let chapter_advance = planning_call(
+        &router,
+        "planning_advance",
+        serde_json::json!({
+            "session_id": session_id,
+            "action": "stage_host_artifact",
+            "level": "chapter",
+            "host_artifact": {
+                "schema_version": 1,
+                "level": "chapter",
+                "rationale": "Two causal chapter turns for the near horizon.",
+                "target_range": range,
+                "operations": [
+                    {"output_ref": "chapter:1", "operation": {"operation": "create_chapter", "input": {
+                        "book_id": {"kind": "proposal_ref", "value": "project:root:book"},
+                        "book_number": 1, "chapter_number": 1, "title": "The First Watch"
+                    }}},
+                    {"output_ref": "outline:chapter:1", "operation": {"operation": "set_chapter_outline", "input": {
+                        "entity_id": {"kind": "proposal_ref", "value": "chapter:1"},
+                        "book_number": 1, "chapter_number": 1,
+                        "content": "Mara hears the impossible bell.",
+                        "beats": [{"order": 1, "summary": "Hear the bell", "status": "planned"}]
+                    }}},
+                    {"output_ref": "chapter:2", "operation": {"operation": "create_chapter", "input": {
+                        "book_id": {"kind": "proposal_ref", "value": "project:root:book"},
+                        "book_number": 1, "chapter_number": 2, "title": "The Second Watch"
+                    }}},
+                    {"output_ref": "outline:chapter:2", "operation": {"operation": "set_chapter_outline", "input": {
+                        "entity_id": {"kind": "proposal_ref", "value": "chapter:2"},
+                        "book_number": 1, "chapter_number": 2,
+                        "content": "Mara decodes the bell's logbook.",
+                        "beats": [{"order": 1, "summary": "Decode the logbook", "status": "planned"}]
+                    }}}
+                ]
+            },
+            "retry_key": "entry-chapter",
+            "target_range": range
+        }),
+    )
+    .await;
+    assert_eq!(chapter_advance["advance"]["proposal"]["status"], "staged");
+    let chapter_status = planning_call(
+        &router,
+        "planning_status",
+        serde_json::json!({"session_id": session_id, "include_readiness": false}),
+    )
+    .await;
+    assert_eq!(
+        chapter_status["gate"], "human",
+        "status must report the staged Chapter gate, not the next Scene gate: {chapter_status}"
+    );
+    // Restore all-human gates before accepting the staged chapter so the
+    // remaining Scene level stays a reviewed proposal in this test.
+    planning_call(
+        &router,
+        "planning_advance",
+        serde_json::json!({
+            "session_id": session_id,
+            "action": "set_policy",
+            "policy": {},
+            "policy_actor": "author:test",
+            "policy_note": "Return every remaining level to human review."
+        }),
+    )
+    .await;
+    planning_call(
+        &router,
+        "planning_decide",
+        serde_json::json!({
+            "session_id": session_id,
+            "action": "decide",
+            "decision": "accept",
+            "expected_hashes": {
+                chapter_advance["advance"]["proposal"]["proposal_id"].as_str().unwrap():
+                chapter_advance["advance"]["proposal"]["payload_hash"].as_str().unwrap()
+            },
+            "actor": "author:test",
+            "note": "Approve the two-chapter horizon."
+        }),
     )
     .await;
 
@@ -9692,6 +9751,54 @@ async fn planning_status_reconnects_to_active_and_stale_sessions_through_mcp_too
             .unwrap()
             .contains("planning_advance"),
         "{revised}"
+    );
+
+    // Resuming with a revised premise is an explicit intent change: it is
+    // persisted and reaches the replacement prompt, and staged work under the
+    // old intent cannot be accepted.
+    let resume = planning_call(
+        &router,
+        "planning_begin",
+        serde_json::json!({
+            "session_id": session_id,
+            "premise": "A cartographer maps a city that rearranges itself each night, and the map remembers."
+        }),
+    )
+    .await;
+    assert_eq!(resume["resumed"], true, "{resume}");
+    assert!(
+        resume["session"]["premise_preview"]
+            .as_str()
+            .unwrap()
+            .contains("map remembers"),
+        "{resume}"
+    );
+
+    // The replacement generation must carry both the revised premise and the
+    // author's revision feedback; no route is configured, so this returns the
+    // exact host prompt for inspection.
+    let regenerated = planning_call(
+        &router,
+        "planning_advance",
+        serde_json::json!({
+            "session_id": session_id,
+            "action": "generate",
+            "level": "contract",
+            "retry_key": "reconnect-regenerate-contract"
+        }),
+    )
+    .await;
+    assert_eq!(
+        regenerated["advance"]["outcome"], "needs_route",
+        "{regenerated}"
+    );
+    let prompt = regenerated["advance"]["host_request"]["user_prompt"]
+        .as_str()
+        .unwrap();
+    assert!(prompt.contains("map remembers"), "{prompt}");
+    assert!(
+        prompt.contains("Revise the contract wording before approval."),
+        "revision feedback missing from replacement prompt: {prompt}"
     );
 
     // Stage and accept the replacement root so the session attaches, then mark

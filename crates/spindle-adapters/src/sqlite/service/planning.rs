@@ -18,6 +18,18 @@ impl SqliteSpindleService {
     ) -> Result<PlanningSession> {
         self.repository.configure_planning_session(input).await
     }
+    pub async fn revise_planning_premise(
+        &self,
+        session_id: String,
+        scope: Option<PlanningScope>,
+        premise: String,
+        actor: String,
+        note: String,
+    ) -> Result<PlanningSession> {
+        self.repository
+            .revise_planning_premise(session_id, scope, premise, actor, note)
+            .await
+    }
     pub async fn stage_planning(&self, input: StagePlanningInput) -> Result<PlanningProposal> {
         self.repository.stage_planning(input).await
     }
