@@ -1,5 +1,29 @@
 [
   {
+    "description": "Host-neutral new-book entry from premise through human-approved planning gates to draft readiness.",
+    "name": "new-book",
+    "tools": [
+      "authoring_prepare_run",
+      "create_book",
+      "create_chapter",
+      "create_project",
+      "get_reference",
+      "get_skill",
+      "get_writer_state",
+      "list_projects",
+      "list_skills",
+      "planning_advance",
+      "planning_begin",
+      "planning_decide",
+      "planning_status",
+      "set_active_project"
+    ],
+    "units": [
+      "new-book",
+      "spindle"
+    ]
+  },
+  {
     "description": "Plot architecture and declared planning tools.",
     "name": "planning",
     "tools": [

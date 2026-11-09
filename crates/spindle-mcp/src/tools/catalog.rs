@@ -661,6 +661,22 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "update_writer_position",
             "Persist a branch writer cursor position without saving a draft",
         ),
+        tool::<PlanningBeginInput, PlanningBeginOutput>(
+            "planning_begin",
+            "Start or resume a durable planning session for a new or existing project. Records the premise and optional horizon, budget and gate policy, then returns the session and the next safe action. Never starts drafting.",
+        ),
+        tool::<PlanningAdvanceInput, PlanningAdvanceOutput>(
+            "planning_advance",
+            "Generate one planning level, submit a host-authored artifact when no route is available, retry a rejected attempt, recompute readiness, or update the session gate policy. Returns stage status, findings, usage and the next action.",
+        ),
+        tool::<PlanningStatusInput, PlanningStatusOutput>(
+            "planning_status",
+            "Read compact planning status: active sessions, staged proposals, gate, findings, readiness and the real authoring prepare report. Omit session_id to reconnect to existing planning work.",
+        ),
+        tool::<PlanningDecideInput, PlanningDecideOutput>(
+            "planning_decide",
+            "Record a human accept, reject, revise or supersede decision for staged planning proposals, or prepare the authoring run from a ready session. Revise supersedes the selected proposals so a replacement can be staged. Requires exact proposal hashes for decisions and never drafts prose.",
+        ),
         tool::<AuthoringPrepareRunInput, AuthoringPrepareRunOutput>(
             "authoring_prepare_run",
             "Inspect the requested chapter range for the project and produce a readiness report before starting",

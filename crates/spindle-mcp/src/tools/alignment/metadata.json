@@ -300,6 +300,26 @@
     ],
     "version": 1
   },
+  "new-book": {
+    "profiles": [
+      "new-book"
+    ],
+    "references": [],
+    "requires_skills": [
+      "spindle"
+    ],
+    "tools": [
+      "authoring_prepare_run",
+      "create_book",
+      "create_chapter",
+      "create_project",
+      "planning_advance",
+      "planning_begin",
+      "planning_decide",
+      "planning_status"
+    ],
+    "version": 1
+  },
   "plot-architect": {
     "profiles": [
       "default",
@@ -538,6 +558,7 @@
       "authoring",
       "default",
       "minimal",
+      "new-book",
       "planning",
       "release",
       "research",

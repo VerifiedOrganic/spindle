@@ -1,7 +1,7 @@
 # Skill manifest alignment
 
 `skills/<name>/manifest.toml` is the versioned dependency inventory for each of
-the 13 embedded skill cores. A manifest declares its direct tool requirements,
+the 14 embedded skill cores. A manifest declares its direct tool requirements,
 required skill cores, and currently supported profiles. Dependencies contribute
 their transitive tool requirements. Routing to a specialist skill in prose does
 not automatically enable that specialist or union its tools into the entry skill.
