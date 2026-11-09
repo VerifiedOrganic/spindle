@@ -410,11 +410,35 @@ pub(crate) fn mirror_legacy_claims_in_tx(
             claim.proposed.within_scene_order,
             &claim.proposed.in_world_time,
         );
+        let is_scene_delta = matches!(
+            claim.proposed.assertion,
+            ClaimAssertion::Relationship {
+                operation: RelationshipOperation::Delta,
+                ..
+            }
+        );
         let prior = stream_key.as_deref().and_then(|stream_key| {
             events
                 .iter()
                 .filter(|event| {
-                    event.provenance == CanonProvenanceKind::ManualAuthor
+                    let provenance_matches = event.provenance == CanonProvenanceKind::ManualAuthor
+                        || (is_scene_delta
+                            && event.provenance == CanonProvenanceKind::LegacyUnverified);
+                    // The backfilled opening Observation establishes the
+                    // balance; only a backfilled scene Delta is replaceable.
+                    let stream_shape_matches = !is_scene_delta
+                        || matches!(
+                            event.payload,
+                            CanonEventPayloadV1::Assertion {
+                                assertion: ClaimAssertion::Relationship {
+                                    operation: RelationshipOperation::Delta,
+                                    ..
+                                },
+                                ..
+                            }
+                        );
+                    provenance_matches
+                        && stream_shape_matches
                         && event.scene_id == claim.binding.scene_id
                         && event_semantic_stream_key(event).as_deref() == Some(stream_key)
                 })
