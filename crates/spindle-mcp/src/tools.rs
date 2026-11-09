@@ -165,6 +165,7 @@ use authoring::*;
 mod session;
 use session::*;
 mod authoring_drafting;
+mod commit_scene;
 mod dispatch;
 use authoring_drafting::*;
 mod journal;

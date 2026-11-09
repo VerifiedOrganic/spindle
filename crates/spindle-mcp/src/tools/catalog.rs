@@ -537,6 +537,10 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "prepare_scene",
             "Assemble a bounded, read-only scene preparation packet combining cursor state, scene purpose, branch-visible context, secret-gated canon, style guidance, optional research, and freshness tokens",
         ),
+        tool::<CommitSceneInput, CommitSceneOutput>(
+            "commit_scene",
+            "Atomically commit scene prose with its author-declared continuity package, beat annotations, optional chapter summary, and writer cursor; supports dry_run, stale-preparation checks, and idempotent retries",
+        ),
         tool::<GetEntityInput, EntitySubjectSnapshot>(
             "get_entity",
             "Resolve one entity by table and record id as a polymorphic subject snapshot",

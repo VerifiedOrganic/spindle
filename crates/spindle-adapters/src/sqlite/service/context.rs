@@ -3288,7 +3288,7 @@ impl SqliteSpindleService {
 
         let scene_version = if let Some(scene) = target_scene.as_ref() {
             let versions = self.repository.list_scene_versions(&scene.id).await?;
-            Some(versions.last().map(|v| v.version_number).unwrap_or(1))
+            Some(versions.first().map(|v| v.version_number + 1).unwrap_or(1))
         } else {
             None
         };
@@ -3913,7 +3913,7 @@ impl SqliteSpindleService {
 
         let scene_text_hash = if let Some(scene) = target_scene.as_ref() {
             let versions = self.repository.list_scene_versions(&scene.id).await?;
-            let version_number = versions.last().map(|v| v.version_number).unwrap_or(1);
+            let version_number = versions.first().map(|v| v.version_number + 1).unwrap_or(1);
             let payload = serde_json::json!({
                 "id": scene.id,
                 "version_number": version_number,
@@ -4339,7 +4339,7 @@ pub(crate) struct SceneContextWithCoverage {
     pub unavailable_passes: Vec<spindle_core::models::PrepareSceneUnavailablePass>,
 }
 
-fn composite_context_revision_token(
+pub(super) fn composite_context_revision_token(
     deps: &spindle_core::models::ScenePreparationDependencies,
 ) -> String {
     let payload = serde_json::to_vec(deps).unwrap_or_default();
