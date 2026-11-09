@@ -555,26 +555,23 @@ impl SqliteSpindleService {
         scene_id: &str,
         reason: &str,
     ) -> Result<LayeredMemoryInvalidationReportV1> {
+        self.repository
+            .invalidate_layered_memory_for_scene(project_id, branch_id, scene_id, reason)
+            .await?;
         let summaries = self
             .repository
             .list_layered_memory(project_id, branch_id)
             .await?;
-        let edges = self
-            .repository
-            .list_layered_memory_dependencies(project_id, branch_id)
-            .await?;
-        let roots: Vec<String> = summaries
+        let stale: Vec<&MemorySummaryV1> = summaries
             .iter()
-            .filter(|summary| {
-                summary.layer == MemoryLayerV1::Scene
-                    && summary.scope_key == format!("scene:{scene_id}")
-            })
-            .map(|summary| summary.summary_id.clone())
+            .filter(|summary| !summary.is_fresh())
             .collect();
-        let plan = plan_memory_invalidation(&roots, &summaries, &edges, reason);
-        self.repository
-            .invalidate_layered_memory(project_id, branch_id, &plan)
-            .await?;
+        let mut affected_entity_ids = BTreeSet::new();
+        let mut affected_thread_ids = BTreeSet::new();
+        for summary in &stale {
+            affected_entity_ids.extend(summary.entity_ids.iter().cloned());
+            affected_thread_ids.extend(summary.thread_ids.iter().cloned());
+        }
         let pending_job_count = if self
             .repository
             .has_pending_memory_recompute_jobs(project_id, branch_id)
@@ -585,7 +582,23 @@ impl SqliteSpindleService {
             0
         };
         Ok(LayeredMemoryInvalidationReportV1 {
-            plan,
+            plan: MemoryInvalidationPlanV1 {
+                root_summary_ids: summaries
+                    .iter()
+                    .filter(|summary| {
+                        summary.layer == MemoryLayerV1::Scene
+                            && summary.scope_key == format!("scene:{scene_id}")
+                    })
+                    .map(|summary| summary.summary_id.clone())
+                    .collect(),
+                stale_summary_ids: stale
+                    .iter()
+                    .map(|summary| summary.summary_id.clone())
+                    .collect(),
+                jobs: Vec::new(),
+                affected_entity_ids: affected_entity_ids.into_iter().collect(),
+                affected_thread_ids: affected_thread_ids.into_iter().collect(),
+            },
             pending_job_count,
         })
     }

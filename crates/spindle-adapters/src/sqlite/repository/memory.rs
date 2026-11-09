@@ -76,7 +76,7 @@ pub(crate) fn invalidate_layered_memory_in_conn(
     plan: &MemoryInvalidationPlanV1,
     now: i64,
 ) -> Result<()> {
-    if plan.stale_summary_ids.is_empty() {
+    if plan.stale_summary_ids.is_empty() && plan.jobs.is_empty() {
         return Ok(());
     }
     for summary_id in &plan.stale_summary_ids {
@@ -145,7 +145,7 @@ pub(crate) fn invalidate_layered_memory_for_scene_in_conn(
         return Ok(());
     }
     let edges = load_layered_memory_dependencies_in_conn(conn, project_id, branch_id)?;
-    let roots: Vec<String> = summaries
+    let mut roots: Vec<String> = summaries
         .iter()
         .filter(|summary| {
             summary.layer == MemoryLayerV1::Scene
@@ -153,6 +153,55 @@ pub(crate) fn invalidate_layered_memory_for_scene_in_conn(
         })
         .map(|summary| summary.summary_id.clone())
         .collect();
+    let scene_position: Option<(i32, i32, i32)> = conn
+        .query_row(
+            "SELECT book_number, chapter_number, scene_order FROM scene WHERE id = ?1",
+            [scene_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional_inner()?;
+    if roots.is_empty()
+        && let Some((book, chapter, scene_order)) = scene_position
+    {
+        let position = MemoryPositionV1::new(book, chapter, scene_order);
+        // A newly created scene has no DAG node yet. Invalidate every
+        // enclosing layer whose coverage contains the new position so its
+        // old text cannot keep omitting the new scene.
+        roots.extend(
+            summaries
+                .iter()
+                .filter(|summary| {
+                    summary.layer != MemoryLayerV1::Scene
+                        && summary.coverage.start.key() <= position.key()
+                        && position.key() <= summary.coverage.end.key()
+                })
+                .map(|summary| summary.summary_id.clone()),
+        );
+        if roots.is_empty() && !summaries.is_empty() {
+            // New chapter/no covering node: queue a branch rebuild instead
+            // of leaving all prior summaries silently fresh.
+            let plan = MemoryInvalidationPlanV1 {
+                root_summary_ids: Vec::new(),
+                stale_summary_ids: Vec::new(),
+                jobs: vec![MemoryRecomputeJobV1 {
+                    summary_id: format!("branch:{project_id}:{branch_id}"),
+                    reason: reason.to_string(),
+                    dedup_key: format!(
+                        "memory-recompute:branch:{project_id}:{branch_id}:new_source"
+                    ),
+                }],
+                affected_entity_ids: Vec::new(),
+                affected_thread_ids: Vec::new(),
+            };
+            return invalidate_layered_memory_in_conn(
+                conn,
+                project_id,
+                branch_id,
+                &plan,
+                timestamp_to_micros(chrono::Utc::now()),
+            );
+        }
+    }
     let plan = plan_memory_invalidation(&roots, &summaries, &edges, reason);
     invalidate_layered_memory_in_conn(
         conn,
@@ -348,6 +397,29 @@ impl Repository {
         let now = timestamp_to_micros(chrono::Utc::now());
         self.with_transaction(move |tx| {
             invalidate_layered_memory_in_conn(&tx.tx, &project_id, &branch_id, &plan, now)
+        })
+        .await
+    }
+
+    pub async fn invalidate_layered_memory_for_scene(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        scene_id: &str,
+        reason: &str,
+    ) -> Result<()> {
+        let project_id = project_id.to_string();
+        let branch_id = branch_id.to_string();
+        let scene_id = scene_id.to_string();
+        let reason = reason.to_string();
+        self.with_transaction(move |tx| {
+            invalidate_layered_memory_for_scene_in_conn(
+                &tx.tx,
+                &project_id,
+                &branch_id,
+                &scene_id,
+                &reason,
+            )
         })
         .await
     }

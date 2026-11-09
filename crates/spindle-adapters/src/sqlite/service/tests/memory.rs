@@ -343,6 +343,111 @@ async fn commit_scene_edit_invalidates_layered_memory() {
 }
 
 #[tokio::test]
+async fn new_scene_after_build_queues_recompute_through_save_scene_draft() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, _scene_id, _) = project_with_scene(&svc, "New Scene Save").await;
+    svc.rebuild_layered_memory_for_project(&project.project_id)
+        .await
+        .unwrap();
+    save_chapter_scene(
+        &svc,
+        &project.project_id,
+        2,
+        "new chapter scene",
+        "A brand new second chapter.",
+    )
+    .await;
+    let branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    assert!(
+        svc.repository()
+            .has_pending_memory_recompute_jobs(&project.project_id, &branch.id)
+            .await
+            .unwrap(),
+        "a new chapter scene must queue a branch rebuild even without a DAG node"
+    );
+    let report = svc
+        .recompute_layered_memory(&project.project_id, &branch.id)
+        .await
+        .unwrap();
+    assert_eq!(report.chapter_count, 2);
+    assert!(
+        !svc.repository()
+            .has_pending_memory_recompute_jobs(&project.project_id, &branch.id)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn new_scene_after_build_queues_recompute_through_commit_scene() {
+    use spindle_core::models::{
+        CommitSceneContinuityPackage, CommitSceneInput, ContentRating, SceneAuthorship,
+    };
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, _scene_id, _) = project_with_scene(&svc, "New Scene Commit").await;
+    svc.rebuild_layered_memory_for_project(&project.project_id)
+        .await
+        .unwrap();
+    let _ = svc
+        .create_chapter(spindle_core::models::CreateChapterInput {
+            project_id: project.project_id.clone(),
+            book_id: None,
+            book_number: Some(1),
+            chapter_number: Some(2),
+            title: None,
+        })
+        .await;
+    svc.commit_scene(CommitSceneInput {
+        project_id: project.project_id.clone(),
+        branch_id: None,
+        preparation_id: None,
+        context_revision_token: None,
+        dependency_tokens: None,
+        scene_id: None,
+        book_number: Some(1),
+        chapter_number: Some(2),
+        scene_order: Some(1),
+        expected_scene_version: None,
+        full_text: "A second chapter written atomically.".into(),
+        summary: "new atomic chapter".into(),
+        content_rating: ContentRating::General,
+        location_id: None,
+        tone: None,
+        authorship: SceneAuthorship::Human,
+        generation_receipt: None,
+        continuity: CommitSceneContinuityPackage::default(),
+        beat_annotations: Vec::new(),
+        chapter_summary: None,
+        run_id: None,
+        expected_phase: None,
+        dry_run: false,
+        idempotency_key: None,
+    })
+    .await
+    .unwrap();
+    let branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    assert!(
+        svc.repository()
+            .has_pending_memory_recompute_jobs(&project.project_id, &branch.id)
+            .await
+            .unwrap()
+    );
+    let report = svc
+        .recompute_layered_memory(&project.project_id, &branch.id)
+        .await
+        .unwrap();
+    assert_eq!(report.chapter_count, 2);
+}
+
+#[tokio::test]
 async fn secret_summary_is_excluded_by_visibility_policy() {
     use spindle_core::models::{RegisterCanonicalFactInput, SecrecyScope};
     let (_tmp, svc) = fresh_service_local().await;
