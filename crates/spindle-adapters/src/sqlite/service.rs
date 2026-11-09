@@ -454,6 +454,7 @@ mod export;
 mod generation;
 mod import_hydration;
 mod imports;
+mod memory;
 mod narrative;
 mod packet_generation;
 mod plan_amendments;
@@ -2068,12 +2069,15 @@ fn phase_four_context_hashes(
                     .iter()
                     .map(|fact| {
                         serde_json::json!({
+                            "fact_id": fact.fact_id,
                             "scene_id": fact.scene_id,
                             "book_number": fact.book_number,
                             "chapter_number": fact.chapter_number,
                             "fact_type": fact.fact_type,
                             "key": fact.key,
                             "value": fact.value,
+                            "subject_id": fact.subject_id,
+                            "subject_names": fact.subject_names,
                         })
                     })
                     .collect::<Vec<_>>();

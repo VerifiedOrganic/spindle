@@ -10,11 +10,13 @@ use crate::models::{TextByteRange, WorldRuleHit, WorldRuleSeverity};
 ///   excluded.
 /// * v3 — plain patterns anchor to word boundaries ("stat" no longer matches
 ///   inside "statement"); stem matching is explicit ("resurrect\\w*").
+/// * v4 — plain verb alternations match common inflections ("invoked",
+///   "channeled") and explicit cost-omission prose promotes a hit to Likely.
 ///
 /// The adapters layer mixes this into the `world_rule_semantic_drift` cache
 /// context hash, so deploying new scanner semantics invalidates cached
 /// findings computed by the old logic instead of serving them forever.
-pub const SCANNER_SEMANTICS_VERSION: u32 = 3;
+pub const SCANNER_SEMANTICS_VERSION: u32 = 4;
 
 pub struct ScanRule {
     pub rule_id: String,
@@ -98,6 +100,61 @@ const VIOLATION_CONTEXT_MARKERS: &[&str] = &[
     "bypassing",
 ];
 
+/// Rule descriptions that state a required cost/effect. A nearby explicit
+/// absence marker is a semantic omission even when the prose never says
+/// "bypass": "invoked ... with dry, unbloodied palms" or "zero battery charge".
+const COST_LANGUAGE_MARKERS: &[&str] = &[
+    "require",
+    "requires",
+    "required",
+    "cost",
+    "costs",
+    "toll",
+    "price",
+    "drain",
+    "drains",
+    "sacrifice",
+    "must pay",
+    "must spend",
+    "cannot",
+    "with no",
+    "without cost",
+];
+
+const STRONG_COST_ABSENCE_MARKERS: &[&str] = &[
+    "without cost",
+    "without paying",
+    "no cost",
+    "paid nothing",
+    "effortless",
+    "effortlessly",
+    "unharmed",
+    "unscathed",
+    "unbloodied",
+    "free of charge",
+    "pleasant warmth",
+    "no eye strain",
+];
+
+/// Weak markers only promote when a cost/effect noun from the rule is in the
+/// same adjacency window; otherwise "zero" is ordinary prose.
+const WEAK_COST_ABSENCE_MARKERS: &[&str] = &["zero", "dry palms"];
+
+const COST_EFFECT_NOUNS: &[&str] = &[
+    "battery",
+    "charge",
+    "blood",
+    "toll",
+    "frostbite",
+    "cost",
+    "price",
+    "fuel",
+    "sacrifice",
+    "eye strain",
+    "strain",
+    "cooldown",
+];
+
 pub fn scan_prose_for_world_rules(prose: &str, rules: &[ScanRule]) -> Vec<WorldRuleHit> {
     // Dialogue spans are only needed when at least one secrecy-class rule is
     // in play; compute them lazily, once per scene.
@@ -126,7 +183,8 @@ pub fn scan_prose_for_world_rules(prose: &str, rules: &[ScanRule]) -> Vec<WorldR
                     {
                         continue;
                     }
-                    let severity = severity_for_hit(prose, mat.start(), mat.end());
+                    let severity =
+                        severity_for_hit(prose, mat.start(), mat.end(), &rule.description);
                     hits.push(build_hit(
                         &rule.rule_id,
                         mat.start(),
@@ -177,7 +235,12 @@ fn compute_dialogue_spans(prose: &str) -> Vec<(usize, usize)> {
     spans
 }
 
-fn severity_for_hit(prose: &str, hit_start: usize, hit_end: usize) -> WorldRuleSeverity {
+fn severity_for_hit(
+    prose: &str,
+    hit_start: usize,
+    hit_end: usize,
+    rule_description: &str,
+) -> WorldRuleSeverity {
     let raw_start = hit_start.saturating_sub(VIOLATION_CONTEXT_RADIUS);
     let raw_end = hit_end
         .saturating_add(VIOLATION_CONTEXT_RADIUS)
@@ -190,9 +253,35 @@ fn severity_for_hit(prose: &str, hit_start: usize, hit_end: usize) -> WorldRuleS
         .iter()
         .any(|marker| window_contains_word(&window, marker))
     {
+        return WorldRuleSeverity::Likely;
+    }
+
+    let description = rule_description.to_ascii_lowercase();
+    let has_cost_language = COST_LANGUAGE_MARKERS
+        .iter()
+        .any(|marker| description.contains(marker));
+    let strong_absence = STRONG_COST_ABSENCE_MARKERS
+        .iter()
+        .any(|marker| window_contains_marker(&window, marker));
+    let weak_absence = WEAK_COST_ABSENCE_MARKERS
+        .iter()
+        .any(|marker| window_contains_marker(&window, marker));
+    let cost_noun_present = COST_EFFECT_NOUNS
+        .iter()
+        .any(|noun| window_contains_marker(&window, noun));
+    let has_cost_absence = strong_absence || (weak_absence && cost_noun_present);
+    if has_cost_language && has_cost_absence {
         WorldRuleSeverity::Likely
     } else {
         WorldRuleSeverity::Possible
+    }
+}
+
+fn window_contains_marker(window: &str, marker: &str) -> bool {
+    if marker.contains(' ') {
+        window.contains(marker)
+    } else {
+        window_contains_word(window, marker)
     }
 }
 
@@ -217,8 +306,52 @@ fn window_contains_word(window: &str, needle: &str) -> bool {
     false
 }
 
+/// Plain verb alternations such as `channel|cast|invoke|unleash` are written
+/// as stems, so prose uses `invoked`/`channeled`. Expand each long alternative
+/// with ordinary inflections rather than making every short noun pattern stem
+/// (which would re-introduce "stat" matching "stated").
+fn expand_plain_verb_alternation(pattern: &str) -> Option<String> {
+    if !pattern.contains('|') {
+        return None;
+    }
+    let alternatives: Vec<&str> = pattern.split('|').map(str::trim).collect();
+    if alternatives.len() < 2
+        || alternatives.iter().any(|alternative| {
+            alternative.is_empty()
+                || !alternative
+                    .chars()
+                    .all(|character| character.is_ascii_alphabetic())
+        })
+        || !alternatives
+            .iter()
+            .any(|alternative| alternative.len() >= 5)
+    {
+        return None;
+    }
+    let expanded = alternatives
+        .into_iter()
+        .map(|alternative| {
+            if alternative.len() < 5 {
+                return alternative.to_string();
+            }
+            if let Some(stem) = alternative.strip_suffix('e') {
+                format!("(?:{alternative}(?:s|d)?|{stem}ing)")
+            } else {
+                format!("(?:{alternative}(?:s|es|ed|ing)?)")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    Some(expanded)
+}
+
 fn build_regex(pattern: &str) -> Option<regex::Regex> {
-    let anchored = anchor_pattern_word_boundaries(pattern);
+    let anchored = match expand_plain_verb_alternation(pattern) {
+        // Expansion is only produced for plain alphabetic alternatives, so the
+        // whole group always needs both word boundaries.
+        Some(expanded) => format!(r"\b(?:{expanded})\b"),
+        None => anchor_pattern_word_boundaries(pattern),
+    };
     regex::RegexBuilder::new(&format!("(?i){anchored}"))
         .size_limit(1 << 16)
         .build()
@@ -414,6 +547,70 @@ mod tests {
         let rules = vec![make_rule("world_rule:empty", "", "Empty", "Empty pattern")];
         let hits = scan_prose_for_world_rules(prose, &rules);
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn inflected_plain_verb_alternation_matches_invoked() {
+        let prose = "Tarek Nouri then invoked a deep neural splice on the relay.";
+        let rules = vec![make_rule(
+            "world_rule:splice",
+            "channel|cast|invoke|unleash",
+            "Neural Splice Cooldown",
+            "Running a deep neural splice drains battery and causes eye strain.",
+        )];
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1, "expected an inflected invoke hit");
+    }
+
+    #[test]
+    fn inflected_plain_verb_alternation_preserves_base_and_matches_forms() {
+        let rules = vec![make_rule(
+            "world_rule:splice",
+            "channel|cast|invoke|unleash",
+            "Neural Splice Cooldown",
+            "Running a deep neural splice drains battery and causes eye strain.",
+        )];
+        for prose in [
+            "They invoke the splice without paying its cost.",
+            "She invokes the splice.",
+            "He invoked the splice.",
+            "It is invoking the splice.",
+        ] {
+            let hits = scan_prose_for_world_rules(prose, &rules);
+            assert_eq!(hits.len(), 1, "expected one hit for: {prose}");
+        }
+
+        let prose = "They invoke the splice without paying its cost.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Likely);
+    }
+
+    #[test]
+    fn implicit_cost_omission_promotes_to_likely() {
+        let prose = "Tarek Nouri then invoked a deep neural splice on the relay using zero battery charge and suffering no eye strain at all.";
+        let rules = vec![make_rule(
+            "world_rule:splice",
+            "channel|cast|invoke|unleash",
+            "Neural Splice Cooldown",
+            "Running a deep neural splice drains thirty percent of the rig battery and causes eye strain.",
+        )];
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Likely);
+    }
+
+    #[test]
+    fn neutral_cost_rule_mention_stays_possible() {
+        let prose = "Elena channeled the splice and paid the battery cost before the cooldown.";
+        let rules = vec![make_rule(
+            "world_rule:splice",
+            "channel|cast|invoke|unleash",
+            "Neural Splice Cooldown",
+            "Running a deep neural splice drains battery and causes eye strain.",
+        )];
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Possible);
     }
 
     #[test]

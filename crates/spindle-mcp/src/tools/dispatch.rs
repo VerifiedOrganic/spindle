@@ -46,7 +46,11 @@ impl ToolRouter {
         internal_token: Option<&str>,
     ) -> anyhow::Result<CallToolResult> {
         let call_started = Instant::now();
-        if !self.has_tool(name) {
+        // Operator-only tools stay hidden from model transports. A server-issued
+        // internal token (used by the authoring harness back-dispatch) may reach
+        // the internal-only arms below; external callers cannot.
+        let internal_call = self.serialization_state.is_internal_token(internal_token);
+        if !self.has_tool(name) && !(internal_call && static_tool_names().contains(name)) {
             return Ok(structured_error_result(&anyhow::anyhow!(
                 "unknown tool: {name}"
             )));
@@ -555,16 +559,6 @@ impl ToolRouter {
                 })
                 .await
             }
-            "rebuild_search_index" => {
-                self.invoke(arguments, |input| self.service.rebuild_search_index(input))
-                    .await
-            }
-            "backfill_scene_source_offsets" => {
-                self.invoke(arguments, |input| {
-                    self.service.backfill_scene_source_offsets(input)
-                })
-                .await
-            }
             "pull_chapter_from_file" => {
                 self.invoke(arguments, |input| {
                     self.service.pull_chapter_from_file(input)
@@ -663,13 +657,6 @@ impl ToolRouter {
                 })
                 .await
             }
-            "configure_agents" => match parse_arguments::<ConfigureAgentsInput>(arguments) {
-                Ok(input) => match self.service.configure_agents(input) {
-                    Ok(output) => structured_result(&output),
-                    Err(error) => Err(error),
-                },
-                Err(error) => Err(error),
-            },
             "get_model_usage" => {
                 self.invoke(arguments, |input| self.service.get_model_usage(input))
                     .await
@@ -705,13 +692,6 @@ impl ToolRouter {
                     .await
             }
             "list_agents" => structured_result(&self.service.list_agents()?),
-            "init_grok_skills" => match parse_arguments::<InitGrokSkillsInput>(arguments) {
-                Ok(input) => {
-                    let output = self.handle_init_grok_skills(input)?;
-                    structured_result(&output)
-                }
-                Err(error) => Err(error),
-            },
             "list_skills" => structured_result(&ListSkillsOutput {
                 skills: spindle_adapters::list_skills()
                     .iter()
@@ -928,10 +908,6 @@ impl ToolRouter {
             }
             "delete_scene" => {
                 self.invoke(arguments, |input| self.service.delete_scene(input))
-                    .await
-            }
-            "operator_delete_scene" => {
-                self.invoke(arguments, |input| self.service.operator_delete_scene(input))
                     .await
             }
             "list_scene_versions" => {

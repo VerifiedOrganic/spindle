@@ -675,3 +675,12 @@ same paths and keep their full extended shapes; the live outputs add a compact,
 fully described preview. `create_style_revision_patch` is the canonical non-mutating patch-creation
 step, `preview_style_revision_patch` remains a release-R alias, and only
 `apply_style_revision_patch` writes prose.
+
+Operator migration now ships: `configure_agents`, `test_agent`,
+`rebuild_search_index`, `backfill_scene_source_offsets`, `operator_delete_scene`,
+and `init_grok_skills` are CLI-only, hidden from every model profile including
+unset/`legacy-all`, and denied by name on stdio and HTTP model transports.
+Database-mutating commands acquire the workspace primary lock; the authoring
+harness keeps its internal `test_agent` dispatch through a server-issued token.
+The release-R [migration guide](tool-migration-r.md) records the CLI mapping,
+retained compatibility aliases, profile selection, and the R+1 removal plan.

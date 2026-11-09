@@ -554,6 +554,20 @@ impl SqliteSpindleService {
             }
         }
 
+        // Layered derived memory is derived, not canon: an edited scene marks
+        // its scene summary and every ancestor stale and queues lazy recompute.
+        if let Err(error) = self
+            .invalidate_layered_memory_for_scene(
+                &save_input.project_id,
+                &branch_id,
+                &scene.id,
+                "scene_edit",
+            )
+            .await
+        {
+            tracing::warn!(error = %error, "layered memory invalidation failed");
+        }
+
         // Record the knowledge_learned package (design §2.3 path 2). Each entry
         // is written through the SAME service path record_knowledge uses, stamped
         // with THIS scene's placement so the reveal cursor is the scene's own

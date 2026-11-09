@@ -54,6 +54,19 @@ impl ToolSerializationState {
         }
     }
 
+    /// True when `token` is a currently issued internal dispatch token. Used to
+    /// allow internal orchestration calls (for example the harness probe) to
+    /// reach operator-only tools without exposing them to model transports.
+    pub(crate) fn is_internal_token(&self, token: Option<&str>) -> bool {
+        let Some(token) = token.map(str::trim).filter(|token| !token.is_empty()) else {
+            return false;
+        };
+        self.internal_tokens
+            .lock()
+            .map(|tokens| tokens.contains_key(token))
+            .unwrap_or(false)
+    }
+
     pub(super) fn reentrant_lock_for_token(
         &self,
         token: Option<&str>,

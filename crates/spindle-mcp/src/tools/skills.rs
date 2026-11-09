@@ -122,13 +122,6 @@ Use the live `bible://skills/{skill_name}` resource for the detailed step-by-ste
 }
 
 impl ToolRouter {
-    pub(super) fn handle_init_grok_skills(
-        &self,
-        input: InitGrokSkillsInput,
-    ) -> anyhow::Result<InitGrokSkillsOutput> {
-        run_init_grok_skills(input.target_dir, input.global)
-    }
-
     pub(crate) fn covered_units(&self) -> Vec<String> {
         let skills = spindle_adapters::list_skills();
         let mut units = std::collections::BTreeSet::new();

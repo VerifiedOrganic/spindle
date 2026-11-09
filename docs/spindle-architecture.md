@@ -395,6 +395,61 @@ through canon projections in `canon_read`, compare but retain legacy reads in
 compatibility reads and lexical prefilters but remain warning/info-only until an
 evidence-verified claim or operator ratification corroborates them.
 
+## Shared claim-vs-canon validation
+
+`spindle_core::canon::claim_validation` is the shared validator contract for
+claims checked against ratified facts, knowledge edges, world rules and secret
+circles. The lexical prefilter remains the first inexpensive retrieval hint and
+is never treated as contradiction proof. Deterministic lanes then compare
+normalized claims: unkeyed attribute prose drift (subject + attribute head +
+explicit value antonym, with negation/irrealis/dialogue controls), paraphrased
+knowledge references before the recorded learned position (distinctive-token
+overlap + communication/recording verb + negation/time controls), and secret
+values in narration attributed to the nearest named out-of-circle actor. A
+`SemanticClaimAdjudicator` port covers prose rules that cannot be reduced to a
+typed predicate; when no route is configured or the route fails, the report
+carries an explicit `Degraded`/`Incomplete` status instead of reporting a clean
+scan. Findings carry check type, severity, evidence span/quote, entity ids, lane
+and a stable dedup key.
+
+The deterministic lanes are wired into `check_consistency`'s
+`canonical_fact_prose_drift`, `knowledge_timing` and `secret_leak` checks and
+into the shared retcon scanner used by verify/commit. World-rule scanning
+semantics v4 recognizes common inflections of plain verb patterns and promotes
+an explicit cost-omission ("invoked ... with zero battery charge", "unbloodied
+palms") to a likely violation. The original lexical-only findings and their
+check types remain; no model-required lane is reported as zero findings.
+
+## Layered derived memory and retrieval
+
+`spindle_core::memory` defines the four derived memory layers (scene → chapter →
+arc → book), coverage ranges, freshness/staleness, secret/reader visibility,
+dependency edges, durable recompute jobs, budgeted context metadata, ordered
+thread retrieval and direct-state entity retrieval. Summaries are derived
+memory only; they never establish canon. Cursor filtering happens before layer
+selection: a chapter/book/arc summary spanning the cursor is omitted and its
+eligible children are used instead. Hidden secret facts and non-reader-visible
+summaries are filtered before selection.
+
+Migration V0055 adds `memory_summary`, `memory_summary_dependency` and
+`memory_recompute_job`. `rebuild_layered_memory` deterministically derives scene
+summaries from final prose + revision hashes, rolls chapters up from
+`chapter_summary` (or child scenes), groups chapters under an explicit
+`arc:unassigned:<book>` group until P3 supplies arcs, and rolls books up from
+`book_digest`/chapters. Saving a scene marks its scene summary and every
+transitive ancestor stale through the dependency DAG and queues deduplicated
+lazy recompute jobs; stale rows stay visible as stale until a rebuild clears
+them. `story_so_far` prefers fresh layered chapter summaries before the cursor
+and falls back to the legacy recency path when memory has not been built.
+
+`retrieve_open_threads_layered` reserves capacity per thread class, orders
+overdue → due soon → blocking contradiction → scene/cast relevance → age →
+stable id, labels planned deadlines separately, and reports overflow and the
+next page offset. `retrieve_entity_state_layered` assembles state from the
+existing stable-id snapshot (location/possessions/injuries/knowledge/neighbors)
+with an explicit `direct_state` provider, so entity state is available without
+an embedding provider.
+
 ## Staging & ratification (canon deltas + plan amendments)
 
 While a drafter's structured continuity package (`character_states`,

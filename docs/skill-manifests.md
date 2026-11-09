@@ -46,10 +46,12 @@ new capabilities or mutates the active profile.
 `tools/tool-dispositions.toml` freezes every currently shipped registry name.
 Retained entries need a skill/reference owner; compatibility entries have an
 explicit owner and review release; operator entries cannot become skill
-dependencies. The ledger does not claim replacement aliases or CLI coverage have
-shipped. Operator calls remain in the compatibility catalog until the planned
-CLI migration. Alias input/result adapters and R/R+1 removal metadata will be
-added with their actual replacements; no alias is a mere string rename.
+dependencies. Operator entries are now CLI-only: their commands are shipped in
+`spindle-mcp`, hidden from every model profile, and denied by name on model
+transports. See [release R migration](tool-migration-r.md). The ledger still does
+not claim replacement aliases; alias input/result adapters and R/R+1 removal
+metadata are added with their actual replacements, and no alias is a mere
+string rename.
 
 Run `cargo test -p spindle-skills`, `cargo test -p spindle-mcp alignment`, and
 `cargo test -p spindle-mcp nested_skill_references_load`. Metadata is generated
