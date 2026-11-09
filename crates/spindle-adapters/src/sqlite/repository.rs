@@ -746,7 +746,10 @@ mod branches;
 mod canon;
 pub mod canon_backfill;
 pub use canon_backfill::*;
+mod canon_cutover;
 mod canon_events;
+mod canon_policy;
+pub(crate) use canon_policy::{legacy_claim, legacy_snapshot_claim};
 mod characters;
 mod entities;
 mod export;
@@ -765,6 +768,7 @@ mod quantity;
 mod relationships;
 mod research;
 mod reviews;
+mod scene_commit;
 mod scenes;
 mod search;
 mod snapshots;
@@ -1708,6 +1712,12 @@ pub struct CanonTransaction<'a> {
 }
 
 impl CanonTransaction<'_> {
+    /// Borrow the underlying write transaction so sibling repositories can add
+    /// their own in-transaction statements without opening a second connection.
+    pub(crate) fn raw_tx(&self) -> &rusqlite::Transaction<'_> {
+        &self.tx
+    }
+
     pub fn get_character(&self, id: &str) -> Result<Character> {
         let sql = format!("SELECT {CHARACTER_COLUMNS} FROM character WHERE id = ?1");
         let mut stmt = self.tx.prepare_cached(&sql)?;

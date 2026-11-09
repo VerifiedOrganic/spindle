@@ -1,6 +1,6 @@
 # ADR 0004: initial planning is a separate ratification family
 
-Status: accepted for Phases A–C (contracts, staging, human-ratified apply and bounded route generation).
+Status: accepted for Phases A–E (contracts, staging, human-ratified apply, bounded route generation, validator/run integration, and the four MCP entry tools).
 
 Initial planning may begin before a project exists. Store premise and intent
 hash in `planning_session`, generated operations in `planning_proposal`, and
@@ -80,5 +80,10 @@ route generation (`planning_contract_v1`, `planning_seed_v1`,
 `outline_manifest_v1`, and a single `planning_repair_v1` pass), pre-dispatch
 token/call/cost ceilings, stub rejection, and host/fixture fallback validation;
 all model or host output still lands exclusively as staged proposals awaiting
-ratification. Remaining phases add cross-horizon schedule/handoff validation,
-living-outline reconciliation and MCP entry tools before release.
+ratification. Phase D adds schedule, POV and pacing validation, prepare
+readback, and stale-revision handoff guards. Phase E adds the four opt-in entry
+tools (`planning_begin`, `planning_advance`, `planning_status`,
+`planning_decide`), a host-neutral `new-book` skill, a dedicated `new-book`
+tool profile, and reconnect discovery. Every gate still defaults to human, root
+levels cannot be delegated, and in-run amendments remain human-ratified. Phase F
+adds the evaluation harness and release smoke before any default rollover.

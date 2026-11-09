@@ -18,10 +18,15 @@ pub enum StyleProfileApplyMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct StyleProfileModelReceipt {
+    /// Configured model route used for the call (for example `style_analyze`).
     pub model_route: String,
+    /// Model or local stub name that produced the result.
     pub model_name: String,
+    /// Input token count, when the route reports it.
     pub input_tokens: Option<usize>,
+    /// Output token count, when the route reports it.
     pub output_tokens: Option<usize>,
+    /// End-to-end latency in milliseconds, when recorded.
     pub latency_ms: Option<u64>,
 }
 
@@ -241,8 +246,11 @@ pub struct GetStyleProfileOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ApplyStyleProfileInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Style profile identifier to apply.
     pub profile_id: String,
+    /// How generated style notes combine with existing reader-contract notes.
     pub mode: StyleProfileApplyMode,
     /// Override the Ready-status and application-guidance gates so a profile
     /// can be applied deliberately even when it is `NeedsReview` or carries no
@@ -252,16 +260,34 @@ pub struct ApplyStyleProfileInput {
     /// profile is activated — so forcing never clobbers existing prose style.
     #[serde(default)]
     pub force: Option<bool>,
+    /// Report the proposed narrator-voice, style-note, and style-rule changes
+    /// without writing, activating the profile, invalidating caches, or
+    /// creating an application audit record.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ApplyStyleProfileOutput {
+    /// Project identifier.
     pub project_id: String,
+    /// Style profile identifier.
     pub profile_id: String,
+    /// Narrator voice after the apply, or the proposed voice on a dry run.
     pub narrator_voice: crate::style::NarratorVoice,
+    /// Reader-contract style notes after the apply, or the proposed notes on a dry run.
     pub reader_contract_style_notes: Vec<String>,
+    /// Style world-rule id created or updated by a live apply; on a dry run,
+    /// the id that would be updated (none when a rule would be created).
     pub style_rule_id: Option<String>,
+    /// Number of validator findings invalidated by a live apply; always zero on a dry run.
     pub invalidated_validator_findings: usize,
+    /// True when this call only previewed the proposed effects.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Before/after diff and proposed world-rule action on a dry run. Absent on a live apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<PreviewApplyStyleProfileOutput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -275,16 +301,25 @@ pub struct StyleChunk {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "action")]
 pub enum StyleWorldRuleAction {
+    /// Create a new style world rule.
     Create {
+        /// Name of the rule to create.
         rule_name: String,
+        /// Description of the rule to create.
         description: String,
     },
+    /// Update an existing style world rule.
     Update {
+        /// Id of the rule to update.
         rule_id: String,
+        /// Current rule name.
         rule_name: String,
+        /// Description before the update.
         previous_description: String,
+        /// Description after the update.
         new_description: String,
     },
+    /// The rule already matches and needs no change.
     NoOp,
 }
 
@@ -297,13 +332,21 @@ pub struct PreviewApplyStyleProfileInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PreviewApplyStyleProfileOutput {
+    /// Project identifier.
     pub project_id: String,
+    /// Style profile identifier.
     pub profile_id: String,
+    /// Narrator voice before the proposed apply.
     pub before_narrator_voice: crate::style::NarratorVoice,
+    /// Narrator voice after the proposed apply.
     pub after_narrator_voice: crate::style::NarratorVoice,
+    /// Style notes the apply would add.
     pub added_style_notes: Vec<String>,
+    /// Style notes the apply would remove.
     pub removed_style_notes: Vec<String>,
+    /// Style world-rule change the apply would make.
     pub style_rule_action: StyleWorldRuleAction,
+    /// Validator caches a live apply would invalidate.
     pub invalidated_validator_cache_ids: Vec<String>,
 }
 
@@ -574,45 +617,111 @@ pub struct ArchiveStyleProfileOutput {
     pub archived_at: String,
 }
 
+/// Input for `create_style_revision_patch`, the canonical non-mutating patch
+/// creation step. It produces proposed scene patches for later evaluation and
+/// `apply_style_revision_patch`; it never writes prose.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateStyleRevisionPatchInput {
+    /// Project identifier.
+    pub project_id: String,
+    /// Scene to revise; provide exactly one of `scene_id` or `chapter_id`.
+    pub scene_id: Option<String>,
+    /// Chapter whose scenes should be revised; provide exactly one target.
+    pub chapter_id: Option<String>,
+    /// Style profile to apply; defaults to the project's active style profile.
+    pub profile_id: Option<String>,
+    /// Maximum number of rewrite suggestions to request.
+    pub max_suggestions: Option<usize>,
+    /// Optional author instructions for the revision.
+    pub instructions: Option<String>,
+    /// Run the style evaluator on the created patches before returning.
+    pub run_evaluation: Option<bool>,
+    /// Run the deterministic validator preflight before returning.
+    pub run_validator_preflight: Option<bool>,
+    /// Minimum evaluator improvement score required to keep a patch.
+    pub minimum_improvement_score: Option<f64>,
+}
+
+impl From<CreateStyleRevisionPatchInput> for PreviewStyleRevisionPatchInput {
+    fn from(value: CreateStyleRevisionPatchInput) -> Self {
+        Self {
+            project_id: value.project_id,
+            scene_id: value.scene_id,
+            chapter_id: value.chapter_id,
+            profile_id: value.profile_id,
+            max_suggestions: value.max_suggestions,
+            instructions: value.instructions,
+            run_evaluation: value.run_evaluation,
+            run_validator_preflight: value.run_validator_preflight,
+            minimum_improvement_score: value.minimum_improvement_score,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PreviewStyleRevisionPatchInput {
+    /// Project identifier.
     pub project_id: String,
+    /// Scene to revise; provide exactly one of `scene_id` or `chapter_id`.
     pub scene_id: Option<String>,
+    /// Chapter whose scenes should be revised; provide exactly one target.
     pub chapter_id: Option<String>,
+    /// Style profile to apply; defaults to the project's active style profile.
     pub profile_id: Option<String>,
+    /// Maximum number of rewrite suggestions to request.
     pub max_suggestions: Option<usize>,
+    /// Optional author instructions for the revision.
     pub instructions: Option<String>,
+    /// Run the style evaluator on the created patches before returning.
     pub run_evaluation: Option<bool>,
+    /// Run the deterministic validator preflight before returning.
     pub run_validator_preflight: Option<bool>,
+    /// Minimum evaluator improvement score required to keep a patch.
     pub minimum_improvement_score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StyleRevisionPatchHunk {
+    /// Original line range covered by the hunk.
     pub old_range: String,
+    /// Revised line range covered by the hunk.
     pub new_range: String,
+    /// Unified-diff lines including their leading markers.
     pub lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StyleRevisionPatchScene {
+    /// Scene identifier the patch targets.
     pub scene_id: String,
+    /// Word count of the current scene prose.
     pub original_word_count: usize,
+    /// Word count of the proposed revised prose.
     pub revised_word_count: usize,
+    /// Content hash of the current scene prose.
     pub before_hash: String,
+    /// Content hash of the proposed revised prose.
     pub after_hash: String,
+    /// Unified diff between the current and proposed prose.
     pub unified_diff: String,
+    /// Structured hunks when the caller requested them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hunks: Option<Vec<StyleRevisionPatchHunk>>,
+    /// Proposed revised prose; `apply_style_revision_patch` writes it.
     pub revised_text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PreviewStyleRevisionPatchOutput {
+    /// Project identifier.
     pub project_id: String,
+    /// Style profile the patches were generated against.
     pub profile_id: String,
+    /// Proposed scene patches; no prose has been written.
     pub scenes: Vec<StyleRevisionPatchScene>,
+    /// Model provenance for the patch-generation call.
     pub model_receipt: Option<StyleProfileModelReceipt>,
+    /// Evaluator result when `run_evaluation` was requested.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evaluation: Option<EvaluateStyleRevisionPatchOutput>,
 }
@@ -691,35 +800,53 @@ pub enum StyleRevisionPatchStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StyleRevisionPatchScore {
+    /// Validator warnings before the patch.
     pub before_warnings: usize,
+    /// Validator warnings after the patch.
     pub after_warnings: usize,
+    /// Validator errors before the patch.
     pub before_errors: usize,
+    /// Validator errors after the patch.
     pub after_errors: usize,
+    /// Net improvement score; positive means better.
     pub improvement_score: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct StyleRevisionPatchRisk {
+    /// Risk category (for example `voice_drift`).
     pub risk_type: String,
+    /// Risk severity.
     pub severity: String,
+    /// Human-readable risk description.
     pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StyleRevisionPatchEvaluation {
+    /// Scene identifier the evaluation covers.
     pub scene_id: String,
+    /// Before/after validator score.
     pub score: StyleRevisionPatchScore,
+    /// Whether the patch improved, was neutral, or regressed.
     pub status: StyleRevisionPatchStatus,
+    /// Risks the evaluator identified.
     pub risks: Vec<StyleRevisionPatchRisk>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EvaluateStyleRevisionPatchOutput {
+    /// Project identifier.
     pub project_id: String,
+    /// Style profile the patches were evaluated against.
     pub profile_id: String,
+    /// Per-scene evaluations.
     pub scenes: Vec<StyleRevisionPatchEvaluation>,
+    /// Aggregate score across all scenes.
     pub aggregate_score: StyleRevisionPatchScore,
+    /// Aggregate status across all scenes.
     pub status: StyleRevisionPatchStatus,
+    /// Risks observed across all scenes.
     pub risks: Vec<StyleRevisionPatchRisk>,
 }
 
@@ -810,6 +937,58 @@ pub struct StyleEditCandidateRef {
     pub diff_summary: String,
 }
 
+/// Compact, fully described preview of a refresh candidate. The full candidate
+/// card remains in `RefreshStyleProfileOutput::new_profile`; the release-R
+/// `preview_refresh_style_profile` twin returns the extended preview shape.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RefreshStyleProfilePreview {
+    /// Profile identifier the refresh starts from.
+    pub old_profile_id: String,
+    /// Identifier minted for the proposed candidate profile.
+    pub candidate_profile_id: String,
+    /// Candidate profile name.
+    pub candidate_name: String,
+    /// Candidate quality summary.
+    pub candidate_quality: StyleProfileQualitySummary,
+    /// True when the candidate materially changes the existing profile.
+    pub material_change: bool,
+    /// Safety notes a live apply would surface.
+    #[serde(default)]
+    pub apply_safety: Vec<String>,
+    /// Key corpus-metric changes between the old profile and the candidate.
+    #[serde(default)]
+    pub metric_deltas: Vec<RefreshStyleMetricDelta>,
+    /// Operator style-edit candidates that would feed this refresh.
+    pub style_edit_candidates: StyleEditCandidatesPreview,
+}
+
+/// Compact quality summary for a refresh candidate.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StyleProfileQualitySummary {
+    /// Quality classification (`ready`, `thin`, or `unusable`).
+    pub classification: StyleProfileQualityClassification,
+    /// Confidence score in `0.0..=1.0`.
+    pub confidence_score: f64,
+    /// Total corpus words backing the candidate.
+    pub corpus_size_words: usize,
+    /// Human-readable quality warnings.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// One changed corpus metric between the old profile and the refresh candidate.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RefreshStyleMetricDelta {
+    /// Metric name (for example `average_sentence_words`).
+    pub metric: String,
+    /// Previous value.
+    pub before: f64,
+    /// Candidate value.
+    pub after: f64,
+    /// Candidate value minus the previous value.
+    pub delta: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RefreshStyleProfileInput {
     /// Project identifier.
@@ -829,6 +1008,12 @@ pub struct RefreshStyleProfileInput {
     /// Candidate ids to dismiss instead of consuming.
     #[serde(default)]
     pub dismiss_candidate_ids: Vec<String>,
+    /// Report the candidate profile and quality/apply-safety preview without
+    /// inserting a new profile version, consuming or dismissing candidates, or
+    /// applying anything. Conflicts with `apply_after_refresh` and
+    /// `dismiss_candidate_ids`, which mutate.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -847,6 +1032,12 @@ pub struct RefreshStyleProfileOutput {
     /// Style-edit candidate ids dismissed by this refresh.
     #[serde(default)]
     pub dismissed_candidate_ids: Vec<String>,
+    /// True when this call only previewed the candidate profile.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Compact refresh preview on a dry run. Absent on a live refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<RefreshStyleProfilePreview>,
 }
 
 #[cfg(test)]

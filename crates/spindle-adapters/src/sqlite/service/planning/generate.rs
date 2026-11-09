@@ -76,7 +76,8 @@ fn build_level_prompt(
          5. Emit ONLY a single JSON object conforming to `PlanningArtifactV1` (`schema_version: 1`, `level: {:?}`).\n\
          6. Never invent database IDs. Use `{{\"kind\":\"proposal_ref\",\"value\":\"<output_ref>\"}}` for entities introduced in parent proposals or earlier operations in this artifact, and `{{\"kind\":\"existing_record_id\",\"value\":\"<id>\"}}` only for IDs listed in the scoped existing-record digest.\n\
          7. Never assert realized events during initial planning: `reached_at`, `established_in_scene_id`, and `scene_id` must be `null`, and `delivered` must be `false`.\n\
-         8. Never emit tool calls, policy overrides, or a drafting-readiness verdict.",
+         8. Never emit tool calls, policy overrides, or a drafting-readiness verdict.\n\
+         9. Treat `revision_feedback` as explicit author direction for the replacement artifact; address every recorded decision note and author question.",
         prompt_id.as_str(),
         level
     );
@@ -103,7 +104,33 @@ fn build_level_prompt(
     let mut parent_summaries = Vec::new();
     let mut unresolved_questions = Vec::new();
     let mut shared_schedules = Vec::new();
+    let mut revision_feedback = Vec::new();
     for p in proposals_in_session {
+        // A rejected or superseded proposal at this level is the author's
+        // revision direction for the replacement. It is not an active parent,
+        // so its decision note and questions must be carried explicitly or the
+        // model regenerates from the original intent unchanged.
+        if p.artifact.level == level
+            && matches!(
+                p.status,
+                PlanningProposalStatus::Rejected | PlanningProposalStatus::Superseded
+            )
+        {
+            let feedback = serde_json::json!({
+                "proposal_id": p.id,
+                "status": p.status,
+                "rationale": p.artifact.rationale,
+                "decision_note": p.decision_note,
+                "decided_by": p.decided_by,
+                "author_questions": p.artifact.author_questions,
+                "assumptions": p.artifact.assumptions,
+            });
+            revision_feedback.push(format!(
+                "- {}: {}",
+                p.id,
+                serde_json::to_string(&feedback).unwrap_or_else(|_| p.artifact.rationale.clone())
+            ));
+        }
         if ancestor_ids.contains(&p.id) {
             let parent_artifact = serde_json::json!({
                 "proposal_id": p.id,
@@ -166,6 +193,7 @@ fn build_level_prompt(
          allowed_proposal_refs:\n{}\n\
          scoped_existing_record_digest:\n{}\n\
          unresolved_author_questions:\n{}\n\
+         revision_feedback:\n{}\n\
          shared_schedule_context:\n{}\n\
          output_schema_sha256: {}\n\
          output_schema:\n{}",
@@ -216,6 +244,11 @@ fn build_level_prompt(
             "none".to_string()
         } else {
             unresolved_questions.join("\n")
+        },
+        if revision_feedback.is_empty() {
+            "none".to_string()
+        } else {
+            revision_feedback.join("\n")
         },
         if shared_schedules.is_empty() {
             "none".to_string()

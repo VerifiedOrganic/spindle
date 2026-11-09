@@ -1923,6 +1923,9 @@ mod research;
 mod reviews;
 #[path = "scene_changes/tests.rs"]
 mod scene_changes;
+
+#[path = "scene_commit/tests.rs"]
+mod scene_commit;
 #[path = "scenes/tests.rs"]
 mod scenes;
 #[path = "source_bridge/tests.rs"]

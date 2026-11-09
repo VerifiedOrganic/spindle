@@ -2353,6 +2353,13 @@ impl SqliteSpindleService {
             }
         }
 
+        if should_run_check(&requested_checks_set, "canon_consistency") {
+            issues.extend(
+                self.canon_consistency_issues(&project_id, &active_branch.id)
+                    .await?,
+            );
+        }
+
         if let Some(requested_severities) = requested_severities_set.as_ref() {
             issues.retain(|issue| requested_severities.contains(issue.severity.as_str()));
         }

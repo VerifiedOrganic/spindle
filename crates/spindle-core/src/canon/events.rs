@@ -782,7 +782,7 @@ impl CanonEventPayloadV1 {
 }
 
 /// Stored claim record in `canon_claim`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CanonClaimRecordV1 {
     pub claim_record_id: String,
@@ -852,89 +852,95 @@ impl CanonEventV1 {
     }
 
     pub fn semantic_stream_key(&self) -> Option<SemanticStreamKeyV1> {
-        let subject_id = self.subject_key();
         match &self.payload {
-            CanonEventPayloadV1::Assertion { assertion, .. } => match assertion {
-                ClaimAssertion::LifeStatus { .. } => {
-                    Some(SemanticStreamKeyV1::LifeStatus { subject_id })
-                }
-                ClaimAssertion::Action { verb, .. } => Some(SemanticStreamKeyV1::Action {
-                    subject_id,
-                    verb: key_text(verb),
-                }),
-                ClaimAssertion::LocatedAt { .. } | ClaimAssertion::Move { .. } => {
-                    Some(SemanticStreamKeyV1::Location { subject_id })
-                }
-                ClaimAssertion::SceneClock { .. } => self
-                    .effective_position
-                    .map(|position| SemanticStreamKeyV1::SceneClock { position }),
-                ClaimAssertion::Possession { item, custody, .. } => {
-                    Some(SemanticStreamKeyV1::PossessionItem {
-                        subject_id,
-                        item_id: entity_key(item),
-                        custody: *custody,
-                    })
-                }
-                ClaimAssertion::Injury { injury_id, .. } => {
-                    Some(SemanticStreamKeyV1::InjuryMember {
-                        subject_id,
-                        injury_id: injury_id.trim().to_string(),
-                    })
-                }
-                ClaimAssertion::Quantity { measure, unit, .. } => {
-                    Some(SemanticStreamKeyV1::QuantityMeasure {
-                        subject_id,
-                        measure: key_text(measure),
-                        unit: unit.trim().to_string(),
-                    })
-                }
-                ClaimAssertion::Knowledge { proposition, .. } => {
-                    Some(SemanticStreamKeyV1::KnowledgeProposition {
-                        subject_id,
-                        proposition_id: entity_key(proposition),
-                    })
-                }
-                ClaimAssertion::Attribute {
-                    operation,
-                    key,
-                    value,
-                    ..
-                } => {
-                    let norm_key = key_text(key);
-                    match operation {
-                        AttributeOperation::Set => Some(SemanticStreamKeyV1::AttributeScalar {
-                            subject_id,
-                            key: norm_key,
-                        }),
-                        AttributeOperation::Add | AttributeOperation::Remove => {
-                            Some(SemanticStreamKeyV1::AttributeMember {
-                                subject_id,
-                                key: norm_key,
-                                member: scalar_member_key(value),
-                            })
-                        }
-                    }
-                }
-                ClaimAssertion::Relationship { other, .. } => {
-                    Some(SemanticStreamKeyV1::RelationshipPair {
-                        subject_id,
-                        other_id: entity_key(other),
-                    })
-                }
-                ClaimAssertion::Promise { thread, .. } => {
-                    Some(SemanticStreamKeyV1::PromiseThread {
-                        thread_id: entity_key(thread),
-                    })
-                }
-                ClaimAssertion::Rule { rule, .. } => Some(SemanticStreamKeyV1::RuleConstraint {
-                    rule_id: entity_key(rule),
-                }),
-            },
+            CanonEventPayloadV1::Assertion { assertion, .. } => assertion_semantic_stream_key(
+                &self.subject_key(),
+                assertion,
+                self.effective_position,
+            ),
             CanonEventPayloadV1::CoverageMask { .. }
             | CanonEventPayloadV1::SourceInvalidation { .. }
             | CanonEventPayloadV1::SceneVisibility { .. }
             | CanonEventPayloadV1::WatermarkRestore { .. } => None,
         }
+    }
+}
+
+/// Semantic stream key for an assertion, shared by stored events and candidate
+/// claims so compatibility mirroring can find the prior contribution to replace.
+pub fn assertion_semantic_stream_key(
+    subject_key: &str,
+    assertion: &ClaimAssertion,
+    effective_position: Option<CanonPositionV1>,
+) -> Option<SemanticStreamKeyV1> {
+    let subject_id = subject_key.to_string();
+    match assertion {
+        ClaimAssertion::LifeStatus { .. } => Some(SemanticStreamKeyV1::LifeStatus { subject_id }),
+        ClaimAssertion::Action { verb, .. } => Some(SemanticStreamKeyV1::Action {
+            subject_id,
+            verb: key_text(verb),
+        }),
+        ClaimAssertion::LocatedAt { .. } | ClaimAssertion::Move { .. } => {
+            Some(SemanticStreamKeyV1::Location { subject_id })
+        }
+        ClaimAssertion::SceneClock { .. } => {
+            effective_position.map(|position| SemanticStreamKeyV1::SceneClock { position })
+        }
+        ClaimAssertion::Possession { item, custody, .. } => {
+            Some(SemanticStreamKeyV1::PossessionItem {
+                subject_id,
+                item_id: entity_key(item),
+                custody: *custody,
+            })
+        }
+        ClaimAssertion::Injury { injury_id, .. } => Some(SemanticStreamKeyV1::InjuryMember {
+            subject_id,
+            injury_id: injury_id.trim().to_string(),
+        }),
+        ClaimAssertion::Quantity { measure, unit, .. } => {
+            Some(SemanticStreamKeyV1::QuantityMeasure {
+                subject_id,
+                measure: key_text(measure),
+                unit: unit.trim().to_string(),
+            })
+        }
+        ClaimAssertion::Knowledge { proposition, .. } => {
+            Some(SemanticStreamKeyV1::KnowledgeProposition {
+                subject_id,
+                proposition_id: entity_key(proposition),
+            })
+        }
+        ClaimAssertion::Attribute {
+            operation,
+            key,
+            value,
+            ..
+        } => {
+            let norm_key = key_text(key);
+            match operation {
+                AttributeOperation::Set => Some(SemanticStreamKeyV1::AttributeScalar {
+                    subject_id,
+                    key: norm_key,
+                }),
+                AttributeOperation::Add | AttributeOperation::Remove => {
+                    Some(SemanticStreamKeyV1::AttributeMember {
+                        subject_id,
+                        key: norm_key,
+                        member: scalar_member_key(value),
+                    })
+                }
+            }
+        }
+        ClaimAssertion::Relationship { other, .. } => Some(SemanticStreamKeyV1::RelationshipPair {
+            subject_id,
+            other_id: entity_key(other),
+        }),
+        ClaimAssertion::Promise { thread, .. } => Some(SemanticStreamKeyV1::PromiseThread {
+            thread_id: entity_key(thread),
+        }),
+        ClaimAssertion::Rule { rule, .. } => Some(SemanticStreamKeyV1::RuleConstraint {
+            rule_id: entity_key(rule),
+        }),
     }
 }
 

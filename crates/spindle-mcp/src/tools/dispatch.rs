@@ -287,6 +287,12 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.archive_style_profile(input))
                     .await
             }
+            "create_style_revision_patch" => {
+                self.invoke(arguments, |input| {
+                    self.service.create_style_revision_patch(input)
+                })
+                .await
+            }
             "preview_style_revision_patch" => {
                 self.invoke(arguments, |input| {
                     self.service.preview_style_revision_patch(input)
@@ -568,6 +574,30 @@ impl ToolRouter {
             "push_chapter_to_file" => {
                 self.invoke(arguments, |input| self.service.push_chapter_to_file(input))
                     .await
+            }
+            "planning_begin" => {
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_planning_begin(input))
+                })
+                .await
+            }
+            "planning_advance" => {
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_planning_advance(input))
+                })
+                .await
+            }
+            "planning_status" => {
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_planning_status(input))
+                })
+                .await
+            }
+            "planning_decide" => {
+                self.invoke(arguments, |input| {
+                    Box::pin(self.handle_planning_decide(input))
+                })
+                .await
             }
             "authoring_prepare_run" => {
                 // Box::pin: the authoring handlers' futures are large enough
@@ -856,6 +886,10 @@ impl ToolRouter {
             }
             "prepare_scene" => {
                 self.invoke(arguments, |input| self.service.prepare_scene(input))
+                    .await
+            }
+            "commit_scene" => {
+                self.invoke(arguments, |input| self.handle_commit_scene(input))
                     .await
             }
             "get_entity" => {

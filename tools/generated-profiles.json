@@ -1,5 +1,29 @@
 [
   {
+    "description": "Host-neutral new-book entry from premise through human-approved planning gates to draft readiness.",
+    "name": "new-book",
+    "tools": [
+      "authoring_prepare_run",
+      "create_book",
+      "create_chapter",
+      "create_project",
+      "get_reference",
+      "get_skill",
+      "get_writer_state",
+      "list_projects",
+      "list_skills",
+      "planning_advance",
+      "planning_begin",
+      "planning_decide",
+      "planning_status",
+      "set_active_project"
+    ],
+    "units": [
+      "new-book",
+      "spindle"
+    ]
+  },
+  {
     "description": "Plot architecture and declared planning tools.",
     "name": "planning",
     "tools": [
@@ -213,6 +237,7 @@
       "check_style_profile_sources",
       "compare_style_profiles",
       "create_style_profile_from_markdown",
+      "create_style_revision_patch",
       "evaluate_style_revision_patch",
       "export_bible",
       "export_epub",
@@ -270,6 +295,7 @@
       "authoring_status",
       "check_consistency",
       "commit_character_state",
+      "commit_scene",
       "commit_scene_changes",
       "continue_generation",
       "create_book",
@@ -379,6 +405,7 @@
       "annotate_scene_beats",
       "check_consistency",
       "commit_character_state",
+      "commit_scene",
       "commit_scene_changes",
       "create_book",
       "create_chapter",

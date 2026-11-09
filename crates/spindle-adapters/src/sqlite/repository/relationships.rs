@@ -1,4 +1,7 @@
+use super::canon_backfill::mark_legacy_rows_mapped_in_conn;
+use super::canon_policy::{legacy_claim, legacy_snapshot_claim};
 use super::*;
+use spindle_core::canon::*;
 
 impl Repository {
     /// All relates_to rows involving any of the given characters (either
@@ -186,12 +189,97 @@ impl Repository {
         let input_owned = input.clone();
         let source_owned = source.to_string();
         self.with_transaction(move |tx| {
-            let effective_branch_id = if let Ok(scene) = tx.get_scene(&input_owned.scene_id) {
+            let scene = tx.get_scene(&input_owned.scene_id).ok();
+            let effective_branch_id = if let Some(scene) = &scene {
                 tx.resolve_effective_scene_branch(&scene.project_id, &branch_id_owned)?
             } else {
                 branch_id_owned.clone()
             };
-            tx.update_relationship(&effective_branch_id, &input_owned, &source_owned)
+            let relationship =
+                tx.update_relationship(&effective_branch_id, &input_owned, &source_owned)?;
+            if let Some(scene) = &scene {
+                let revision_id = format!(
+                    "legacy:relationship:{}:{}:{}:{}",
+                    scene.id, source_owned, input_owned.character_a_id, input_owned.character_b_id
+                );
+                let placement = StoryPlacement {
+                    book_number: scene.book_number,
+                    chapter_number: scene.chapter_number,
+                    scene_order: Some(scene.scene_order),
+                    note: None,
+                };
+                let snapshot_claim = legacy_snapshot_claim(
+                    &scene.project_id,
+                    &effective_branch_id,
+                    &revision_id,
+                    Some(&scene.id),
+                    &placement,
+                    &relationship.in_id,
+                    format!(
+                        "legacy.relates_to.{}|{}",
+                        relationship.in_id, relationship.out_id
+                    ),
+                    &relationship,
+                    Some(0),
+                    0,
+                )?;
+                // Legacy treats (A, B) and (B, A) as one pair and returns its
+                // persisted orientation; canon relationship streams are
+                // directional, so mirror that orientation rather than the
+                // caller's argument order.
+                let claim = legacy_claim(
+                    &scene.project_id,
+                    &effective_branch_id,
+                    &revision_id,
+                    Some(&scene.id),
+                    &placement,
+                    ClaimEntity::Resolved {
+                        id: relationship.in_id.clone(),
+                    },
+                    ClaimAssertion::Relationship {
+                        operation: RelationshipOperation::Delta,
+                        other: ClaimEntity::Resolved {
+                            id: relationship.out_id.clone(),
+                        },
+                        trust: input_owned.trust_delta,
+                        tension: input_owned.tension_delta,
+                    },
+                    Some(0),
+                    1,
+                );
+                let mirrored = tx.mirror_canon_claims(
+                    &scene.project_id,
+                    &effective_branch_id,
+                    &revision_id,
+                    Some(&scene.id),
+                    vec![snapshot_claim, claim],
+                )?;
+                if mirrored.is_some() {
+                    let pair_key = format!(
+                        "{}|{}|{}",
+                        relationship.branch_id, relationship.in_id, relationship.out_id
+                    );
+                    let delta_key = format!(
+                        "{}|{}|{}|{}|{}",
+                        relationship.branch_id,
+                        relationship.in_id,
+                        relationship.out_id,
+                        scene.id,
+                        source_owned
+                    );
+                    mark_legacy_rows_mapped_in_conn(
+                        &tx.tx,
+                        &scene.project_id,
+                        &effective_branch_id,
+                        &[
+                            ("relates_to".to_string(), pair_key),
+                            ("relationship_scene_delta".to_string(), delta_key),
+                        ],
+                        timestamp_to_micros(chrono::Utc::now()),
+                    )?;
+                }
+            }
+            Ok(relationship)
         })
         .await
     }

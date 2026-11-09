@@ -96,9 +96,13 @@ impl PlanningPromptId {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningTargetRange {
+    /// Book number the detailed plan covers (1-based).
     pub book_number: i32,
+    /// First chapter in the detailed planning horizon (1-based).
     pub chapter_start: i32,
+    /// Last chapter in the detailed planning horizon, inclusive.
     pub chapter_end: i32,
+    /// Planned scene count for each chapter in the horizon.
     pub scenes_per_chapter: i32,
 }
 
@@ -184,10 +188,14 @@ impl PlanningSchedule {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningAuthorQuestion {
+    /// Stable identifier for this author question.
     pub id: String,
+    /// The creative decision the author needs to make.
     pub question: String,
+    /// Optional set of choices the author may select.
     #[serde(default)]
     pub choices: Vec<String>,
+    /// Optional recommended choice for the author.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recommended: Option<String>,
 }
@@ -226,13 +234,20 @@ pub enum PlanningFindingSeverity {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningFinding {
+    /// Stable machine-readable finding code.
     pub code: String,
+    /// Whether this finding blocks acceptance or is advisory only.
     pub severity: PlanningFindingSeverity,
+    /// JSON pointer or schema path the finding concerns.
     pub path: String,
+    /// Related proposal references or record IDs.
     #[serde(default)]
     pub related_refs: Vec<String>,
+    /// What the validator expected at this path.
     pub expected: String,
+    /// What the staged artifact actually contained.
     pub actual: String,
+    /// Short instruction for repairing the artifact.
     pub repair_hint: String,
 }
 
@@ -248,15 +263,23 @@ pub enum PlanningCostStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningBudget {
+    /// Maximum number of route calls across the whole session.
     pub max_model_calls: u32,
+    /// Maximum input tokens the session may spend.
     pub max_input_tokens: u64,
+    /// Maximum output tokens the session may spend.
     pub max_output_tokens: u64,
+    /// Maximum combined input plus output tokens.
     pub max_total_tokens: u64,
+    /// Maximum output tokens requested from a single route call.
     pub max_output_tokens_per_call: u32,
+    /// Optional hard cost ceiling in US dollars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cost_usd: Option<f64>,
+    /// Optional configured input price in US dollars per million tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_cost_per_million_usd: Option<f64>,
+    /// Optional configured output price in US dollars per million tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_cost_per_million_usd: Option<f64>,
 }
@@ -285,14 +308,21 @@ impl PlanningBudget {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningBudgetUsage {
+    /// Route calls already dispatched for this session.
     pub model_calls: u32,
+    /// Input tokens reported or estimated so far.
     pub input_tokens: u64,
+    /// Output tokens reported or estimated so far.
     pub output_tokens: u64,
+    /// Combined input plus output tokens.
     pub total_tokens: u64,
+    /// Estimated cost when configured prices are available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_cost_usd: Option<f64>,
+    /// Conservative cost reserved for the maximum output of pending calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reserved_cost_usd: Option<f64>,
+    /// How the cost figure was derived, or why it is unknown.
     #[serde(default)]
     pub cost_status: PlanningCostStatus,
 }
@@ -605,15 +635,22 @@ pub struct PlanningSession {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningPacingMetrics {
+    /// Number of scene intensity targets evaluated.
     pub evaluated_items: usize,
+    /// Mean absolute deviation from the accepted pacing curve.
     pub mean_absolute_deviation: f64,
+    /// Longest run of scenes that stayed outside the advisory band.
     pub longest_sustained_deviation: usize,
+    /// Chapter count for each POV character reference.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pov_chapter_counts: BTreeMap<String, usize>,
+    /// Share of chapters for each POV character reference.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pov_shares: BTreeMap<String, f64>,
+    /// Longest consecutive chapter run for each POV character.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pov_max_consecutive_chapters: BTreeMap<String, i32>,
+    /// Longest chapter absence for each POV character.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pov_max_absence_chapters: BTreeMap<String, i32>,
 }
@@ -1172,6 +1209,622 @@ pub struct PlanningTryFailCycleStep {
 pub struct PlanningIntensityPoint {
     pub position: f64,
     pub intensity: f64,
+}
+
+/// Session settings that can be changed without generating a planning level.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigurePlanningSessionInput {
+    /// Planning session to update.
+    pub session_id: String,
+    /// Project and branch the session is bound to; omit before the project root is accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<PlanningScope>,
+    /// Detailed chapter horizon to store on the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon: Option<PlanningTargetRange>,
+    /// Token and call ceiling to store on the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<PlanningBudget>,
+    /// Highest content rating the stored plan may request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_ceiling: Option<ContentRating>,
+    /// Whether a configured review agent may be used as a planning backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_review_backend: Option<bool>,
+}
+
+/// Gate selected for every planning level. Root levels cannot be delegated.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningGatePolicy {
+    /// Gate for the Contract level; this root requires human review.
+    #[serde(default)]
+    pub contract: PlanningGate,
+    /// Gate for the CastWorld level; this root requires human review.
+    #[serde(default)]
+    pub cast_world: PlanningGate,
+    /// Gate for the SeriesArc level; this root requires human review.
+    #[serde(default)]
+    pub series_arc: PlanningGate,
+    /// Gate for the Book level; this root requires human review.
+    #[serde(default)]
+    pub book: PlanningGate,
+    /// Gate for Chapter-level proposals.
+    #[serde(default)]
+    pub chapter: PlanningGate,
+    /// Gate for Scene-level proposals.
+    #[serde(default)]
+    pub scene: PlanningGate,
+}
+
+impl PlanningGatePolicy {
+    /// Build a full gate policy from a sparse level map.
+    pub fn from_gates(gates: &BTreeMap<PlanningLevel, PlanningGate>) -> Self {
+        let gate = |level| gates.get(&level).copied().unwrap_or_default();
+        Self {
+            contract: gate(PlanningLevel::Contract),
+            cast_world: gate(PlanningLevel::CastWorld),
+            series_arc: gate(PlanningLevel::SeriesArc),
+            book: gate(PlanningLevel::Book),
+            chapter: gate(PlanningLevel::Chapter),
+            scene: gate(PlanningLevel::Scene),
+        }
+    }
+
+    /// Materialize the complete level map stored on the planning session.
+    pub fn to_gates(self) -> BTreeMap<PlanningLevel, PlanningGate> {
+        BTreeMap::from([
+            (PlanningLevel::Contract, self.contract),
+            (PlanningLevel::CastWorld, self.cast_world),
+            (PlanningLevel::SeriesArc, self.series_arc),
+            (PlanningLevel::Book, self.book),
+            (PlanningLevel::Chapter, self.chapter),
+            (PlanningLevel::Scene, self.scene),
+        ])
+    }
+
+    /// Gate configured for one level.
+    pub fn gate_for(self, level: PlanningLevel) -> PlanningGate {
+        match level {
+            PlanningLevel::Contract => self.contract,
+            PlanningLevel::CastWorld => self.cast_world,
+            PlanningLevel::SeriesArc => self.series_arc,
+            PlanningLevel::Book => self.book,
+            PlanningLevel::Chapter => self.chapter,
+            PlanningLevel::Scene => self.scene,
+        }
+    }
+}
+
+/// Explicit gate and policy settings for a planning session. Every level stays
+/// human-gated unless the author names a delegated gate here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPolicyOverride {
+    /// Gate to apply at each planning level; omitted levels keep human review.
+    #[serde(default)]
+    pub gates: PlanningGatePolicy,
+    /// Stable identifier for an explicitly delegated policy version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_id: Option<String>,
+    /// Monotonic policy version recorded with delegated decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u32>,
+    /// Maximum advisory findings allowed for delegated chapter or scene acceptance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_advisory_findings: Option<usize>,
+}
+
+/// Start a new planning session or resume an existing one.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningBeginInput {
+    /// One- to three-sentence premise or intent for a new planning session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premise: Option<String>,
+    /// Existing planning session to resume instead of starting a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Existing project to bind; omit for a brand-new book.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Branch to bind; defaults to the project's active branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<String>,
+    /// Detailed chapter horizon to generate; defaults to three chapters with two scenes each.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon: Option<PlanningTargetRange>,
+    /// Token and call ceiling for route generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<PlanningBudget>,
+    /// Highest content rating the plan may request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_ceiling: Option<ContentRating>,
+    /// Allow a configured review agent as a planning backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_review_backend: Option<bool>,
+    /// Gate policy override; omission keeps every level human-gated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<PlanningPolicyOverride>,
+    /// Human author recorded as ratifying the policy override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_actor: Option<String>,
+    /// Note explaining why the policy override is authorized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_note: Option<String>,
+}
+
+/// Compact audit summary of a planning policy.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPolicySummary {
+    /// Gate configured for each planning level; the default is human review.
+    #[serde(default)]
+    pub gates: PlanningGatePolicy,
+    /// Identifier of the explicitly delegated policy version, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_id: Option<String>,
+    /// Version of the explicitly delegated policy, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u32>,
+    /// Maximum advisory findings allowed for delegation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_advisory_findings: Option<usize>,
+    /// Whether the session carries an explicit POV policy.
+    #[serde(default)]
+    pub has_pov_policy: bool,
+    /// Whether the session carries an explicit pacing policy.
+    #[serde(default)]
+    pub has_pacing_policy: bool,
+}
+
+/// Compact planning session state suitable for reconnect and review.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningSessionSummary {
+    /// Stable planning session identifier.
+    pub session_id: String,
+    /// Short preview of the author's premise.
+    pub premise_preview: String,
+    /// Hash of the exact premise intent used by staging.
+    pub intent_hash: String,
+    /// Bound project identifier, once a project root is accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Bound branch identifier, once a project root is accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<String>,
+    /// First planning level that has no staged or accepted proposal.
+    pub next_level: PlanningLevel,
+    /// Current gate and policy summary.
+    pub policy: PlanningPolicySummary,
+    /// Detailed chapter horizon stored on the session.
+    pub horizon: PlanningTargetRange,
+    /// Token and call ceiling stored on the session.
+    pub budget: PlanningBudget,
+    /// Usage recorded so far.
+    pub usage: PlanningBudgetUsage,
+    /// Highest content rating the plan may request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_ceiling: Option<ContentRating>,
+    /// Whether a configured review agent may be used as a planning backend.
+    #[serde(default)]
+    pub allow_review_backend: bool,
+    /// Whether an accepted amendment made the planning projection stale.
+    #[serde(default)]
+    pub projection_stale: bool,
+    /// Explanation recorded when the projection became stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_reason: Option<String>,
+    /// Outcome of the most recent generation attempt, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<PlanningSessionOutcome>,
+    /// Session creation time in microseconds since the Unix epoch.
+    pub created_at: i64,
+}
+
+/// One typed operation inside a staged proposal.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningOperationSummary {
+    /// Proposal-local output reference used by dependent operations.
+    pub output_ref: String,
+    /// Typed operation payload exactly as staged.
+    pub operation: serde_json::Value,
+}
+
+/// Review summary of one staged or decided proposal.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningProposalSummary {
+    /// Stable proposal identifier.
+    pub proposal_id: String,
+    /// Planning level this proposal covers.
+    pub level: PlanningLevel,
+    /// Current proposal status.
+    pub status: PlanningProposalStatus,
+    /// Exact hash required to record a decision for this proposal.
+    pub payload_hash: String,
+    /// Creative rationale supplied with the artifact.
+    pub rationale: String,
+    /// Typed operations included in the proposal.
+    #[serde(default)]
+    pub operations: Vec<PlanningOperationSummary>,
+    /// Promise, POV and intensity schedule supplied with the artifact.
+    #[serde(default)]
+    pub schedule: serde_json::Value,
+    /// Assumptions the plan relies on.
+    #[serde(default)]
+    pub assumptions: Vec<String>,
+    /// Questions the author still needs to answer.
+    #[serde(default)]
+    pub author_questions: Vec<PlanningAuthorQuestion>,
+    /// Validation findings recorded at staging or decision time.
+    #[serde(default)]
+    pub findings: Vec<PlanningFinding>,
+    /// Actor who recorded the decision, when decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+    /// Note recorded with the decision, when decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_note: Option<String>,
+    /// Proposal creation time in microseconds since the Unix epoch.
+    pub created_at: i64,
+}
+
+/// Result of starting or resuming a planning session.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningBeginOutput {
+    /// Compact session state after the call.
+    pub session: PlanningSessionSummary,
+    /// Whether an existing session was resumed instead of created.
+    pub resumed: bool,
+    /// The next safe action for the host or author.
+    pub next_action: String,
+    /// Short human-readable status message.
+    pub message: String,
+}
+
+/// One planning action a host may request without silent drafting.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningAdvanceAction {
+    /// Generate the next or requested planning level through the configured route.
+    #[default]
+    Generate,
+    /// Stage a host-authored structured artifact when no route is available.
+    StageHostArtifact,
+    /// Retry the most recent planning level after a rejected or malformed attempt.
+    RepairLastProposal,
+    /// Recompute planner checks and the authoring prepare report without generating.
+    RecomputeReadiness,
+    /// Update the session gate policy without generating.
+    SetPolicy,
+}
+
+/// Generate, submit, retry, recheck or repolicy one planning level.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningAdvanceInput {
+    /// Planning session to advance.
+    pub session_id: String,
+    /// Project the session is bound to; omit to use the stored scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Branch the session is bound to; defaults to the project's active branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<String>,
+    /// Action to perform; defaults to generating the next level.
+    #[serde(default)]
+    pub action: PlanningAdvanceAction,
+    /// Planning level to generate; defaults to the first unfilled level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<PlanningLevel>,
+    /// Exact accepted or staged parent proposal hashes; defaults to active ancestors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parents: Option<BTreeMap<String, String>>,
+    /// Detailed chapter horizon for this generation call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_range: Option<PlanningTargetRange>,
+    /// Allow a configured review agent as a planning backend for this call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_review_backend: Option<bool>,
+    /// Highest content rating the generated plan may request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_ceiling: Option<ContentRating>,
+    /// Token and call ceiling for this call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<PlanningBudget>,
+    /// Host-authored artifact payload used by the stage_host_artifact action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_artifact: Option<serde_json::Value>,
+    /// Caller-supplied idempotency key that prevents duplicate generation attempts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_key: Option<String>,
+    /// Gate policy override used by the set_policy action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<PlanningPolicyOverride>,
+    /// Human author recorded as ratifying a policy change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_actor: Option<String>,
+    /// Note explaining why a policy change is authorized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_note: Option<String>,
+    /// Canon-mining policy applied when checking authoring readiness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mining_policy: Option<AuthoringMiningPolicy>,
+    /// Checkpoint policy applied when checking authoring readiness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_policy: Option<AuthoringCheckpointPolicy>,
+}
+
+/// Host generation request returned when no planning route can run.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningHostRequestSummary {
+    /// Planning level the host must generate.
+    pub level: PlanningLevel,
+    /// Logical route task the host is replacing.
+    pub route_task: String,
+    /// Versioned prompt identifier the host must use.
+    pub prompt_id: PlanningPromptId,
+    /// Hash of the exact prompt text.
+    pub prompt_hash: String,
+    /// Hash of the exact artifact schema.
+    pub schema_hash: String,
+    /// System instructions for the host model.
+    pub system_prompt: String,
+    /// User prompt containing intent, context and constraints.
+    pub user_prompt: String,
+    /// JSON Schema the host artifact must satisfy.
+    pub artifact_schema: serde_json::Value,
+    /// Exact parent proposal hashes the artifact must reference.
+    #[serde(default)]
+    pub parent_proposals: BTreeMap<String, String>,
+    /// Detailed chapter horizon the artifact must cover.
+    pub target_range: PlanningTargetRange,
+    /// Short explanation of why the configured route could not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_problem: Option<String>,
+    /// Findings from an earlier rejected attempt that must be repaired.
+    #[serde(default)]
+    pub prior_findings: Vec<PlanningFinding>,
+}
+
+/// Compact outcome of one generation or submission attempt.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningAdvanceSummary {
+    /// Durable attempt identifier for retry and audit.
+    pub attempt_id: String,
+    /// Planning level attempted.
+    pub level: PlanningLevel,
+    /// Honest session outcome for the attempt.
+    pub outcome: PlanningSessionOutcome,
+    /// Staged proposal produced by the attempt, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<PlanningProposalSummary>,
+    /// Where the artifact came from, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<PlanningOutputSource>,
+    /// Number of route attempts consumed, including repair.
+    #[serde(default)]
+    pub attempts_used: u32,
+    /// Whether the single bounded repair pass was used.
+    #[serde(default)]
+    pub repaired: bool,
+    /// Validation findings from the attempt.
+    #[serde(default)]
+    pub findings: Vec<PlanningFinding>,
+    /// Questions the author must answer before acceptance.
+    #[serde(default)]
+    pub author_questions: Vec<PlanningAuthorQuestion>,
+    /// Host generation request used when no route could run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_request: Option<PlanningHostRequestSummary>,
+    /// Usage recorded by the attempt.
+    pub usage: PlanningBudgetUsage,
+    /// Ceiling in force for the attempt.
+    pub budget: PlanningBudget,
+    /// Optional human-readable status message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Result of advancing, rechecking or repolicing a planning session.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningAdvanceOutput {
+    /// Compact session state after the call.
+    pub session: PlanningSessionSummary,
+    /// Action performed by the call.
+    pub action: PlanningAdvanceAction,
+    /// Generation result, when the action generated or submitted an artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advance: Option<PlanningAdvanceSummary>,
+    /// Readiness result, when the action recomputed or checked it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<PlanningReadinessSummary>,
+    /// The next safe action for the host or author.
+    pub next_action: String,
+}
+
+/// One chapter in the authoring prepare report.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPrepareChapterSummary {
+    /// Chapter number checked.
+    pub chapter_number: i32,
+    /// Whether this chapter is ready for drafting.
+    pub ready: bool,
+    /// Items this chapter still needs.
+    #[serde(default)]
+    pub missing_items: Vec<String>,
+}
+
+/// Compact authoring prepare report for the planned range.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningPrepareRunSummary {
+    /// Project whose chapters were checked.
+    pub project_id: String,
+    /// Book number checked.
+    pub book_number: i32,
+    /// First chapter checked.
+    pub start_chapter: i32,
+    /// Last chapter checked, inclusive.
+    pub end_chapter: i32,
+    /// Whether the whole range is ready for drafting.
+    pub ready_to_draft: bool,
+    /// Items still required before drafting can start.
+    #[serde(default)]
+    pub missing_requirements: Vec<String>,
+    /// Per-chapter readiness.
+    #[serde(default)]
+    pub chapters: Vec<PlanningPrepareChapterSummary>,
+}
+
+/// Planner checks plus the real authoring prepare result.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningReadinessSummary {
+    /// Chapter range checked.
+    pub target_range: PlanningTargetRange,
+    /// Whether the accepted plan can start drafting.
+    pub ready_to_draft: bool,
+    /// Whether the deterministic planner checks passed.
+    pub planner_checks_passed: bool,
+    /// Whether a stale projection blocks readiness.
+    pub stale_projection: bool,
+    /// Blocking and advisory planner findings.
+    #[serde(default)]
+    pub findings: Vec<PlanningFinding>,
+    /// POV and pacing measurements for the checked range.
+    pub pacing_metrics: PlanningPacingMetrics,
+    /// Real authoring prepare report for the same range.
+    pub prepare_run: PlanningPrepareRunSummary,
+}
+
+/// Read compact planning status for one session or for reconnect discovery.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningStatusInput {
+    /// Existing planning session to inspect; omit to discover active sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Existing project whose sessions should be listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Branch whose sessions should be listed; defaults to the project's active branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<String>,
+    /// Chapter range to check instead of the session's stored horizon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_range: Option<PlanningTargetRange>,
+    /// Whether to include planner checks and the authoring prepare report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_readiness: Option<bool>,
+}
+
+/// Compact planning status, staged proposals and reconnect guidance.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningStatusOutput {
+    /// Selected session detail, when a session was found or selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<PlanningSessionSummary>,
+    /// Sessions matching the requested project, or recent sessions when no project is given.
+    #[serde(default)]
+    pub sessions: Vec<PlanningSessionSummary>,
+    /// Effective gate for the selected session's next level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<PlanningGate>,
+    /// Proposals staged or decided in the selected session.
+    #[serde(default)]
+    pub proposals: Vec<PlanningProposalSummary>,
+    /// Planner findings currently visible for the selected session.
+    #[serde(default)]
+    pub findings: Vec<PlanningFinding>,
+    /// Readiness report for the selected session, when its project is attached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<PlanningReadinessSummary>,
+    /// The next safe action for the host or author.
+    pub next_action: String,
+    /// How to reconnect to this work in a later session.
+    pub reconnect_hint: String,
+}
+
+/// One decision action for staged planning proposals.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningDecideAction {
+    /// Record an accept, reject or supersede decision for staged proposals.
+    #[default]
+    Decide,
+    /// Supersede staged proposals so a replacement can be staged at the same level.
+    Revise,
+    /// Check readiness and prepare the authoring run without changing proposals.
+    PrepareAuthoringRun,
+}
+
+/// Decide staged planning proposals or prepare the authoring run.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningDecideInput {
+    /// Planning session whose proposals are being decided.
+    pub session_id: String,
+    /// Project the session is bound to; omit to use the stored scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Branch the session is bound to; defaults to the project's active branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<String>,
+    /// Whether to decide proposals or prepare the authoring run.
+    #[serde(default)]
+    pub action: PlanningDecideAction,
+    /// Decision to record when the action is decide.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<PlanningDecision>,
+    /// Exact proposal IDs and payload hashes the decision covers.
+    #[serde(default)]
+    pub expected_hashes: BTreeMap<String, String>,
+    /// Human author recorded as making the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// Note explaining the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Chapter range to prepare instead of the session's stored horizon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_range: Option<PlanningTargetRange>,
+    /// Canon-mining policy applied when preparing the authoring run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mining_policy: Option<AuthoringMiningPolicy>,
+    /// Checkpoint policy applied when preparing the authoring run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_policy: Option<AuthoringCheckpointPolicy>,
+}
+
+/// Result of a planning decision or authoring preparation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningDecideOutput {
+    /// Compact session state after the call.
+    pub session: PlanningSessionSummary,
+    /// Action performed by the call.
+    pub action: PlanningDecideAction,
+    /// Proposals affected by the decision.
+    #[serde(default)]
+    pub decided: Vec<PlanningProposalSummary>,
+    /// Readiness report produced by the call, when checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<PlanningReadinessSummary>,
+    /// The next safe action for the host or author.
+    pub next_action: String,
+    /// Short human-readable status message.
+    pub message: String,
 }
 
 #[cfg(test)]

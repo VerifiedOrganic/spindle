@@ -278,3 +278,6 @@ mod slim_discovery;
 
 #[path = "prepare_scene/tests.rs"]
 mod prepare_scene;
+
+#[path = "commit_scene/tests.rs"]
+mod commit_scene;

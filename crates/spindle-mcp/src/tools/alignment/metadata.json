@@ -230,6 +230,7 @@
           "check_style_profile_sources",
           "compare_style_profiles",
           "create_style_profile_from_markdown",
+          "create_style_revision_patch",
           "evaluate_style_revision_patch",
           "get_style_profile",
           "list_style_profile_applications",
@@ -296,6 +297,26 @@
       "push_chapter_to_file",
       "record_knowledge",
       "register_canonical_fact"
+    ],
+    "version": 1
+  },
+  "new-book": {
+    "profiles": [
+      "new-book"
+    ],
+    "references": [],
+    "requires_skills": [
+      "spindle"
+    ],
+    "tools": [
+      "authoring_prepare_run",
+      "create_book",
+      "create_chapter",
+      "create_project",
+      "planning_advance",
+      "planning_begin",
+      "planning_decide",
+      "planning_status"
     ],
     "version": 1
   },
@@ -500,6 +521,7 @@
       "annotate_scene_beats",
       "check_consistency",
       "commit_character_state",
+      "commit_scene",
       "commit_scene_changes",
       "create_character",
       "create_future_knowledge",
@@ -536,6 +558,7 @@
       "authoring",
       "default",
       "minimal",
+      "new-book",
       "planning",
       "release",
       "research",

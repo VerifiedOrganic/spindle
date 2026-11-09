@@ -184,6 +184,10 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "archive_style_profile",
             "Safer profile deletion/archiving. archived profiles cannot be active or default, but preserve audit history.",
         ),
+        tool::<CreateStyleRevisionPatchInput, PreviewStyleRevisionPatchOutput>(
+            "create_style_revision_patch",
+            "Create a non-mutating style revision patch for a scene or chapter against a style profile, returning proposed revised text and unified diffs; evaluate and apply it with the revision-patch tools.",
+        ),
         tool::<PreviewStyleRevisionPatchInput, PreviewStyleRevisionPatchOutput>(
             "preview_style_revision_patch",
             "Preview a style revision patch for a scene or chapter against a style profile, returning proposed revised text and unified diffs without persisting changes.",
@@ -537,6 +541,10 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "prepare_scene",
             "Assemble a bounded, read-only scene preparation packet combining cursor state, scene purpose, branch-visible context, secret-gated canon, style guidance, optional research, and freshness tokens",
         ),
+        tool::<CommitSceneInput, CommitSceneOutput>(
+            "commit_scene",
+            "Atomically commit scene prose with its author-declared continuity package, beat annotations, optional chapter summary, and writer cursor; supports dry_run, stale-preparation checks, and idempotent retries",
+        ),
         tool::<GetEntityInput, EntitySubjectSnapshot>(
             "get_entity",
             "Resolve one entity by table and record id as a polymorphic subject snapshot",
@@ -652,6 +660,22 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         tool::<UpdateWriterPositionInput, WriterPosition>(
             "update_writer_position",
             "Persist a branch writer cursor position without saving a draft",
+        ),
+        tool::<PlanningBeginInput, PlanningBeginOutput>(
+            "planning_begin",
+            "Start or resume a durable planning session for a new or existing project. Records the premise and optional horizon, budget and gate policy, then returns the session and the next safe action. Never starts drafting.",
+        ),
+        tool::<PlanningAdvanceInput, PlanningAdvanceOutput>(
+            "planning_advance",
+            "Generate one planning level, submit a host-authored artifact when no route is available, retry a rejected attempt, recompute readiness, or update the session gate policy. Returns stage status, findings, usage and the next action.",
+        ),
+        tool::<PlanningStatusInput, PlanningStatusOutput>(
+            "planning_status",
+            "Read compact planning status: active sessions, staged proposals, gate, findings, readiness and the real authoring prepare report. Omit session_id to reconnect to existing planning work.",
+        ),
+        tool::<PlanningDecideInput, PlanningDecideOutput>(
+            "planning_decide",
+            "Record a human accept, reject, revise or supersede decision for staged planning proposals, or prepare the authoring run from a ready session. Revise supersedes the selected proposals so a replacement can be staged. Requires exact proposal hashes for decisions and never drafts prose.",
         ),
         tool::<AuthoringPrepareRunInput, AuthoringPrepareRunOutput>(
             "authoring_prepare_run",

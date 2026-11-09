@@ -191,6 +191,44 @@ impl SqliteSpindleService {
             .await
     }
 
+    pub async fn record_canon_policy_decisions(
+        &self,
+        input: RecordCanonPolicyInputV1,
+    ) -> Result<RecordCanonPolicyOutputV1> {
+        self.repository.record_canon_policy_decisions(input).await
+    }
+
+    pub async fn revoke_canon_decision_batch(
+        &self,
+        input: RevokeCanonDecisionInputV1,
+    ) -> Result<RevokeCanonDecisionOutputV1> {
+        self.repository.revoke_canon_decision_batch(input).await
+    }
+
+    pub async fn get_canon_cutover_state(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<CanonCutoverStateV1>> {
+        self.repository.get_canon_cutover_state(project_id).await
+    }
+
+    pub async fn canon_cutover_mode(&self, project_id: &str) -> Result<CanonCutoverModeV1> {
+        self.repository.canon_cutover_mode(project_id).await
+    }
+
+    /// Enter dual-write/shadow-read/canon-read only after the project readiness
+    /// gate passes; rollback to legacy or shadow-read is always reversible.
+    pub async fn set_canon_cutover_mode(
+        &self,
+        project_id: &str,
+        requested: CanonCutoverModeV1,
+        reason: &str,
+    ) -> Result<CanonCutoverStateV1> {
+        self.repository
+            .set_canon_cutover_mode(project_id, requested, reason)
+            .await
+    }
+
     pub async fn get_canon_projected_subject_snapshot(
         &self,
         project_id: &str,

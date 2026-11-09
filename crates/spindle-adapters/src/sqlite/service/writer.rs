@@ -1,4 +1,6 @@
 use super::*;
+use crate::sqlite::repository::{legacy_claim, legacy_snapshot_claim};
+use spindle_core::canon::*;
 
 impl SqliteSpindleService {
     pub async fn batch_set_character_voice_profiles(
@@ -68,10 +70,24 @@ impl SqliteSpindleService {
         let reader_visible = input.reader_visible;
         let secret_of_fact_id = input.secret_of_fact_id.clone();
         let tx_branch_id = branch_id.clone();
+        let mirror_revision_id = format!(
+            "legacy:knowledge:{}:{}:{}",
+            branch_id,
+            input.character_id,
+            spindle_core::models::normalize_name(&input.fact)
+        );
+        let mirror_placement = learned_at.clone().unwrap_or(StoryPlacement {
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: None,
+            note: None,
+        });
+        let mirror_secret = secret_of_fact_id.is_some();
 
         let (fact, knows) = self
             .repository
             .with_transaction(move |tx| {
+                let mirror_character_id = character_id.clone();
                 let fact = tx.upsert_knowledge_fact(UpsertKnowledgeFactParams {
                     project_id: project_id.clone(),
                     branch_id: tx_branch_id.clone(),
@@ -97,6 +113,82 @@ impl SqliteSpindleService {
                     reader_visible,
                     source_import_session_id: None,
                 })?;
+                let assertion = if mirror_secret {
+                    ClaimAssertion::Knowledge {
+                        operation: KnowledgeOperation::Disclose,
+                        proposition: ClaimEntity::Resolved {
+                            id: fact.id.clone(),
+                        },
+                        audience: vec![ClaimEntity::Resolved {
+                            id: mirror_character_id.clone(),
+                        }],
+                        source: None,
+                    }
+                } else {
+                    ClaimAssertion::Knowledge {
+                        operation: KnowledgeOperation::Learn,
+                        proposition: ClaimEntity::Resolved {
+                            id: fact.id.clone(),
+                        },
+                        audience: Vec::new(),
+                        source: None,
+                    }
+                };
+                let mut mirror_claims = vec![legacy_snapshot_claim(
+                    &fact.project_id,
+                    &tx_branch_id,
+                    &mirror_revision_id,
+                    None,
+                    &mirror_placement,
+                    &fact.character_id,
+                    format!("legacy.knowledge_fact.{}", fact.id),
+                    &fact,
+                    None,
+                    0,
+                )?];
+                mirror_claims.push(legacy_snapshot_claim(
+                    &fact.project_id,
+                    &tx_branch_id,
+                    &mirror_revision_id,
+                    None,
+                    &mirror_placement,
+                    &knows.in_id,
+                    format!("legacy.knows.{}", knows.out_id),
+                    &knows,
+                    None,
+                    1,
+                )?);
+                mirror_claims.push(legacy_claim(
+                    &fact.project_id,
+                    &tx_branch_id,
+                    &mirror_revision_id,
+                    None,
+                    &mirror_placement,
+                    ClaimEntity::Resolved {
+                        id: mirror_character_id,
+                    },
+                    assertion,
+                    None,
+                    2,
+                ));
+                let mirrored = tx.mirror_canon_claims(
+                    &fact.project_id,
+                    &tx_branch_id,
+                    &mirror_revision_id,
+                    None,
+                    mirror_claims,
+                )?;
+                if mirrored.is_some() {
+                    let knows_pk = format!("{}|{}|{}", knows.branch_id, knows.in_id, knows.out_id);
+                    tx.mark_canon_source_rows_mapped(
+                        &fact.project_id,
+                        &tx_branch_id,
+                        vec![
+                            ("knowledge_fact".to_string(), fact.id.clone()),
+                            ("knows".to_string(), knows_pk),
+                        ],
+                    )?;
+                }
                 Ok((fact, Some(knows)))
             })
             .await?;

@@ -5,7 +5,7 @@ use super::*;
 use spindle_core::canon::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn enum_to_sql_str<T: serde::Serialize>(value: T) -> Result<String> {
+pub(crate) fn enum_to_sql_str<T: serde::Serialize>(value: T) -> Result<String> {
     serde_json::to_value(value)?
         .as_str()
         .map(str::to_owned)
@@ -115,7 +115,7 @@ fn load_decision_by_idempotency_in_conn(
     }
 }
 
-fn load_events_by_decision_in_conn(
+pub(crate) fn load_events_by_decision_in_conn(
     conn: &rusqlite::Connection,
     decision_id: &str,
 ) -> Result<Vec<CanonEventV1>> {
@@ -291,7 +291,28 @@ pub(crate) fn materialize_projection_view_in_conn(
 
 pub(crate) fn append_canon_decision_in_tx(
     tx: &rusqlite::Connection,
+    input: AppendCanonDecisionInputV1,
+    now_micros: i64,
+) -> Result<AppendCanonDecisionOutputV1> {
+    append_canon_decision_inner_in_tx(tx, input, None, now_micros)
+}
+
+/// Append an audited policy decision. Audited decisions may carry zero events
+/// (for example a rejection) and persist the real policy version, confidence
+/// inputs and precondition summary rather than a generic placeholder.
+pub(crate) fn append_canon_policy_decision_in_tx(
+    tx: &rusqlite::Connection,
+    input: AppendCanonDecisionInputV1,
+    audit: CanonDecisionAuditV1,
+    now_micros: i64,
+) -> Result<AppendCanonDecisionOutputV1> {
+    append_canon_decision_inner_in_tx(tx, input, Some(audit), now_micros)
+}
+
+fn append_canon_decision_inner_in_tx(
+    tx: &rusqlite::Connection,
     mut input: AppendCanonDecisionInputV1,
+    audit: Option<CanonDecisionAuditV1>,
     now_micros: i64,
 ) -> Result<AppendCanonDecisionOutputV1> {
     check_branch_in_project(tx, &input.project_id, &input.branch_id)?;
@@ -314,8 +335,9 @@ pub(crate) fn append_canon_decision_in_tx(
         !input.reason.trim().is_empty(),
         "decision reason must not be empty"
     );
+    let allow_empty_events = audit.is_some();
     anyhow::ensure!(
-        !input.events.is_empty(),
+        allow_empty_events || !input.events.is_empty(),
         "canon decision requires at least one event draft"
     );
 
@@ -331,13 +353,21 @@ pub(crate) fn append_canon_decision_in_tx(
             &draft.in_world_time,
         ));
     }
-    let raw_batch_fp = batch_semantic_fingerprint(&raw_fingerprints);
-    let raw_decision_idem = compute_idempotency_key(
-        &effective_branch_id,
-        &input.source_revision_id,
-        &raw_batch_fp,
-        input.action,
-    );
+    let raw_batch_fp = audit
+        .as_ref()
+        .map(|audit| audit.semantic_fingerprint.clone())
+        .unwrap_or_else(|| batch_semantic_fingerprint(&raw_fingerprints));
+    let raw_decision_idem = audit
+        .as_ref()
+        .map(|audit| audit.idempotency_key.clone())
+        .unwrap_or_else(|| {
+            compute_idempotency_key(
+                &effective_branch_id,
+                &input.source_revision_id,
+                &raw_batch_fp,
+                input.action,
+            )
+        });
 
     if let Some(existing_decision) = load_decision_by_idempotency_in_conn(tx, &raw_decision_idem)? {
         let existing_events = load_events_by_decision_in_conn(tx, &existing_decision.decision_id)?;
@@ -375,6 +405,26 @@ pub(crate) fn append_canon_decision_in_tx(
                 deduplicated: true,
             });
         }
+    }
+
+    // Compare-and-append: a caller that supplies `previous_decision_id` is
+    // asserting it decided against the current branch tip. Duplicate retries
+    // are handled above, so a non-duplicate stale tip fails safely instead of
+    // applying a decision over changed canon.
+    if let Some(previous_decision_id) = &input.previous_decision_id {
+        let tip: Option<String> = tx
+            .query_row(
+                "SELECT id FROM canon_decision \
+                 WHERE project_id = ?1 AND branch_id = ?2 \
+                 ORDER BY decision_seq DESC LIMIT 1",
+                rusqlite::params![&input.project_id, &input.branch_id],
+                |row| row.get(0),
+            )
+            .optional_inner()?;
+        anyhow::ensure!(
+            tip.as_deref() == Some(previous_decision_id.as_str()),
+            "stale canon decision: expected previous decision {previous_decision_id}, current tip is {tip:?}"
+        );
     }
 
     // 2. Load current lineage events for `effective_branch_id`.
@@ -541,23 +591,39 @@ pub(crate) fn append_canon_decision_in_tx(
         .map(|e| e.decision_seq)
         .max()
         .unwrap_or(0);
-    validate_event_batch_in_history(
-        &effective_branch_id,
-        &lineage,
-        &lineage_events,
-        &input.actor,
-        input.action,
-        input.tier,
-        &candidate_events,
-    )?;
+    if !candidate_events.is_empty() {
+        validate_event_batch_in_history(
+            &effective_branch_id,
+            &lineage,
+            &lineage_events,
+            &input.actor,
+            input.action,
+            input.tier,
+            &candidate_events,
+        )?;
+    }
 
     // 6. Persist `canon_decision` and each `canon_event` atomically.
     let action_str = enum_to_sql_str(input.action)?;
-    let policy_version = if input.policy_version.trim().is_empty() {
-        CANON_POLICY_VERSION_V1.to_string()
-    } else {
-        input.policy_version.clone()
-    };
+    let policy_version = audit
+        .as_ref()
+        .map(|audit| audit.policy_version.clone())
+        .filter(|version| !version.trim().is_empty())
+        .unwrap_or_else(|| {
+            if input.policy_version.trim().is_empty() {
+                CANON_POLICY_VERSION_V1.to_string()
+            } else {
+                input.policy_version.clone()
+            }
+        });
+    let confidence_inputs = audit
+        .as_ref()
+        .map(|audit| audit.confidence_inputs.clone())
+        .unwrap_or_else(|| input.confidence_inputs.clone());
+    let precondition_summary = audit
+        .as_ref()
+        .map(|audit| audit.precondition_summary.clone())
+        .unwrap_or_else(|| "validated".into());
 
     let mut decision = CanonDecisionV1 {
         decision_id: decision_id.clone(),
@@ -573,8 +639,8 @@ pub(crate) fn append_canon_decision_in_tx(
         projection_watermark: prior_watermark,
         previous_decision_id: input.previous_decision_id.clone(),
         target_scene_id: input.target_scene_id.clone(),
-        confidence_inputs: input.confidence_inputs.clone(),
-        precondition_summary: "validated".into(),
+        confidence_inputs,
+        precondition_summary,
         reason: input.reason.clone(),
         event_ids: candidate_events
             .iter()

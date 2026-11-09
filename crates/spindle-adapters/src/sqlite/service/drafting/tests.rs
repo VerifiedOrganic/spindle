@@ -1313,6 +1313,7 @@ agent = "local-style"
                 force_apply: None,
                 metrics_only: Some(true),
                 dismiss_candidate_ids: Vec::new(),
+                dry_run: false,
             })
             .await
             .unwrap();
@@ -1376,6 +1377,7 @@ agent = "local-style"
                 force_apply: None,
                 metrics_only: Some(true),
                 dismiss_candidate_ids: vec![cid.clone()],
+                dry_run: false,
             })
             .await
             .unwrap();
