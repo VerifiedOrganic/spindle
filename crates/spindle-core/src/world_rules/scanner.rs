@@ -267,12 +267,12 @@ fn cost_requirement_phrases(description: &str) -> Vec<String> {
         r"(?:costs?|costing) (?:the )?[a-z][a-z' -]{0,25} (?:one|a|an|the|[0-9]+) ([a-z][a-z ' -]{1,35})",
         r"(?:costs?|costing) (?:one|a|an|[0-9]+) ([a-z][a-z ' -]{1,35})",
         r"must (?:pay|spend|feed|use|sacrifice|give up) (?:a |an |the |one |[0-9]+ )?([a-z][a-z ' -]{1,35})",
-        r"without (?:a |an |the )?([a-z][a-z ' -]{1,40})",
+        r"(?:cannot|can't|can not|never|must not|may not|will not|won't)\s+[^.;]{0,40}\bwithout\s+(?:a |an |the )?([a-z][a-z ' -]{1,40})",
     ];
     for pattern in patterns {
         let Ok(regex) = regex::RegexBuilder::new(pattern)
             .case_insensitive(true)
-            .size_limit(1 << 16)
+            .size_limit(1 << 20)
             .build()
         else {
             continue;
@@ -281,6 +281,10 @@ fn cost_requirement_phrases(description: &str) -> Vec<String> {
             let Some(raw) = capture.get(1).map(|m| m.as_str()) else {
                 continue;
             };
+            let full_start = capture.get(0).map(|m| m.start()).unwrap_or(0);
+            if has_negated_absence(&lower, full_start) {
+                continue;
+            }
             if let Some(phrase) = truncate_cost_phrase(raw)
                 && !phrases.contains(&phrase)
             {
@@ -351,14 +355,20 @@ fn has_negated_absence(sentence: &str, absence_start: usize) -> bool {
         "no longer",
     ];
     let lower = sentence.to_ascii_lowercase();
-    let before_start = absence_start.saturating_sub(48);
+    let before_start = floor_char_boundary(&lower, absence_start.saturating_sub(48));
     let before = &lower[before_start..absence_start];
-    NEGATIONS.iter().any(|negation| before.contains(negation))
+    NEGATIONS.iter().any(|negation| {
+        if negation.contains(' ') {
+            before.contains(negation)
+        } else {
+            window_contains_word(before, negation)
+        }
+    })
 }
 
 fn has_deferred_requirement(sentence: &str, absence_end: usize) -> bool {
     let lower = sentence.to_ascii_lowercase();
-    let after_end = (absence_end + 36).min(lower.len());
+    let after_end = ceil_char_boundary(&lower, (absence_end + 36).min(lower.len()));
     let after = &lower[absence_end..after_end];
     [
         "required",
@@ -968,6 +978,75 @@ mod tests {
         )];
         let prose = "The door opened without a key and the hall stayed quiet.";
         assert!(scan_prose_for_world_rules(prose, &rules).is_empty());
+    }
+
+    #[test]
+    fn waived_cost_description_does_not_promote() {
+        let rules = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Waiver",
+            "The moon gate opens without a silver key.",
+        )];
+        let prose = "The moon gate opened without a key.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Possible);
+    }
+
+    #[test]
+    fn negated_requirement_description_does_not_promote() {
+        let rules = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Waiver",
+            "The moon gate does not require a silver key.",
+        )];
+        let prose = "The moon gate opened without a key.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Possible);
+    }
+
+    #[test]
+    fn negation_word_substring_does_not_suppress_affirmative_omission() {
+        let rules = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Cost",
+            "The moon gate opens only when a silver key is fed to the lock.",
+        )];
+        let prose = "She noticed the moon gate open without a key.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Likely);
+    }
+
+    #[test]
+    fn multibyte_context_is_boundary_safe() {
+        let rules = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Cost",
+            "The moon gate opens only when a silver key is fed to the lock.",
+        )];
+        let prose = "Ééééééééééééééééééééééééééééééééééééééééééééééééé the moon gate opened without a key ✦.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Likely);
+
+        let deferred = vec![make_rule(
+            "world_rule:moon",
+            "moon gate",
+            "Moon Gate Cost",
+            "The moon gate opens only when a silver key is fed to the lock.",
+        )];
+        let prose = "No silver key was required ✦ Élodie’s note.";
+        let hits = scan_prose_for_world_rules(prose, &deferred);
+        assert!(
+            hits.iter()
+                .all(|hit| hit.severity == WorldRuleSeverity::Possible)
+        );
     }
 
     #[test]
