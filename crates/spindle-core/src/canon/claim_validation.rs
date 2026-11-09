@@ -1718,6 +1718,11 @@ pub fn detect_secret_generic_disclosure(
     for range in sentence_spans(scene.text) {
         let sentence = &scene.text[range.start..range.end];
         let lower = sentence.to_ascii_lowercase();
+        if contains_any(&lower, IRREALIS_MARKERS).is_some()
+            || contains_any(&lower, NEGATION_MARKERS).is_some()
+        {
+            continue;
+        }
         if [
             "in a dream",
             "dreamed",
@@ -1729,6 +1734,9 @@ pub fn detect_secret_generic_disclosure(
             "before the death",
             "before her death",
             "before his death",
+            "rumor",
+            "rumour",
+            "legend",
         ]
         .iter()
         .any(|marker| contains_phrase(&lower, marker))

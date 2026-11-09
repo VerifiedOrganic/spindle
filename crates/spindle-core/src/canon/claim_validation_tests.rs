@@ -605,6 +605,8 @@ fn generic_secret_disclosure_covers_roles_notices_and_reported_speech() {
         "In a dream, a dockworker shouted that Vale's charts were false.",
         "A rumor claimed that Vale forged the charts.",
         "Mara read the harbor notices and found Vale's name beside new charts.",
+        "The clerk never announced that Vale forged the charts.",
+        "If the clerk announced that Vale forged the charts, everyone would panic.",
     ] {
         assert!(
             detect_secret_generic_disclosure(

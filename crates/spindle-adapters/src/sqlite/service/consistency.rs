@@ -2355,8 +2355,11 @@ impl SqliteSpindleService {
                                         .find(|character| &character.id == holder_id)
                                 })
                                 .map(|holder| {
-                                    let mut names = vec![holder.name.clone()];
-                                    names.extend(holder.aliases.iter().cloned());
+                                    let mut names =
+                                        mention_resolver.aliases_for(&holder.id).to_vec();
+                                    if names.is_empty() {
+                                        names.push(holder.name.clone());
+                                    }
                                     names
                                 })
                                 .unwrap_or_default();
@@ -2366,8 +2369,11 @@ impl SqliteSpindleService {
                                     circle_at_cursor.contains(character.id.as_str())
                                 })
                                 .flat_map(|character| {
-                                    let mut names = vec![character.name.clone()];
-                                    names.extend(character.aliases.iter().cloned());
+                                    let mut names =
+                                        mention_resolver.aliases_for(&character.id).to_vec();
+                                    if names.is_empty() {
+                                        names.push(character.name.clone());
+                                    }
                                     names
                                 })
                                 .collect();
