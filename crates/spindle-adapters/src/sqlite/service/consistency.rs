@@ -3,6 +3,8 @@ use spindle_core::canon::{
     KnowledgeValidationFactV1, SceneValidationInputV1, SecretValidationCandidateV1,
     detect_knowledge_paraphrase_leak, detect_secret_narration_leak,
 };
+use spindle_core::character_mentions::{CharacterMentionRecord, CharacterMentionResolver};
+use spindle_core::models::PriceMention;
 
 impl SqliteSpindleService {
     /// Run the consistency validator suite over a project. Mirrors
@@ -838,9 +840,10 @@ impl SqliteSpindleService {
             }
         }
 
-        // ── Affordability: a priced purchase a present character can't cover ──
-        // Advisory (Info, high-precision/low-recall): if a scene names a price
-        // above a present character's tracked wealth (converted to base), flag.
+        // ── Affordability: a resolved spender exceeding tracked wealth ──
+        // A resolved owner spending more than their tracked balance is a
+        // contradiction (warning). Ambiguous spenders stay advisory (info);
+        // unresolved or untracked spenders stay silent.
         if should_run_check(&requested_checks_set, "affordability") {
             let schemes = self
                 .repository
@@ -858,32 +861,78 @@ impl SqliteSpindleService {
                     .repository
                     .list_characters_by_project_and_branch(&project_id, &active_branch.id)
                     .await?;
+                let mention_records: Vec<CharacterMentionRecord> = characters
+                    .iter()
+                    .map(|character| CharacterMentionRecord {
+                        id: character.id.clone(),
+                        name: character.name.clone(),
+                        aliases: character.aliases.clone(),
+                    })
+                    .collect();
+                let mention_resolver = CharacterMentionResolver::new(&mention_records);
+                let single_protagonist = {
+                    let protagonists: Vec<&str> = characters
+                        .iter()
+                        .filter(|character| character.role.eq_ignore_ascii_case("protagonist"))
+                        .map(|character| character.id.as_str())
+                        .collect();
+                    (protagonists.len() == 1).then(|| protagonists[0].to_string())
+                };
+                let pov_by_chapter: BTreeMap<(i32, i32), String> = scoped_plans
+                    .iter()
+                    .filter_map(|plan| {
+                        plan.pov_character_id
+                            .clone()
+                            .map(|pov| ((plan.book_number, plan.chapter_number), pov))
+                    })
+                    .collect();
                 for scene in &scenes {
                     let mentions =
                         spindle_core::models::extract_price_mentions(&scene.full_text, &units);
-                    let Some(max_price_base) = mentions
-                        .iter()
-                        .filter_map(|m| {
-                            unit_base
-                                .get(&m.unit.to_ascii_lowercase())
-                                .map(|per_base| m.amount * per_base)
-                        })
-                        .fold(None, |acc: Option<f64>, value| {
-                            Some(acc.map_or(value, |a| a.max(value)))
-                        })
-                    else {
+                    if mentions.is_empty() {
                         continue;
-                    };
+                    }
+                    let scene_pov = pov_by_chapter
+                        .get(&(scene.book_number, scene.chapter_number))
+                        .cloned()
+                        .or_else(|| single_protagonist.clone());
                     let cursor = scene.book_number as i64 * 1_000_000
                         + scene.chapter_number as i64 * 1_000
                         + scene.scene_order as i64;
-                    for character in &characters {
-                        if !contains_case_insensitive_word_boundary(
-                            &scene.full_text,
-                            &character.name,
-                        ) {
+                    let mut charges: BTreeMap<String, f64> = BTreeMap::new();
+                    let mut ambiguous_base = 0.0;
+                    for mention in &mentions {
+                        let Some(per_base) = unit_base.get(&mention.unit.to_ascii_lowercase())
+                        else {
+                            continue;
+                        };
+                        let (sentence_start, sentence_end) =
+                            price_sentence_bounds(&scene.full_text, mention.start, mention.end);
+                        if !sentence_has_spend_verb(&scene.full_text[sentence_start..sentence_end])
+                        {
                             continue;
                         }
+                        let price_base = mention.amount * per_base;
+                        match resolve_price_spender(
+                            &scene.full_text,
+                            mention,
+                            &mention_resolver,
+                            scene_pov.as_deref(),
+                        ) {
+                            Ok(character_id) => {
+                                *charges.entry(character_id).or_default() += price_base;
+                            }
+                            Err("ambiguous") => ambiguous_base += price_base,
+                            Err(_) => {}
+                        }
+                    }
+                    for (character_id, total_base) in &charges {
+                        let Some(character) = characters
+                            .iter()
+                            .find(|character| &character.id == character_id)
+                        else {
+                            continue;
+                        };
                         for stored in &schemes {
                             let measure = stored.scheme.measure.as_str();
                             let Some(state) = self
@@ -892,7 +941,7 @@ impl SqliteSpindleService {
                                     &project_id,
                                     &active_branch.id,
                                     "character",
-                                    &character.id,
+                                    character_id,
                                     measure,
                                     cursor,
                                 )
@@ -909,12 +958,12 @@ impl SqliteSpindleService {
                                 continue;
                             };
                             let wealth_base = amount * per_base;
-                            if max_price_base > wealth_base {
+                            if *total_base > wealth_base {
                                 issues.push(ConsistencyIssue {
-                                    severity: "info".to_string(),
+                                    severity: "warning".to_string(),
                                     check_type: "affordability".to_string(),
                                     message: format!(
-                                        "scene names a price of {max_price_base} base units, above {}'s tracked {measure} of {wealth_base} base units",
+                                        "scene names purchases totalling {total_base} base units for {}, above their tracked {measure} of {wealth_base} base units",
                                         character.name
                                     ),
                                     entity_ids: vec![scene.id.clone(), character.id.clone()],
@@ -923,9 +972,23 @@ impl SqliteSpindleService {
                                             .to_string(),
                                     ),
                                 });
-                                break; // one advisory per character per scene
+                                break;
                             }
                         }
+                    }
+                    if ambiguous_base > 0.0 {
+                        issues.push(ConsistencyIssue {
+                            severity: "info".to_string(),
+                            check_type: "affordability".to_string(),
+                            message: format!(
+                                "scene names purchases totalling {ambiguous_base} base units, but the spender is ambiguous"
+                            ),
+                            entity_ids: vec![scene.id.clone()],
+                            suggested_action: Some(
+                                "name the spender or remove the price ambiguity before treating this as a contradiction"
+                                    .to_string(),
+                            ),
+                        });
                     }
                 }
             }
@@ -950,18 +1013,13 @@ impl SqliteSpindleService {
                 let mention_records: Vec<spindle_core::character_mentions::CharacterMentionRecord> =
                     characters
                         .iter()
-                        .map(
-                            |character| spindle_core::character_mentions::CharacterMentionRecord {
-                                id: character.id.clone(),
-                                name: character.name.clone(),
-                                aliases: character.aliases.clone(),
-                            },
-                        )
+                        .map(|character| CharacterMentionRecord {
+                            id: character.id.clone(),
+                            name: character.name.clone(),
+                            aliases: character.aliases.clone(),
+                        })
                         .collect();
-                let mention_resolver =
-                    spindle_core::character_mentions::CharacterMentionResolver::new(
-                        &mention_records,
-                    );
+                let mention_resolver = CharacterMentionResolver::new(&mention_records);
                 let single_protagonist = {
                     let protagonists: Vec<&str> = characters
                         .iter()
@@ -2184,18 +2242,13 @@ impl SqliteSpindleService {
                 let mention_records: Vec<spindle_core::character_mentions::CharacterMentionRecord> =
                     characters
                         .iter()
-                        .map(
-                            |character| spindle_core::character_mentions::CharacterMentionRecord {
-                                id: character.id.clone(),
-                                name: character.name.clone(),
-                                aliases: character.aliases.clone(),
-                            },
-                        )
+                        .map(|character| CharacterMentionRecord {
+                            id: character.id.clone(),
+                            name: character.name.clone(),
+                            aliases: character.aliases.clone(),
+                        })
                         .collect();
-                let mention_resolver =
-                    spindle_core::character_mentions::CharacterMentionResolver::new(
-                        &mention_records,
-                    );
+                let mention_resolver = CharacterMentionResolver::new(&mention_records);
 
                 // Circle-at-cursor per fact is cursor-dependent, so compute it
                 // per (scene, fact). Cache the raw circle rows per fact to avoid
@@ -2558,4 +2611,126 @@ impl SqliteSpindleService {
             markdown,
         })
     }
+}
+
+fn price_sentence_bounds(text: &str, start: usize, end: usize) -> (usize, usize) {
+    let bytes = text.as_bytes();
+    let mut begin = start.min(text.len());
+    while begin > 0 && !matches!(bytes[begin - 1], b'.' | b'!' | b'?' | b';' | b'\n') {
+        begin -= 1;
+    }
+    let mut finish = end.min(text.len());
+    while finish < text.len() && !matches!(bytes[finish], b'.' | b'!' | b'?' | b';' | b'\n') {
+        finish += 1;
+    }
+    (begin, finish)
+}
+
+fn sentence_has_dialogue(sentence: &str) -> bool {
+    sentence.contains('"') || sentence.contains('“') || sentence.contains('”')
+}
+
+fn sentence_has_spend_verb(sentence: &str) -> bool {
+    [
+        "paid",
+        "pay",
+        "pays",
+        "paying",
+        "bought",
+        "buy",
+        "buys",
+        "buying",
+        "spent",
+        "spend",
+        "spends",
+        "spending",
+        "cost",
+        "costs",
+        "lost",
+        "lose",
+        "loses",
+        "losing",
+        "purchased",
+        "purchase",
+        "purchases",
+        "gave",
+        "give",
+        "offered",
+        "offer",
+    ]
+    .iter()
+    .any(|verb| contains_case_insensitive_word_boundary(sentence, verb))
+}
+
+fn sentence_starts_with_first_person(sentence: &str) -> bool {
+    let sentence = sentence.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let Some(first) = sentence.split_whitespace().next() else {
+        return false;
+    };
+    matches!(
+        first
+            .trim_matches(|c: char| !c.is_alphabetic())
+            .to_ascii_lowercase()
+            .as_str(),
+        "i" | "we"
+    )
+}
+
+fn sentence_starts_with_pronoun(sentence: &str) -> bool {
+    let sentence = sentence.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let Some(first) = sentence.split_whitespace().next() else {
+        return false;
+    };
+    matches!(
+        first
+            .trim_matches(|c: char| !c.is_alphabetic())
+            .to_ascii_lowercase()
+            .as_str(),
+        "she" | "he" | "they"
+    )
+}
+
+fn resolve_price_spender(
+    text: &str,
+    mention: &PriceMention,
+    resolver: &CharacterMentionResolver,
+    scene_pov: Option<&str>,
+) -> Result<String, &'static str> {
+    let (sentence_start, sentence_end) = price_sentence_bounds(text, mention.start, mention.end);
+    let sentence = &text[sentence_start..sentence_end];
+    let dialogue = sentence_has_dialogue(sentence);
+    if !dialogue && sentence_starts_with_first_person(sentence) {
+        let Some(pov) = scene_pov else {
+            return Err("unresolved");
+        };
+        return if resolver.mentions_with_pov(sentence, pov, Some(pov)) {
+            Ok(pov.to_string())
+        } else {
+            Err("unresolved")
+        };
+    }
+    if !dialogue && sentence_starts_with_pronoun(sentence) {
+        let prefix_start = text[..mention.start]
+            .rfind("\n\n")
+            .map_or(0, |index| index + 2);
+        let antecedents = resolver.mentioned_ids(&text[prefix_start..mention.start]);
+        return match antecedents.len() {
+            0 => Err("unresolved"),
+            1 => antecedents.into_iter().next().ok_or("unresolved"),
+            _ => Err("ambiguous"),
+        };
+    }
+    let named = resolver.mentioned_ids(sentence);
+    if named.len() == 1 {
+        return named.into_iter().next().ok_or("unresolved");
+    }
+    if named.len() > 1 || dialogue {
+        return Err("ambiguous");
+    }
+    if let Some(pov) = scene_pov
+        && resolver.mentions_with_pov(sentence, pov, Some(pov))
+    {
+        return Ok(pov.to_string());
+    }
+    Err("unresolved")
 }

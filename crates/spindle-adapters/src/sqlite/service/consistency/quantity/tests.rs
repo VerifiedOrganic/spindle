@@ -527,7 +527,7 @@ async fn affordability_flags_unaffordable_named_price() {
         chapter_number: 1,
         chapter_id: None,
         scene_order: 1,
-        full_text: "Mara eyed the 100 silver blade she could not begin to afford.".into(),
+        full_text: "Mara bought the 100 silver blade she could not begin to afford.".into(),
         summary: "market".into(),
         content_rating: ContentRating::General,
         tone: None,
@@ -574,6 +574,230 @@ async fn affordability_flags_unaffordable_named_price() {
     assert!(
         out.issues.iter().any(|i| i.check_type == "affordability"),
         "an unaffordable named price should raise an advisory: {:?}",
+        out.issues
+    );
+}
+
+#[tokio::test]
+async fn affordability_resolves_spelled_price_and_pronoun_but_keeps_ambiguity_info() {
+    use spindle_core::models::{
+        CommitQuantityStateInput, ContentRating, QuantityDenomination, QuantityScheme,
+        QuantityState, SaveSceneDraftInput, SetProjectQuantitySchemeInput,
+    };
+
+    let (_tmp, svc) = fresh_service().await;
+    let proj = svc
+        .create_project(CreateProjectInput {
+            name: "affordability-resolution".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "p".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    svc.set_project_quantity_scheme(SetProjectQuantitySchemeInput {
+        project_id: proj.project_id.clone(),
+        scheme: QuantityScheme {
+            measure: "wealth".into(),
+            denominations: vec![QuantityDenomination {
+                name: "silver".into(),
+                per_base: 10,
+            }],
+            bands: Vec::new(),
+            max_band_jump: None,
+        },
+    })
+    .await
+    .unwrap();
+    let mara = seed_character(&svc, &proj.project_id, "Mara Voss").await;
+    let _soren = seed_character(&svc, &proj.project_id, "Soren Pike").await;
+
+    for (scene_order, full_text) in [
+        (
+            1,
+            "Mara Voss checked the stall. She paid twelve silver for the blade.",
+        ),
+        (
+            2,
+            "Mara Voss and Soren Pike paid twelve silver for the chart.",
+        ),
+    ] {
+        svc.save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order,
+            full_text: full_text.into(),
+            summary: "market".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+
+    svc.commit_quantity_state(CommitQuantityStateInput {
+        project_id: proj.project_id.clone(),
+        subject_table: "character".into(),
+        subject_id: mara.clone(),
+        measure: "wealth".into(),
+        book_number: 1,
+        chapter_number: 1,
+        scene_order: 1,
+        scene_id: None,
+        state: QuantityState {
+            amount: Some(1.0),
+            unit: Some("silver".into()),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+
+    let out = svc
+        .check_consistency(spindle_core::models::CheckConsistencyInput {
+            deep_scan_offset: None,
+            project_id: proj.project_id.clone(),
+            scope: spindle_core::models::ConsistencyScopeInput::full(),
+            checks: vec!["affordability".into()],
+            severity_filter: Vec::new(),
+            deep_check: Some(false),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        })
+        .await
+        .unwrap();
+    let affordability: Vec<_> = out
+        .issues
+        .iter()
+        .filter(|issue| issue.check_type == "affordability")
+        .collect();
+    assert!(
+        affordability
+            .iter()
+            .any(|issue| issue.severity == "warning"
+                && issue.entity_ids.iter().any(|id| id == &mara)),
+        "resolved pronoun spend should warn: {affordability:?}"
+    );
+    assert!(
+        affordability.iter().any(|issue| issue.severity == "info"),
+        "two named spenders must stay advisory: {affordability:?}"
+    );
+}
+
+#[tokio::test]
+async fn affordability_first_person_protagonist_warns() {
+    use spindle_core::models::{
+        CommitQuantityStateInput, ContentRating, QuantityDenomination, QuantityScheme,
+        QuantityState, SaveSceneDraftInput, SetProjectQuantitySchemeInput, UpdateCharacterInput,
+    };
+
+    let (_tmp, svc) = fresh_service().await;
+    let proj = svc
+        .create_project(CreateProjectInput {
+            name: "affordability-pov".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "p".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    svc.set_project_quantity_scheme(SetProjectQuantitySchemeInput {
+        project_id: proj.project_id.clone(),
+        scheme: QuantityScheme {
+            measure: "wealth".into(),
+            denominations: vec![QuantityDenomination {
+                name: "silver".into(),
+                per_base: 10,
+            }],
+            bands: Vec::new(),
+            max_band_jump: None,
+        },
+    })
+    .await
+    .unwrap();
+    let tamsin = seed_character(&svc, &proj.project_id, "Tamsin Okoro").await;
+    let _mara = seed_character(&svc, &proj.project_id, "Mara Voss").await;
+    svc.update_character(UpdateCharacterInput {
+        character_id: tamsin.clone(),
+        name: None,
+        summary: None,
+        role: Some("protagonist".into()),
+        realm: None,
+        appearance: None,
+        aliases: None,
+        allow_rename: None,
+    })
+    .await
+    .unwrap();
+    svc.save_scene_draft(SaveSceneDraftInput {
+        project_id: proj.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        chapter_id: None,
+        scene_order: 1,
+        full_text: "I paid Mara twelve silver for the shard.".into(),
+        summary: "market".into(),
+        content_rating: ContentRating::General,
+        tone: None,
+        generation_id: None,
+        source_path: None,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    svc.commit_quantity_state(CommitQuantityStateInput {
+        project_id: proj.project_id.clone(),
+        subject_table: "character".into(),
+        subject_id: tamsin.clone(),
+        measure: "wealth".into(),
+        book_number: 1,
+        chapter_number: 1,
+        scene_order: 1,
+        scene_id: None,
+        state: QuantityState {
+            amount: Some(1.0),
+            unit: Some("silver".into()),
+            ..Default::default()
+        },
+    })
+    .await
+    .unwrap();
+
+    let out = svc
+        .check_consistency(spindle_core::models::CheckConsistencyInput {
+            deep_scan_offset: None,
+            project_id: proj.project_id.clone(),
+            scope: spindle_core::models::ConsistencyScopeInput::full(),
+            checks: vec!["affordability".into()],
+            severity_filter: Vec::new(),
+            deep_check: Some(false),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        out.issues
+            .iter()
+            .any(|issue| issue.check_type == "affordability"
+                && issue.severity == "warning"
+                && issue.entity_ids.iter().any(|id| id == &tamsin)),
+        "first-person protagonist spend should warn: {:?}",
         out.issues
     );
 }

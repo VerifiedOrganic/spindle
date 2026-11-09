@@ -115,6 +115,12 @@ removal plan.
 
 ### Added
 
+- Quantity affordability now parses English number words alongside digits and
+  resolves the spender name through the shared character-mention resolver
+  (canonical name, first name, alias, conservative sentence-initial pronoun,
+  and first-person POV). A resolved spender whose purchases exceed their
+  tracked balance produces a warning; ambiguous spenders remain advisory info.
+
 - World-rule prose scanning derives required cost/effect nouns from rule
   descriptions and promotes explicit omissions ("without a/the <cost>",
   "without <cost>", "no <cost>") to warning-level `world_rule_semantic_drift`

@@ -540,10 +540,19 @@ pub struct PriceMention {
     pub unit: String,
     /// The matched "<amount> <unit>" text.
     pub matched: String,
+    /// Internal byte range of `matched` for attribution; not part of the
+    /// public `scan_scene_prices` contract.
+    #[serde(default, skip)]
+    #[schemars(skip)]
+    pub start: usize,
+    #[serde(default, skip)]
+    #[schemars(skip)]
+    pub end: usize,
 }
 
 /// Scan `text` for "<number> <unit>" price mentions, where `unit` is one of
-/// `units` (case-insensitive, a trailing plural 's' tolerated). Pure and
+/// `units` (case-insensitive, a trailing plural 's' tolerated). Numbers may be
+/// digits or English words, including scale words and hyphenated tens. Pure and
 /// dependency-free: a token-window scan, deliberately high-precision/low-recall.
 pub fn extract_price_mentions(text: &str, units: &[String]) -> Vec<PriceMention> {
     let unit_set: std::collections::BTreeSet<String> =
@@ -551,33 +560,155 @@ pub fn extract_price_mentions(text: &str, units: &[String]) -> Vec<PriceMention>
     if unit_set.is_empty() {
         return Vec::new();
     }
-    let tokens: Vec<&str> = text.split_whitespace().collect();
-    let mut out = Vec::new();
-    for window in tokens.windows(2) {
-        let raw_amount = window[0].trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
-        let Ok(amount) = raw_amount.parse::<f64>() else {
+    let tokens: Vec<(&str, usize, usize)> = token_spans(text);
+    let mut out: Vec<PriceMention> = Vec::new();
+    for index in 0..tokens.len() {
+        if out
+            .iter()
+            .any(|existing| tokens[index].1 >= existing.start && tokens[index].1 < existing.end)
+        {
             continue;
-        };
-        let raw_unit = window[1]
-            .trim_matches(|c: char| !c.is_ascii_alphanumeric())
-            .to_ascii_lowercase();
-        let singular = raw_unit.strip_suffix('s').unwrap_or(raw_unit.as_str());
-        let unit = if unit_set.contains(&raw_unit) {
-            Some(raw_unit.clone())
-        } else if unit_set.contains(singular) {
-            Some(singular.to_string())
-        } else {
-            None
-        };
-        if let Some(unit) = unit {
+        }
+        for span_len in 1..=4 {
+            let Some(unit_token) = tokens.get(index + span_len) else {
+                break;
+            };
+            let Some(unit) = normalize_price_unit(unit_token.0, &unit_set) else {
+                continue;
+            };
+            let Some(amount) = parse_amount_phrase(&tokens[index..index + span_len]) else {
+                continue;
+            };
+            let start = tokens[index].1;
+            let end = unit_token.2;
+            if out
+                .iter()
+                .any(|existing| existing.start == start && existing.end == end)
+            {
+                continue;
+            }
             out.push(PriceMention {
                 amount,
                 unit,
-                matched: format!("{} {}", window[0], window[1]),
+                matched: text[start..end].to_string(),
+                start,
+                end,
             });
         }
     }
+    out.sort_by_key(|mention| mention.start);
     out
+}
+
+fn token_spans(text: &str) -> Vec<(&str, usize, usize)> {
+    let mut tokens = Vec::new();
+    let mut search_from = 0;
+    for token in text.split_whitespace() {
+        let Some(relative) = text[search_from..].find(token) else {
+            continue;
+        };
+        let start = search_from + relative;
+        let end = start + token.len();
+        tokens.push((token, start, end));
+        search_from = end;
+    }
+    tokens
+}
+
+fn normalize_price_unit(
+    token: &str,
+    unit_set: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    let raw = token
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_ascii_lowercase();
+    if raw.is_empty() {
+        return None;
+    }
+    let singular = raw.strip_suffix('s').unwrap_or(raw.as_str());
+    if unit_set.contains(&raw) {
+        Some(raw)
+    } else if unit_set.contains(singular) {
+        Some(singular.to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_amount_phrase(tokens: &[(&str, usize, usize)]) -> Option<f64> {
+    let mut total = 0.0;
+    let mut current = 0.0;
+    let mut saw_value = false;
+    for (token, _, _) in tokens {
+        for part in token
+            .trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
+            .split('-')
+        {
+            let word = part.to_ascii_lowercase();
+            if word.is_empty() || word == "and" {
+                continue;
+            }
+            let numeric = word.replace(',', "");
+            if let Ok(value) = numeric.parse::<f64>() {
+                current += value;
+                saw_value = true;
+                continue;
+            }
+            let value = match word.as_str() {
+                "a" | "an" => 1.0,
+                "zero" => 0.0,
+                "one" => 1.0,
+                "two" => 2.0,
+                "three" => 3.0,
+                "four" => 4.0,
+                "five" => 5.0,
+                "six" => 6.0,
+                "seven" => 7.0,
+                "eight" => 8.0,
+                "nine" => 9.0,
+                "ten" => 10.0,
+                "eleven" => 11.0,
+                "twelve" => 12.0,
+                "thirteen" => 13.0,
+                "fourteen" => 14.0,
+                "fifteen" => 15.0,
+                "sixteen" => 16.0,
+                "seventeen" => 17.0,
+                "eighteen" => 18.0,
+                "nineteen" => 19.0,
+                "twenty" => 20.0,
+                "thirty" => 30.0,
+                "forty" => 40.0,
+                "fifty" => 50.0,
+                "sixty" => 60.0,
+                "seventy" => 70.0,
+                "eighty" => 80.0,
+                "ninety" => 90.0,
+                "hundred" => {
+                    total += if current == 0.0 { 1.0 } else { current } * 100.0;
+                    current = 0.0;
+                    saw_value = true;
+                    continue;
+                }
+                "thousand" => {
+                    total += if current == 0.0 { 1.0 } else { current } * 1_000.0;
+                    current = 0.0;
+                    saw_value = true;
+                    continue;
+                }
+                "million" => {
+                    total += if current == 0.0 { 1.0 } else { current } * 1_000_000.0;
+                    current = 0.0;
+                    saw_value = true;
+                    continue;
+                }
+                _ => return None,
+            };
+            current += value;
+            saw_value = true;
+        }
+    }
+    saw_value.then_some(total + current)
 }
 
 #[cfg(test)]
@@ -677,6 +808,36 @@ mod quantity_tests {
         // unknown unit and empty vocabulary yield nothing
         assert!(extract_price_mentions("10 apples", &units).is_empty());
         assert!(extract_price_mentions("5 silver", &[]).is_empty());
+    }
+
+    #[test]
+    fn extract_price_mentions_parses_number_words_and_offsets() {
+        let units = vec![
+            "silver".to_string(),
+            "gold".to_string(),
+            "marks".to_string(),
+        ];
+        let text = "A loaf costs five silver and a sword twenty-five gold.";
+        let m = extract_price_mentions(text, &units);
+        assert_eq!(m.len(), 2);
+        assert_eq!((m[0].amount, m[0].unit.as_str()), (5.0, "silver"));
+        assert_eq!((m[1].amount, m[1].unit.as_str()), (25.0, "gold"));
+        assert_eq!(&text[m[0].start..m[0].end], m[0].matched);
+        assert_eq!(&text[m[1].start..m[1].end], m[1].matched);
+
+        let text = "She paid a hundred marks for the compass and twelve marks for the chart.";
+        let m = extract_price_mentions(text, &units);
+        assert_eq!(m.len(), 2);
+        assert_eq!((m[0].amount, m[0].unit.as_str()), (100.0, "marks"));
+        assert_eq!((m[1].amount, m[1].unit.as_str()), (12.0, "marks"));
+
+        let m = extract_price_mentions("The fee is one hundred and twenty marks.", &units);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].amount, 120.0);
+        assert_eq!(
+            &"The fee is one hundred and twenty marks."[m[0].start..m[0].end],
+            m[0].matched
+        );
     }
 
     #[test]
