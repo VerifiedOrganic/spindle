@@ -205,7 +205,12 @@ async fn knn_search_returns_inserted_embeddings_ordered_by_distance() {
         .into_iter()
         .find(|r| r.entity_id == mara_id)
         .expect("mara row");
-    let mara_query = mara_row.embedding.clone();
+    let mara_query = spindle_core::embeddings::EmbeddingQueryVectorV1::new(
+        mara_row.generation_id.clone(),
+        mara_row.dimension,
+        mara_row.embedding.clone(),
+    )
+    .unwrap();
 
     // kNN: nearest should be Mara herself (distance ~= 0).
     let results = repo

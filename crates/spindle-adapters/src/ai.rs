@@ -1505,6 +1505,37 @@ impl ModelRouter {
         self.embedding_session()?.embed_text(input).await
     }
 
+    /// Embed for one explicit index generation. Token-hash generations use the
+    /// requested dimension directly; HTTP generations must be configured and
+    /// must return exactly that dimension with finite values.
+    pub(crate) async fn embed_for_generation(
+        &self,
+        input: &str,
+        provider: spindle_core::embeddings::EmbeddingProviderKindV1,
+        dimension: usize,
+    ) -> anyhow::Result<Vec<f64>> {
+        use spindle_core::embeddings::{
+            EmbeddingNormalizationV1, EmbeddingProviderKindV1, normalize_embedding,
+            token_hash_embedding, validate_embedding_vector,
+        };
+        let vector = match provider {
+            EmbeddingProviderKindV1::TokenHash => token_hash_embedding(input, dimension),
+            EmbeddingProviderKindV1::Http => {
+                let session = self.embedding_session()?;
+                if matches!(session.backend, EmbeddingBackend::TokenHash) {
+                    anyhow::bail!(
+                        "embedding provider http requested but no HTTP embedding route is configured"
+                    );
+                }
+                let vector = session.embed_text(input).await?;
+                validate_embedding_vector(&vector, dimension)?;
+                vector
+            }
+        };
+        validate_embedding_vector(&vector, dimension)?;
+        Ok(normalize_embedding(vector, EmbeddingNormalizationV1::L2))
+    }
+
     fn refresh_health_heartbeat(&self) {
         let generation = self.health_generation.fetch_add(1, Ordering::SeqCst) + 1;
         // The heartbeat cannot propagate an error (it runs from infallible
@@ -4326,6 +4357,56 @@ agent = "embed-http"
         assert_eq!(embedding.len(), 2);
         assert!((embedding[0] - 0.6).abs() < 1e-6);
         assert!((embedding[1] - 0.8).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn generation_http_embedding_rejects_wrong_dimension() {
+        use spindle_core::embeddings::EmbeddingProviderKindV1;
+        let (endpoint, server) = spawn_http_test_server(vec![(
+            200,
+            serde_json::json!({
+                "data": [{
+                    "embedding": [3.0, 4.0]
+                }]
+            })
+            .to_string(),
+        )]);
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("spindle.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "embed-http"
+name = "Embedding HTTP"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "text-embedding-3-small"
+
+[[routing]]
+route = "embedding"
+agent = "embed-http"
+"####
+            ),
+        )
+        .expect("write config");
+        router
+            .configure(Some(&config_path.display().to_string()))
+            .expect("configure router");
+        let error = router
+            .embed_for_generation("loyal border regiment", EmbeddingProviderKindV1::Http, 64)
+            .await
+            .expect_err("wrong dimension must be rejected");
+        assert!(
+            format!("{error}").to_lowercase().contains("dimension"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(server.join().expect("server join"), 1);
     }
 
     #[tokio::test]

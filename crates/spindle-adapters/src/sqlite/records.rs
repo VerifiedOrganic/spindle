@@ -2155,7 +2155,7 @@ impl<'a> TryFrom<&Row<'a>> for SceneSourceLink {
 // =============================================================================
 
 pub const SEARCH_EMBEDDING_COLUMNS: &str = "id, project_id, branch_id, entity_table, entity_id, title, excerpt, content, \
-     embedding_version, embedding, updated_at";
+     generation_id, embedding_version, dimension, embedding, updated_at";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchEmbedding {
@@ -2167,7 +2167,9 @@ pub struct SearchEmbedding {
     pub title: String,
     pub excerpt: String,
     pub content: String,
+    pub generation_id: String,
     pub embedding_version: String,
+    pub dimension: usize,
     pub embedding: Vec<f64>,
     pub updated_at: Timestamp,
 }
@@ -2184,9 +2186,11 @@ impl<'a> TryFrom<&Row<'a>> for SearchEmbedding {
             title: row::text(r, 5)?,
             excerpt: row::text(r, 6)?,
             content: row::text(r, 7)?,
-            embedding_version: row::text(r, 8)?,
-            embedding: row::blob_f32_as_f64(r, 9)?,
-            updated_at: row::time(r, 10)?,
+            generation_id: row::text(r, 8)?,
+            embedding_version: row::text(r, 9)?,
+            dimension: row::int(r, 10)? as usize,
+            embedding: row::blob_f32_as_f64(r, 11)?,
+            updated_at: row::time(r, 12)?,
         })
     }
 }

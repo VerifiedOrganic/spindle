@@ -453,6 +453,7 @@ mod consistency;
 mod context;
 mod drafting;
 mod editorial;
+mod embedding_generations;
 mod entities;
 mod entity_updates;
 mod export;
