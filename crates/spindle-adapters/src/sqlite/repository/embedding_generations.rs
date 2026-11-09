@@ -114,6 +114,23 @@ impl Repository {
             .await
     }
 
+    pub async fn embedding_write_epoch(&self, project_id: &str) -> Result<i64> {
+        let project_id = project_id.to_string();
+        self.inner
+            .pool
+            .read(move |conn| {
+                let epoch: Option<i64> = conn
+                    .query_row(
+                        "SELECT write_epoch FROM embedding_index_state WHERE project_id = ?1",
+                        [&project_id],
+                        |row| row.get(0),
+                    )
+                    .optional_inner()?;
+                Ok(epoch.unwrap_or(0))
+            })
+            .await
+    }
+
     /// The project's active generation; projects created after V0056 fall back
     /// to the preserved legacy token-hash generation until they are migrated.
     pub async fn active_embedding_generation(
@@ -301,6 +318,7 @@ impl Repository {
         generation_id: &str,
         expected_previous_generation_id: &str,
         rollback_until_micros: i64,
+        expected_write_epoch: i64,
     ) -> Result<EmbeddingIndexStateV1> {
         let project_id = project_id.to_string();
         let generation_id = generation_id.to_string();
@@ -319,6 +337,19 @@ impl Repository {
             anyhow::ensure!(
                 current == expected_previous_generation_id,
                 "stale embedding index state: expected active {expected_previous_generation_id}, current {current}"
+            );
+            let epoch: Option<i64> = tx
+                .tx
+                .query_row(
+                    "SELECT write_epoch FROM embedding_index_state WHERE project_id = ?1",
+                    [&project_id],
+                    |row| row.get(0),
+                )
+                .optional_inner()?;
+            anyhow::ensure!(
+                epoch.unwrap_or(0) == expected_write_epoch,
+                "{}",
+                EMBEDDING_WRITE_CONFLICT
             );
             let status: String = tx.tx.query_row(
                 "SELECT status FROM embedding_generation WHERE generation_id = ?1",
@@ -508,6 +539,48 @@ impl Repository {
         generation: &EmbeddingGenerationV1,
         embedding: &[f64],
     ) -> Result<()> {
+        self.upsert_embedding_document_inner(
+            project_id, branch_id, entity_id, document, generation, embedding, None,
+        )
+        .await
+    }
+
+    /// Write through the active generation with a same-transaction generation
+    /// check and source epoch bump. A concurrent activation makes this fail
+    /// with `EMBEDDING_WRITE_CONFLICT`; the caller should retry against the new
+    /// active generation.
+    pub(crate) async fn upsert_active_embedding_document(
+        &self,
+        project_id: &str,
+        branch_id: Option<&str>,
+        entity_id: &str,
+        document: &SearchDocument,
+        generation: &EmbeddingGenerationV1,
+        embedding: &[f64],
+    ) -> Result<()> {
+        self.upsert_embedding_document_inner(
+            project_id,
+            branch_id,
+            entity_id,
+            document,
+            generation,
+            embedding,
+            Some(generation.generation_id.clone()),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn upsert_embedding_document_inner(
+        &self,
+        project_id: &str,
+        branch_id: Option<&str>,
+        entity_id: &str,
+        document: &SearchDocument,
+        generation: &EmbeddingGenerationV1,
+        embedding: &[f64],
+        expected_active_generation_id: Option<String>,
+    ) -> Result<()> {
         validate_embedding_vector(embedding, generation.spec.dimension)?;
         let table_name = generation.table_name.clone();
         if !safe_identifier(&table_name) {
@@ -529,6 +602,30 @@ impl Repository {
             .pool
             .write(move |conn| {
                 let tx = conn.transaction()?;
+                if let Some(expected) = &expected_active_generation_id {
+                    // New projects may not have a state row yet; seed the
+                    // legacy pointer so the epoch check has a home.
+                    tx.execute(
+                        "INSERT INTO embedding_index_state (
+                            project_id, active_generation_id, previous_generation_id,
+                            rollback_until, updated_at
+                         ) SELECT ?1, 'token-hash-v1:64', NULL, NULL, ?2
+                         FROM project WHERE id = ?1
+                         ON CONFLICT(project_id) DO NOTHING",
+                        rusqlite::params![&project_id, now],
+                    )?;
+                    let active: String = tx.query_row(
+                        "SELECT active_generation_id FROM embedding_index_state \
+                         WHERE project_id = ?1",
+                        [&project_id],
+                        |row| row.get(0),
+                    )?;
+                    if &active != expected {
+                        return Err(rusqlite::Error::ToSqlConversionFailure(
+                            anyhow::anyhow!(EMBEDDING_WRITE_CONFLICT).into(),
+                        ));
+                    }
+                }
                 let existing_id: Option<String> = tx
                     .query_row(
                         "SELECT id FROM search_embedding \
@@ -581,6 +678,13 @@ impl Repository {
                     &format!("INSERT INTO {table_name}(se_id, embedding) VALUES (?1, ?2)"),
                     rusqlite::params![&id, &blob],
                 )?;
+                if expected_active_generation_id.is_some() {
+                    tx.execute(
+                        "UPDATE embedding_index_state SET write_epoch = write_epoch + 1, \
+                            updated_at = ?2 WHERE project_id = ?1",
+                        rusqlite::params![&project_id, now],
+                    )?;
+                }
                 tx.commit()?;
                 Ok(())
             })

@@ -39,25 +39,39 @@ impl Repository {
         entity_id: &str,
         document: &SearchDocument,
     ) -> Result<()> {
-        let generation = self.active_embedding_generation(project_id).await?;
-        let embedding = self
-            .inner
-            .model_router
-            .embed_for_generation(
-                &document.content,
-                generation.spec.provider,
-                generation.spec.dimension,
-            )
-            .await?;
-        self.upsert_embedding_document_for_generation(
-            project_id,
-            Some(branch_id),
-            entity_id,
-            document,
-            &generation,
-            &embedding,
-        )
-        .await
+        for _ in 0..3 {
+            let generation = self.active_embedding_generation(project_id).await?;
+            let embedding = self
+                .inner
+                .model_router
+                .embed_for_generation(
+                    &document.content,
+                    generation.spec.provider,
+                    generation.spec.dimension,
+                )
+                .await?;
+            match self
+                .upsert_active_embedding_document(
+                    project_id,
+                    Some(branch_id),
+                    entity_id,
+                    document,
+                    &generation,
+                    &embedding,
+                )
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if format!("{error:#}")
+                        .contains(spindle_core::embeddings::EMBEDDING_WRITE_CONFLICT) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        anyhow::bail!("embedding index kept switching during write; retry the entity refresh")
     }
 
     /// Embed a query with the project's active generation identity. A query

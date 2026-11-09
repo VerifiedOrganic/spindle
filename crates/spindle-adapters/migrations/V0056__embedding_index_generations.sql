@@ -75,6 +75,10 @@ CREATE TABLE embedding_index_state (
     previous_generation_id  TEXT
                                     REFERENCES embedding_generation(generation_id),
     rollback_until          INTEGER,
+    -- Incremented by every active-generation document write. Rebuilds capture
+    -- it and activation requires it to be unchanged, so live edits cannot be
+    -- lost between the source snapshot and the pointer switch.
+    write_epoch             INTEGER NOT NULL DEFAULT 0,
     updated_at              INTEGER NOT NULL
 );
 

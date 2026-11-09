@@ -435,6 +435,138 @@ async fn resume_is_branch_aware_for_the_same_entity_id() {
 }
 
 #[tokio::test]
+async fn live_source_edit_during_build_fails_activation_and_is_caught_up() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, _seed, _) = project_with_scene(&svc, "Embedding Live Edit").await;
+    seed_documents(&svc, &project.project_id).await;
+    let branch = svc
+        .repository()
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let previous = svc
+        .active_embedding_generation(&project.project_id)
+        .await
+        .unwrap();
+    let spec = fixture_spec(384);
+    let target = svc
+        .repository()
+        .create_embedding_generation(spec.clone())
+        .await
+        .unwrap();
+    let source = svc
+        .repository()
+        .list_embeddings_for_generation(&project.project_id, &previous.generation_id)
+        .await
+        .unwrap();
+    // Complete a target snapshot first.
+    for row in &source {
+        let document = SearchDocument {
+            entity_table: row.entity_table.clone(),
+            title: row.title.clone(),
+            excerpt: row.excerpt.clone(),
+            content: row.content.clone(),
+        };
+        let vector = token_hash_embedding(&row.content, 384);
+        svc.repository()
+            .upsert_embedding_document_for_generation(
+                &project.project_id,
+                row.branch_id.as_deref(),
+                &row.entity_id,
+                &document,
+                &target,
+                &vector,
+            )
+            .await
+            .unwrap();
+    }
+    // A live edit bumps the source epoch but the target snapshot is stale.
+    svc.repository()
+        .upsert_search_embedding_document(
+            &project.project_id,
+            &branch.id,
+            "character:veyra",
+            &SearchDocument {
+                entity_table: "character".into(),
+                title: "Veyra".into(),
+                excerpt: "updated".into(),
+                content: "loyal border regiment updated live cavalry".into(),
+            },
+        )
+        .await
+        .unwrap();
+    // A new source entity arrives after the target snapshot too.
+    svc.repository()
+        .upsert_search_embedding_document(
+            &project.project_id,
+            &branch.id,
+            "character:new",
+            &SearchDocument {
+                entity_table: "character".into(),
+                title: "New".into(),
+                excerpt: "new source".into(),
+                content: "a new source entity added during rebuild".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let epoch = svc
+        .repository()
+        .embedding_write_epoch(&project.project_id)
+        .await
+        .unwrap();
+    assert!(epoch >= 2);
+    // The activation-side epoch check refuses the stale snapshot.
+    let error = svc
+        .repository()
+        .activate_embedding_generation(
+            &project.project_id,
+            &target.generation_id,
+            &previous.generation_id,
+            chrono::Utc::now().timestamp_micros() + 3_600_000_000,
+            epoch - 1,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains(spindle_core::embeddings::EMBEDDING_WRITE_CONFLICT),
+        "unexpected activation error: {error:#}"
+    );
+    assert_eq!(
+        svc.active_embedding_generation(&project.project_id)
+            .await
+            .unwrap()
+            .generation_id,
+        previous.generation_id
+    );
+    // A retry sees the new epoch, refreshes the edited row, adds the new row,
+    // and only then activates.
+    let output = svc
+        .rebuild_embedding_generation(rebuild_input(&project.project_id, 384))
+        .await
+        .unwrap();
+    assert!(
+        output.activated,
+        "retry must catch up and activate: {output:?}"
+    );
+    assert_eq!(output.indexed_records, 3);
+    let rebuilt = svc
+        .repository()
+        .list_embeddings_for_generation(&project.project_id, &spec.generation_id())
+        .await
+        .unwrap();
+    assert_eq!(rebuilt.len(), 3);
+    assert!(rebuilt.iter().any(|row| {
+        row.entity_id == "character:veyra" && row.content.contains("updated live cavalry")
+    }));
+    assert!(rebuilt.iter().any(|row| row.entity_id == "character:new"));
+    assert_eq!(
+        semantic_first(&svc, &project.project_id).await[0].entity_id,
+        "character:veyra"
+    );
+}
+
+#[tokio::test]
 async fn rollback_restores_previous_serving_generation() {
     let (_tmp, svc) = fresh_service_local().await;
     let (project, _seed, _) = project_with_scene(&svc, "Embedding Rollback").await;

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 pub const LEGACY_TOKEN_HASH_DIMENSION: usize = 64;
 pub const LEGACY_TOKEN_HASH_GENERATION_ID: &str = "token-hash-v1:64";
+pub const EMBEDDING_WRITE_CONFLICT: &str = "embedding_write_conflict";
 pub const MAX_EMBEDDING_DIMENSION: usize = 4096;
 
 #[derive(

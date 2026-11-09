@@ -899,6 +899,12 @@ async fn prepare_scene_preserves_hard_constraints_and_reports_truncation_and_una
         .active_embedding_generation(&project_id)
         .await
         .unwrap();
+    let write_epoch = router
+        .service
+        .repository()
+        .embedding_write_epoch(&project_id)
+        .await
+        .unwrap();
     router
         .service
         .repository()
@@ -907,6 +913,7 @@ async fn prepare_scene_preserves_hard_constraints_and_reports_truncation_and_una
             &generation.generation_id,
             &previous.generation_id,
             chrono::Utc::now().timestamp_micros() + 3_600_000_000,
+            write_epoch,
         )
         .await
         .unwrap();

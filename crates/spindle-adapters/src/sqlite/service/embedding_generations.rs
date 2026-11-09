@@ -94,172 +94,218 @@ impl SqliteSpindleService {
                 .await?;
         }
 
-        let source = self
-            .repository
-            .list_embeddings_for_generation(&input.project_id, &previous.generation_id)
-            .await?;
-        let expected_records = source.len();
-        let source_keys: BTreeSet<(Option<String>, String, String)> = source
-            .iter()
-            .map(|row| {
-                (
-                    row.branch_id.clone(),
-                    row.entity_table.clone(),
-                    row.entity_id.clone(),
-                )
-            })
-            .collect();
-        // Resume must be branch-aware and content-aware: a partial target row
-        // is reusable only when the source document has not changed since it
-        // was written. Writes normally refresh the active generation, so a
-        // row key alone would silently preserve stale text/vectors.
-        let existing: std::collections::BTreeMap<
-            (Option<String>, String, String),
-            crate::sqlite::records::SearchEmbedding,
-        > = self
-            .repository
-            .list_embeddings_for_generation(&input.project_id, &generation.generation_id)
-            .await?
-            .into_iter()
-            .map(|row| {
-                (
+        let mut last_conflict = None;
+        for attempt in 1..=8 {
+            let source = self
+                .repository
+                .list_embeddings_for_generation(&input.project_id, &previous.generation_id)
+                .await?;
+            let source_epoch = self
+                .repository
+                .embedding_write_epoch(&input.project_id)
+                .await?;
+            let expected_records = source.len();
+            let source_keys: BTreeSet<(Option<String>, String, String)> = source
+                .iter()
+                .map(|row| {
                     (
                         row.branch_id.clone(),
                         row.entity_table.clone(),
                         row.entity_id.clone(),
-                    ),
-                    row,
-                )
-            })
-            .collect();
-        let mut indexed_records = existing.len();
-        let mut retry_from_entity_id = None;
-
-        for row in source {
-            let key = (
-                row.branch_id.clone(),
-                row.entity_table.clone(),
-                row.entity_id.clone(),
-            );
-            let was_existing = existing.contains_key(&key);
-            if let Some(target) = existing.get(&key)
-                && target.title == row.title
-                && target.excerpt == row.excerpt
-                && target.content == row.content
-            {
-                continue;
-            }
-            let document = SearchDocument {
-                entity_table: row.entity_table.clone(),
-                title: row.title.clone(),
-                excerpt: row.excerpt.clone(),
-                content: row.content.clone(),
-            };
-            let embedding = match self
+                    )
+                })
+                .collect();
+            // Resume must be branch-aware and content-aware: a partial target
+            // row is reusable only when the source document has not changed
+            // since it was written. Writes normally refresh the active
+            // generation, so a row key alone would silently preserve stale
+            // text/vectors.
+            let existing: std::collections::BTreeMap<
+                (Option<String>, String, String),
+                crate::sqlite::records::SearchEmbedding,
+            > = self
                 .repository
-                .model_router()
-                .embed_for_generation(&row.content, input.spec.provider, input.spec.dimension)
-                .await
-            {
-                Ok(embedding) => embedding,
-                Err(error) => {
+                .list_embeddings_for_generation(&input.project_id, &generation.generation_id)
+                .await?
+                .into_iter()
+                .map(|row| {
+                    (
+                        (
+                            row.branch_id.clone(),
+                            row.entity_table.clone(),
+                            row.entity_id.clone(),
+                        ),
+                        row,
+                    )
+                })
+                .collect();
+            let mut indexed_records = existing.len();
+            let mut retry_from_entity_id = None;
+
+            for row in &source {
+                let key = (
+                    row.branch_id.clone(),
+                    row.entity_table.clone(),
+                    row.entity_id.clone(),
+                );
+                let was_existing = existing.contains_key(&key);
+                if let Some(target) = existing.get(&key)
+                    && target.title == row.title
+                    && target.excerpt == row.excerpt
+                    && target.content == row.content
+                {
+                    continue;
+                }
+                let document = SearchDocument {
+                    entity_table: row.entity_table.clone(),
+                    title: row.title.clone(),
+                    excerpt: row.excerpt.clone(),
+                    content: row.content.clone(),
+                };
+                let embedding = match self
+                    .repository
+                    .model_router()
+                    .embed_for_generation(&row.content, input.spec.provider, input.spec.dimension)
+                    .await
+                {
+                    Ok(embedding) => embedding,
+                    Err(error) => {
+                        self.repository
+                            .fail_embedding_generation(&input.project_id, &generation.generation_id)
+                            .await?;
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = validate_embedding_vector(&embedding, input.spec.dimension) {
                     self.repository
                         .fail_embedding_generation(&input.project_id, &generation.generation_id)
                         .await?;
-                    return Err(error);
+                    return Err(anyhow::anyhow!(error.to_string()));
                 }
-            };
-            if let Err(error) = validate_embedding_vector(&embedding, input.spec.dimension) {
+                self.repository
+                    .upsert_embedding_document_for_generation(
+                        &input.project_id,
+                        row.branch_id.as_deref(),
+                        &row.entity_id,
+                        &document,
+                        &generation,
+                        &embedding,
+                    )
+                    .await?;
+                if !was_existing {
+                    indexed_records += 1;
+                }
+                retry_from_entity_id = Some(row.entity_id.clone());
+            }
+
+            self.repository
+                .prune_embedding_generation(&input.project_id, &generation, &source_keys)
+                .await?;
+            let actual_records = self
+                .repository
+                .embedding_row_count(&input.project_id, &generation.generation_id)
+                .await?;
+            if actual_records < expected_records {
+                return Ok(RebuildEmbeddingGenerationOutputV1 {
+                    generation_id: generation.generation_id,
+                    indexed_records,
+                    expected_records,
+                    activated: false,
+                    quality_passed: false,
+                    active_generation_id: Some(previous.generation_id),
+                    previous_generation_id: None,
+                    rollback_until_micros: None,
+                    status: EmbeddingGenerationStatusV1::Building,
+                    retry_from_entity_id,
+                });
+            }
+
+            // No source write may slip between the snapshot used above and the
+            // pointer switch. Active writes bump `write_epoch`; activation
+            // re-checks it in the same transaction as the pointer update.
+            let latest_epoch = self
+                .repository
+                .embedding_write_epoch(&input.project_id)
+                .await?;
+            if latest_epoch != source_epoch {
+                last_conflict = Some(EMBEDDING_WRITE_CONFLICT.to_string());
+                if attempt < 8 {
+                    continue;
+                }
+                break;
+            }
+
+            let mut quality_passed = true;
+            if let Some(probe) = &input.quality_probe {
+                quality_passed = self
+                    .embedding_quality_probe(&input, &generation, probe)
+                    .await?;
+            }
+            if !quality_passed {
                 self.repository
                     .fail_embedding_generation(&input.project_id, &generation.generation_id)
                     .await?;
-                return Err(anyhow::anyhow!(error.to_string()));
+                return Ok(RebuildEmbeddingGenerationOutputV1 {
+                    generation_id: generation.generation_id,
+                    indexed_records,
+                    expected_records,
+                    activated: false,
+                    quality_passed: false,
+                    active_generation_id: Some(previous.generation_id),
+                    previous_generation_id: None,
+                    rollback_until_micros: None,
+                    status: EmbeddingGenerationStatusV1::Failed,
+                    retry_from_entity_id: None,
+                });
             }
-            self.repository
-                .upsert_embedding_document_for_generation(
+
+            let now = timestamp_to_micros(chrono::Utc::now());
+            let rollback_until =
+                now.saturating_add(input.rollback_window_seconds.max(0) * 1_000_000);
+            match self
+                .repository
+                .activate_embedding_generation(
                     &input.project_id,
-                    row.branch_id.as_deref(),
-                    &row.entity_id,
-                    &document,
-                    &generation,
-                    &embedding,
+                    &generation.generation_id,
+                    &previous.generation_id,
+                    rollback_until,
+                    source_epoch,
                 )
-                .await?;
-            if !was_existing {
-                indexed_records += 1;
+                .await
+            {
+                Ok(state) => {
+                    return Ok(RebuildEmbeddingGenerationOutputV1 {
+                        generation_id: state.active_generation_id.clone(),
+                        indexed_records,
+                        expected_records,
+                        activated: true,
+                        quality_passed,
+                        active_generation_id: Some(state.active_generation_id),
+                        previous_generation_id: state.previous_generation_id,
+                        rollback_until_micros: state.rollback_until_micros,
+                        status: EmbeddingGenerationStatusV1::Active,
+                        retry_from_entity_id: None,
+                    });
+                }
+                Err(error)
+                    if format!("{error:#}").contains(EMBEDDING_WRITE_CONFLICT) && attempt < 8 =>
+                {
+                    last_conflict = Some(format!("{error:#}"));
+                    continue;
+                }
+                Err(error) => return Err(error),
             }
-            retry_from_entity_id = Some(row.entity_id);
         }
-
         self.repository
-            .prune_embedding_generation(&input.project_id, &generation, &source_keys)
+            .fail_embedding_generation(&input.project_id, &generation.generation_id)
             .await?;
-        let actual_records = self
-            .repository
-            .embedding_row_count(&input.project_id, &generation.generation_id)
-            .await?;
-        if actual_records < expected_records {
-            return Ok(RebuildEmbeddingGenerationOutputV1 {
-                generation_id: generation.generation_id,
-                indexed_records,
-                expected_records,
-                activated: false,
-                quality_passed: false,
-                active_generation_id: Some(previous.generation_id),
-                previous_generation_id: None,
-                rollback_until_micros: None,
-                status: EmbeddingGenerationStatusV1::Building,
-                retry_from_entity_id,
-            });
-        }
-
-        let mut quality_passed = true;
-        if let Some(probe) = &input.quality_probe {
-            quality_passed = self
-                .embedding_quality_probe(&input, &generation, probe)
-                .await?;
-        }
-        if !quality_passed {
-            self.repository
-                .fail_embedding_generation(&input.project_id, &generation.generation_id)
-                .await?;
-            return Ok(RebuildEmbeddingGenerationOutputV1 {
-                generation_id: generation.generation_id,
-                indexed_records,
-                expected_records,
-                activated: false,
-                quality_passed: false,
-                active_generation_id: Some(previous.generation_id),
-                previous_generation_id: None,
-                rollback_until_micros: None,
-                status: EmbeddingGenerationStatusV1::Failed,
-                retry_from_entity_id: None,
-            });
-        }
-
-        let now = timestamp_to_micros(chrono::Utc::now());
-        let rollback_until = now.saturating_add(input.rollback_window_seconds.max(0) * 1_000_000);
-        let state = self
-            .repository
-            .activate_embedding_generation(
-                &input.project_id,
-                &generation.generation_id,
-                &previous.generation_id,
-                rollback_until,
-            )
-            .await?;
-        Ok(RebuildEmbeddingGenerationOutputV1 {
-            generation_id: state.active_generation_id.clone(),
-            indexed_records,
-            expected_records,
-            activated: true,
-            quality_passed,
-            active_generation_id: Some(state.active_generation_id),
-            previous_generation_id: state.previous_generation_id,
-            rollback_until_micros: state.rollback_until_micros,
-            status: EmbeddingGenerationStatusV1::Active,
-            retry_from_entity_id: None,
-        })
+        Err(anyhow::anyhow!(
+            "embedding source kept changing during rebuild ({}); active index preserved{}",
+            generation.generation_id,
+            last_conflict
+                .map(|detail| format!(": {detail}"))
+                .unwrap_or_default()
+        ))
     }
 
     async fn embedding_quality_probe(

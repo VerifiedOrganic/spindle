@@ -542,9 +542,13 @@ quality probe pass. Generation build/active/retired/failed lifecycle is tracked 
 `embedding_generation_project`, so the same shared spec/table can be migrated by
 different projects independently. Activation atomically updates the project's
 `embedding_index_state` and retires the previous generation with a rollback
-window; rollback replays the previous pointer while its window is open. A
-provider failure or failed quality gate marks the target failed and leaves the
-serving index untouched. Per-project active state lets different projects migrate
+window; rollback replays the previous pointer while its window is open. Active
+document writes bump a per-project `write_epoch` in the same transaction that
+checks the active generation; activation requires the epoch to be unchanged and
+a rebuild retries catch-up when live writes move it, so an edit or new entity
+cannot be lost between the source snapshot and the pointer switch. A provider
+failure or failed quality gate marks the target failed and leaves the serving
+index untouched. Per-project active state lets different projects migrate
 independently. The legacy token-hash fallback remains available when no HTTP
 embedding route is configured; an explicitly configured HTTP generation that
 fails degrades to honest unavailable status rather than fabricating a vector.
