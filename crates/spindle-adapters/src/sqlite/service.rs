@@ -454,6 +454,7 @@ mod export;
 mod generation;
 mod import_hydration;
 mod imports;
+mod memory;
 mod narrative;
 mod packet_generation;
 mod plan_amendments;

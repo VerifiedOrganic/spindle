@@ -568,6 +568,50 @@ impl SqliteSpindleService {
         }).await
     }
 
+    /// Fresh layered chapter summaries before the cursor, if the project has
+    /// been rebuilt. Returns `None` so callers fall back to the legacy
+    /// chapter_summary/recency path without changing the rendered shape.
+    async fn layered_story_so_far_books(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+        book_number: i32,
+        chapter_number: i32,
+        scene_order: i32,
+    ) -> Result<Option<BTreeMap<i32, Vec<(i32, String)>>>> {
+        use spindle_core::memory::{
+            MemoryLayerV1, MemoryPositionV1, MemoryVisibilityPolicyV1, select_layered_memory,
+        };
+        let summaries = self
+            .repository()
+            .list_layered_memory(project_id, branch_id)
+            .await?;
+        if summaries.is_empty() {
+            return Ok(None);
+        }
+        let cursor = MemoryPositionV1::new(book_number, chapter_number, scene_order);
+        let selection =
+            select_layered_memory(&summaries, &cursor, &MemoryVisibilityPolicyV1::default());
+        let mut books: BTreeMap<i32, Vec<(i32, String)>> = BTreeMap::new();
+        for summary in selection
+            .items
+            .into_iter()
+            .filter(|summary| summary.layer == MemoryLayerV1::Chapter)
+        {
+            books
+                .entry(summary.coverage.start.book_number)
+                .or_default()
+                .push((summary.coverage.start.chapter_number, summary.text));
+        }
+        if books.is_empty() {
+            return Ok(None);
+        }
+        for parts in books.values_mut() {
+            parts.sort_by_key(|(chapter, _)| *chapter);
+        }
+        Ok(Some(books))
+    }
+
     pub(crate) async fn story_so_far(
         &self,
         project_id: &str,
@@ -577,21 +621,37 @@ impl SqliteSpindleService {
         scene_order: i32,
     ) -> Result<String> {
         let repo = self.repository();
-        let mut books: BTreeMap<i32, Vec<(i32, String)>> = BTreeMap::new();
-        for summary in repo
-            .list_chapter_summaries_by_project_and_branch(project_id, branch_id)
+        let books = match self
+            .layered_story_so_far_books(
+                project_id,
+                branch_id,
+                book_number,
+                chapter_number,
+                scene_order,
+            )
             .await?
         {
-            if (summary.book_number, summary.chapter_number) < (book_number, chapter_number) {
+            Some(books) => books,
+            None => {
+                let mut books: BTreeMap<i32, Vec<(i32, String)>> = BTreeMap::new();
+                for summary in repo
+                    .list_chapter_summaries_by_project_and_branch(project_id, branch_id)
+                    .await?
+                {
+                    if (summary.book_number, summary.chapter_number) < (book_number, chapter_number)
+                    {
+                        books
+                            .entry(summary.book_number)
+                            .or_default()
+                            .push((summary.chapter_number, summary.summary));
+                    }
+                }
+                for parts in books.values_mut() {
+                    parts.sort_by_key(|(chapter, _)| *chapter);
+                }
                 books
-                    .entry(summary.book_number)
-                    .or_default()
-                    .push((summary.chapter_number, summary.summary));
             }
-        }
-        for parts in books.values_mut() {
-            parts.sort_by_key(|(chapter, _)| *chapter);
-        }
+        };
         let cursor = crate::format::story_index(book_number, chapter_number, scene_order);
         let promises = repo
             .list_narrative_promises_by_project_and_branch(project_id, branch_id)
