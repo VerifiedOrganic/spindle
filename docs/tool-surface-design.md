@@ -699,8 +699,9 @@ Phase 7 batch replacements now ship canonical `create_terms`, `create_motifs`,
 `create_narrative_promises`, and `set_character_voice_profiles`. Each accepts
 1-50 items, preflights every item, supports `dry_run`, and commits the batch in
 one branch transaction so a failing item rolls the whole batch back; failures
-name the item index. Dry-run preflight rejects existing and within-batch
-normalized term/motif collisions. Post-commit search-index refreshes and voice
+name the item index. Dry-run preflight rejects existing exact-branch and
+within-batch normalized term/motif collisions; a child branch may still create
+its own same-name replacement without touching the inherited parent row. Post-commit search-index refreshes and voice
 cache invalidation are best-effort: the batch returns success with a `warnings`
 entry instead of an ordinary error after rows have committed. The four existing `batch_*` names remain one-release
 compatibility aliases that delegate to the canonical operation. Cross-branch

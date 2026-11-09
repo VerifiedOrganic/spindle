@@ -22,6 +22,7 @@ impl SqliteSpindleService {
             .list_terms_by_project_and_branch(&input.project_id, &branch_id)
             .await?
             .into_iter()
+            .filter(|term| term.branch_id == branch_id)
             .map(|term| term.normalized_term)
             .collect();
         let mut seen = std::collections::BTreeSet::new();
@@ -117,6 +118,7 @@ impl SqliteSpindleService {
             .list_motifs_by_project_and_branch(&input.project_id, &branch_id)
             .await?
             .into_iter()
+            .filter(|motif| motif.branch_id == branch_id)
             .map(|motif| motif.normalized_name)
             .collect();
         let mut seen = std::collections::BTreeSet::new();

@@ -67,7 +67,8 @@ for the four typed records when a typed tool covers the field.
 `set_character_voice_profiles` are the canonical batch operations. They accept
 1-50 `items`, preflight every item, support `dry_run`, and commit all-or-nothing
 in one branch transaction; errors identify the failing item index. Dry-run
-preflight rejects existing and within-batch normalized term/motif collisions.
+preflight rejects existing exact-branch and within-batch normalized term/motif
+collisions; child branches may shadow inherited names.
 Post-commit derived work is best-effort and is reported in `warnings`; the
 rows remain committed. The
 `batch_create_terms`, `batch_create_motifs`,

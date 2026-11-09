@@ -3,8 +3,9 @@ use spindle_adapters::sqlite::{Repository, SqlitePool, SqliteSpindleService};
 use spindle_core::models::{
     BatchCreateMotifItem, BatchCreateNarrativePromiseItem, BatchCreateTermItem,
     BatchCreateTermsInput, BatchSetCharacterVoiceProfileItem, CharacterVoiceProfileData,
-    CreateCharacterInput, CreateMotifsInput, CreateNarrativePromisesInput, CreateProjectInput,
-    CreateTermsInput, ReaderContract, SetCharacterVoiceProfilesInput, StoryPlacement,
+    CreateBranchInput, CreateCharacterInput, CreateMotifsInput, CreateNarrativePromisesInput,
+    CreateProjectInput, CreateTermsInput, ReaderContract, SetCharacterVoiceProfilesInput,
+    StoryPlacement, SwitchBranchInput,
 };
 use tempfile::TempDir;
 
@@ -372,5 +373,148 @@ async fn voice_batch_updates_all_or_nothing_and_rejects_wrong_branch() {
     assert!(
         format!("{wrong_branch:#}").contains("active branch"),
         "cross-branch batches must be rejected: {wrong_branch:#}"
+    );
+}
+
+#[tokio::test]
+async fn child_branch_can_shadow_inherited_term_and_motif_names() {
+    let (_tmp, svc) = fresh_service().await;
+    let project_id = project(&svc, "Branch Shadowing").await;
+    let parent_branch = svc
+        .repository()
+        .active_branch_id_public(&project_id)
+        .await
+        .unwrap();
+
+    let mut parent_term = term("Aether");
+    parent_term.definition = "Parent Aether.".to_string();
+    let parent_term_id = svc
+        .create_terms(CreateTermsInput {
+            project_id: project_id.clone(),
+            items: vec![parent_term],
+            dry_run: false,
+        })
+        .await
+        .unwrap()
+        .term_ids[0]
+        .clone();
+    let parent_motif_id = svc
+        .create_motifs(CreateMotifsInput {
+            project_id: project_id.clone(),
+            items: vec![BatchCreateMotifItem {
+                name: "Salt".to_string(),
+                description: "Parent salt.".to_string(),
+                max_uses_per_chapter: None,
+                connected_theme_ids: Vec::new(),
+            }],
+            dry_run: false,
+        })
+        .await
+        .unwrap()
+        .motif_ids[0]
+        .clone();
+
+    let child = svc
+        .create_branch(CreateBranchInput {
+            project_id: project_id.clone(),
+            name: "child".to_string(),
+            branch_type: "alternate".to_string(),
+            description: None,
+            parent_branch_id: Some(parent_branch),
+        })
+        .await
+        .unwrap();
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project_id.clone(),
+        branch_id: child.branch_id.clone(),
+    })
+    .await
+    .unwrap();
+
+    // Dry run and live canonical/alias calls may create branch-local
+    // replacements for inherited names; the parent rows stay untouched.
+    let term_dry = svc
+        .create_terms(CreateTermsInput {
+            project_id: project_id.clone(),
+            items: vec![term("Aether")],
+            dry_run: true,
+        })
+        .await
+        .expect("child term shadow dry run");
+    assert_eq!(term_dry.created, 0);
+    let mut child_term = term("Aether");
+    child_term.definition = "Child Aether.".to_string();
+    let term_live = svc
+        .create_terms(CreateTermsInput {
+            project_id: project_id.clone(),
+            items: vec![child_term],
+            dry_run: false,
+        })
+        .await
+        .expect("child term shadow live");
+    assert_eq!(term_live.created, 1);
+    let child_term_id = term_live.term_ids[0].clone();
+
+    let motif_dry = svc
+        .create_motifs(CreateMotifsInput {
+            project_id: project_id.clone(),
+            items: vec![BatchCreateMotifItem {
+                name: "Salt".to_string(),
+                description: "Child salt.".to_string(),
+                max_uses_per_chapter: None,
+                connected_theme_ids: Vec::new(),
+            }],
+            dry_run: true,
+        })
+        .await
+        .expect("child motif shadow dry run");
+    assert_eq!(motif_dry.created, 0);
+    let motif_alias = svc
+        .batch_create_motifs(spindle_core::models::BatchCreateMotifsInput {
+            project_id: project_id.clone(),
+            items: vec![BatchCreateMotifItem {
+                name: "Salt".to_string(),
+                description: "Child salt via alias.".to_string(),
+                max_uses_per_chapter: None,
+                connected_theme_ids: Vec::new(),
+            }],
+            dry_run: None,
+        })
+        .await
+        .expect("child motif shadow via alias");
+    assert_eq!(motif_alias.created, 1);
+    let child_motif_id = motif_alias.motif_ids[0].clone();
+
+    assert_eq!(
+        svc.repository()
+            .get_term(&parent_term_id)
+            .await
+            .unwrap()
+            .definition,
+        "Parent Aether."
+    );
+    assert_eq!(
+        svc.repository()
+            .get_term(&child_term_id)
+            .await
+            .unwrap()
+            .definition,
+        "Child Aether."
+    );
+    assert_eq!(
+        svc.repository()
+            .get_motif(&parent_motif_id)
+            .await
+            .unwrap()
+            .description,
+        "Parent salt."
+    );
+    assert_eq!(
+        svc.repository()
+            .get_motif(&child_motif_id)
+            .await
+            .unwrap()
+            .description,
+        "Child salt via alias."
     );
 }
