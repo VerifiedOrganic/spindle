@@ -1045,8 +1045,11 @@ activates a prose-affecting default.
 - Release gate **G** has not been run for line edit or the chapter pass. The
   design's chapter-coherence blinded comparison lower-bound `> 0.50` gate is
   therefore not cleared, so neither optional pass is activated by default.
-- Continuity gate **C** remains `20 / 28 = 0.7143` overall recall with `5`
-  control false positives, `4 / 4` accepted-prose violating probes, `90`
-  verified live artifacts, and `0` clean blocker issues.
+- Continuity gate **C** now matches the post-P2 #62 baseline: `28 / 28 = 1.0000`
+  overall recall with `5` control false positives, `4 / 4` accepted-prose
+  violating probes, `90` verified live artifacts, and `0` clean blocker issues.
+  This branch is merged with P2 #65's layered memory (migration V0055); the P1
+  repetition-memory builder feeds packet `EditorialMemory` and does not replace
+  P2's layered derived-summary store.
 - No SQLite migration, MCP tool, skill/reference file, or `tools/list` surface
   change is introduced by this step.
