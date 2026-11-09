@@ -1,4 +1,7 @@
 use super::*;
+use spindle_core::canon::{
+    KnowledgeValidationFactV1, SceneValidationInputV1, detect_knowledge_paraphrase_leak,
+};
 
 impl SqliteSpindleService {
     /// Narrow a scene list to only those that reference any of the
@@ -577,17 +580,42 @@ impl SqliteSpindleService {
             if !contains_case_insensitive_word_boundary(&scene.full_text, &character.name) {
                 continue;
             }
-            if !contains_case_insensitive_phrase(&scene.full_text, &fact.normalized_fact) {
+            let exact_hit =
+                contains_case_insensitive_phrase(&scene.full_text, &fact.normalized_fact);
+            let paraphrase = if exact_hit {
+                None
+            } else {
+                let scene_input = SceneValidationInputV1 {
+                    scene_id: &scene.id,
+                    book_number: scene.book_number,
+                    chapter_number: scene.chapter_number,
+                    scene_order: scene.scene_order,
+                    text: &scene.full_text,
+                };
+                let core_fact = KnowledgeValidationFactV1 {
+                    fact_id: fact.id.clone(),
+                    character_id: fact.character_id.clone(),
+                    character_names: vec![character.name.clone()],
+                    fact: fact.fact.clone(),
+                    learned_book_number: learned_at.book_number,
+                    learned_chapter_number: learned_at.chapter_number,
+                    learned_scene_order: learned_at.scene_order,
+                };
+                detect_knowledge_paraphrase_leak(&scene_input, &core_fact)
+            };
+            if !exact_hit && paraphrase.is_none() {
                 continue;
             }
             findings.push(RetconFinding::PrematureKnowledge {
                 character_id: fact.character_id.clone(),
                 fact: fact.fact.clone(),
                 learned_at: learned_at.clone().into_core(),
-                message: format!(
-                    "scene has '{}' reference knowledge they do not learn until book {} chapter {}",
-                    character.name, learned_at.book_number, learned_at.chapter_number
-                ),
+                message: paraphrase.map(|finding| finding.message).unwrap_or_else(|| {
+                    format!(
+                        "scene has '{}' reference knowledge they do not learn until book {} chapter {}",
+                        character.name, learned_at.book_number, learned_at.chapter_number
+                    )
+                }),
             });
         }
 
@@ -631,17 +659,34 @@ impl SqliteSpindleService {
             .list_temporal_interventions_by_project_and_branch(project_id, branch_id)
             .await?;
 
+        let subject_names_by_id: std::collections::BTreeMap<String, Vec<String>> = characters
+            .iter()
+            .map(|character| {
+                let mut names = vec![character.name.clone()];
+                names.extend(character.aliases.iter().cloned());
+                (character.id.clone(), names)
+            })
+            .collect();
         let canonical_facts = canonical_facts_raw
             .into_iter()
             .map(|fact| {
                 let value = canonical_fact_value_for_check(&fact);
+                let subject_names = fact
+                    .subject_id
+                    .as_ref()
+                    .and_then(|subject_id| subject_names_by_id.get(subject_id))
+                    .cloned()
+                    .unwrap_or_default();
                 CanonicalFactSnapshot {
+                    fact_id: fact.id.clone(),
                     scene_id: fact.scene_id.clone(),
                     book_number: fact.book_number,
                     chapter_number: fact.chapter_number,
                     fact_type: fact.value_kind.clone(),
                     key: fact.predicate.clone(),
                     value,
+                    subject_id: fact.subject_id.clone(),
+                    subject_names,
                 }
             })
             .collect::<Vec<_>>();

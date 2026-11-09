@@ -7,6 +7,9 @@
 //! and are invoked by the service layer through
 //! `run_phase_four_validator_checks_for_scenes`.
 
+use spindle_core::canon::{
+    AttributeValidationFactV1, SceneValidationInputV1, detect_attribute_prose_contradiction,
+};
 use spindle_core::models::{CharacterVoiceProfileData, TextByteRange, WorldRuleSeverity};
 use spindle_core::style::{StyleDriftSeverity, StyleScanInput};
 use spindle_core::validators::{
@@ -60,8 +63,37 @@ impl SceneValidator for CanonicalFactConsistencyValidator {
                 continue;
             }
             let key_hits = find_all_case_insensitive_word(&scene.full_text, &fact.key);
-            if key_hits.is_empty() || contains_case_insensitive_word(&scene.full_text, &fact.value)
-            {
+            if key_hits.is_empty() {
+                // Unkeyed prose drift: the prose never repeats the fact key, so
+                // the lexical prefilter cannot retrieve it. Compare subject +
+                // attribute head + an explicit value antonym instead.
+                let scene_input = SceneValidationInputV1 {
+                    scene_id: &scene.scene_id,
+                    book_number: scene.book_number,
+                    chapter_number: scene.chapter_number,
+                    scene_order: scene.scene_order,
+                    text: &scene.full_text,
+                };
+                let fact_input = AttributeValidationFactV1 {
+                    fact_id: fact.fact_id.clone(),
+                    subject_id: fact.subject_id.clone(),
+                    subject_names: fact.subject_names.clone(),
+                    key: fact.key.clone(),
+                    value: fact.value.clone(),
+                };
+                if let Some(finding) =
+                    detect_attribute_prose_contradiction(&scene_input, &fact_input)
+                {
+                    findings.push(ValidatorFinding {
+                        check_type: self.check_type(),
+                        severity: ValidatorSeverity::Warning,
+                        message: finding.message,
+                        byte_range: finding.byte_range,
+                    });
+                }
+                continue;
+            }
+            if contains_case_insensitive_word(&scene.full_text, &fact.value) {
                 continue;
             }
             for range in key_hits.into_iter().take(3) {

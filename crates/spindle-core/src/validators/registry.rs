@@ -12,6 +12,7 @@ pub struct SceneSnapshot {
 
 #[derive(Debug, Clone)]
 pub struct CanonicalFactSnapshot {
+    pub fact_id: String,
     /// None for planned-and-pending facts registered before their scene
     /// exists (V0038); such a fact never matches the establishing-scene skip
     /// and applies from its placement onward.
@@ -21,6 +22,9 @@ pub struct CanonicalFactSnapshot {
     pub fact_type: String,
     pub key: String,
     pub value: String,
+    /// Character subject identity/names for unkeyed prose contradiction checks.
+    pub subject_id: Option<String>,
+    pub subject_names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
