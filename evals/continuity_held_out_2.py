@@ -14,6 +14,7 @@ be matched without relying on a private detector implementation.
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
@@ -21,11 +22,18 @@ from typing import Any, Iterable
 from continuity_recall import McpClient
 
 EXPECTED_CHECKS = {
-    "character_attribute": {"character_consistency", "character_attribute"},
+    "character_attribute": {
+        "character_consistency",
+        "character_attribute",
+        "canonical_fact_prose_drift",
+    },
     "dead_character_acting": {"dead_character_acting"},
     "timeline_chronology_rewind": {"chronology", "timeline_continuity"},
     "knowledge_leak_before_learned": {"knowledge_timing"},
-    "world_rule_cost_violation": {"world_rule_cost_violation"},
+    # Main emits world-rule prose findings as world_rule_semantic_drift.
+    # A dedicated warning-level cost check can be added to this set when the
+    # scanner ships one.
+    "world_rule_cost_violation": {"world_rule_semantic_drift"},
     "quantity_affordability": {"affordability"},
     "secret_leak": {"secret_leak"},
 }
@@ -38,6 +46,11 @@ BROAD_CHECKS = {
 ALL_CHECK_TYPES = {
     name for names in EXPECTED_CHECKS.values() for name in names
 } | BROAD_CHECKS
+
+# A broad check promoted into a category set still has to concern the plant's
+# own subject; the others can localize by scene once they are the category's
+# typed check.
+SUBJECT_SCOPED_CHECKS = {"canonical_fact_prose_drift"}
 
 
 def c(kind: str, keyword: str, text: str) -> dict[str, Any]:
@@ -578,6 +591,35 @@ def _build_manuscript(
     }
 
 
+_KEYWORD_STOPWORDS = {
+    "about", "after", "before", "could", "does", "from", "had", "hadn't",
+    "has", "have", "into", "its", "never", "only", "over", "that", "their",
+    "them", "then", "there", "these", "they", "this", "those", "through",
+    "under", "was", "were", "with", "without", "would",
+}
+
+
+def _keyword_tokens(keyword: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9']+", keyword.lower())
+    return [token for token in tokens if len(token) >= 4 and token not in _KEYWORD_STOPWORDS]
+
+
+def _broad_subject_match(issue: dict[str, Any], keyword: str, scene_id: str | None) -> bool:
+    """Whether a broad finding concerns this plant's own subject.
+
+    The exact plant phrase is accepted when the finding names it. Otherwise the
+    finding must be at the planted scene and share a distinctive subject token
+    with the plant (for example the canonical key ``scar``). A broad finding in
+    the same scene about a different attribute or rule does not match.
+    """
+    message = str(issue.get("message", "")).lower()
+    if keyword.lower() in message:
+        return True
+    if not scene_id or scene_id not in issue.get("entity_ids", []):
+        return False
+    return any(token in message for token in _keyword_tokens(keyword))
+
+
 def _score(issues: Iterable[dict[str, Any]], plants: Iterable[dict[str, Any]]) -> dict[str, Any]:
     issue_list = list(issues)
     plant_list = list(plants)
@@ -597,21 +639,31 @@ def _score(issues: Iterable[dict[str, Any]], plants: Iterable[dict[str, Any]]) -
             check_type = issue.get("check_type")
             if check_type not in (expected | BROAD_CHECKS):
                 return False
+            if check_type in SUBJECT_SCOPED_CHECKS or (
+                check_type in BROAD_CHECKS and check_type not in expected
+            ):
+                # A broad check must concern this plant's own subject, not
+                # just share a scene with another plant.
+                return _broad_subject_match(issue, keyword, scene_id)
             message = str(issue.get("message", "")).lower()
-            if check_type in BROAD_CHECKS:
-                # A broad check must name the planted evidence; sharing a
-                # scene with another plant is not category evidence.
-                return keyword in message
             return keyword in message or bool(
                 scene_id and scene_id in issue.get("entity_ids", [])
             )
 
         localized = any(localizes(issue) for issue in issue_list)
-        type_present = any(
-            issue.get("severity") in {"error", "warning"}
-            and issue.get("check_type") in expected
-            for issue in issue_list
-        )
+        type_present = False
+        for issue in issue_list:
+            if issue.get("severity") not in {"error", "warning"}:
+                continue
+            check_type = issue.get("check_type")
+            if check_type not in expected:
+                continue
+            if check_type in SUBJECT_SCOPED_CHECKS and not _broad_subject_match(
+                issue, keyword, scene_id
+            ):
+                continue
+            type_present = True
+            break
         per_type[kind]["localized"] += int(localized)
         per_type[kind]["type_present"] += int(type_present)
     relevant_issues = [
@@ -763,7 +815,7 @@ def held_out_2_self_test() -> None:
     info = _score(
         [
             {
-                "check_type": "world_rule_cost_violation",
+                "check_type": "world_rule_semantic_drift",
                 "severity": "info",
                 "message": "scene references world rule 'x' (no violation context detected)",
                 "entity_ids": [],
@@ -791,6 +843,91 @@ def held_out_2_self_test() -> None:
     )
     assert shared_scene["per_type"]["character_attribute"]["localized"] == 1
     assert shared_scene["per_type"]["world_rule_cost_violation"]["localized"] == 0
+
+    # The existing warning-level world-rule check is the actual contract today;
+    # a warning at the planted scene counts, while the info-only variant above
+    # does not.
+    world_warning = _score(
+        [
+            {
+                "check_type": "world_rule_semantic_drift",
+                "severity": "warning",
+                "message": "scene likely violates world rule 'Tide gate cost'",
+                "entity_ids": ["scene:rule"],
+            }
+        ],
+        [
+            {
+                "type": "world_rule_cost_violation",
+                "keyword": "without a token",
+                "scene_id": "scene:rule",
+            }
+        ],
+    )
+    assert world_warning["per_type"]["world_rule_cost_violation"]["localized"] == 1
+    assert world_warning["per_type"]["world_rule_cost_violation"]["type_present"] == 1
+
+    # Broad credit is subject-scoped: same scene but a different attribute (or
+    # a different scene with the right token) must not count.
+    unrelated_scene = _score(
+        [
+            {
+                "check_type": "canonical_fact_prose_drift",
+                "severity": "warning",
+                "message": "canonical height differs from the record",
+                "entity_ids": ["scene:shared"],
+            }
+        ],
+        [
+            {
+                "type": "character_attribute",
+                "keyword": "scar had never existed",
+                "scene_id": "scene:shared",
+            }
+        ],
+    )
+    assert unrelated_scene["per_type"]["character_attribute"]["localized"] == 0
+    assert unrelated_scene["per_type"]["character_attribute"]["type_present"] == 0
+
+    wrong_scene = _score(
+        [
+            {
+                "check_type": "canonical_fact_prose_drift",
+                "severity": "warning",
+                "message": "canonical scar differs from the record",
+                "entity_ids": ["scene:other"],
+            }
+        ],
+        [
+            {
+                "type": "character_attribute",
+                "keyword": "scar had never existed",
+                "scene_id": "scene:shared",
+            }
+        ],
+    )
+    assert wrong_scene["per_type"]["character_attribute"]["localized"] == 0
+    assert wrong_scene["per_type"]["character_attribute"]["type_present"] == 0
+
+    subject_scene = _score(
+        [
+            {
+                "check_type": "canonical_fact_prose_drift",
+                "severity": "warning",
+                "message": "canonical key 'scar' conflicts with the left-brow value",
+                "entity_ids": ["scene:shared"],
+            }
+        ],
+        [
+            {
+                "type": "character_attribute",
+                "keyword": "burn scar",
+                "scene_id": "scene:shared",
+            }
+        ],
+    )
+    assert subject_scene["per_type"]["character_attribute"]["localized"] == 1
+    assert subject_scene["per_type"]["character_attribute"]["type_present"] == 1
 
     # A broad check with evidence can localize, but still cannot stand in for
     # the category-specific type-present lane.

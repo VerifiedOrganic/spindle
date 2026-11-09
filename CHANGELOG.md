@@ -108,6 +108,12 @@ removal plan.
 
 ### Added
 
+- Held-out-2 continuity scoring now follows the detector contract: attribute
+  coverage accepts `canonical_fact_prose_drift`, world-rule expectations use
+  `world_rule_semantic_drift`, and a broad finding localizes by planted scene
+  only when it cites the plant's own subject. Warnings/errors still count;
+  info-level advisories do not.
+
 - Unified history and undo scopes: `list_changes` paginates scene-version,
   checkpoint, and style receipts with explicit undo support; `undo_change`
   resolves an operation id and refuses automatic mutation for scopes whose
