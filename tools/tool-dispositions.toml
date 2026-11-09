@@ -53,7 +53,7 @@ reason = "Current public API; declared by an owning skill or reference."
 [[tools]]
 name = "authoring_prepare_run"
 classification = "retained"
-owner = "authoring-supervisor, plot-architect"
+owner = "authoring-supervisor, new-book, plot-architect"
 review_by = "R"
 reason = "Current public API; declared by an owning skill or reference."
 
@@ -803,6 +803,34 @@ reason = "Current public API; declared by an owning skill or reference."
 name = "plan_style_revision"
 classification = "retained"
 owner = "editor"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "planning_advance"
+classification = "retained"
+owner = "new-book"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "planning_begin"
+classification = "retained"
+owner = "new-book"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "planning_decide"
+classification = "retained"
+owner = "new-book"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "planning_status"
+classification = "retained"
+owner = "new-book"
 review_by = "R"
 reason = "Current public API; declared by an owning skill or reference."
 

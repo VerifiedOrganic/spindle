@@ -2,6 +2,7 @@
 use super::*;
 use spindle_core::planning::*;
 mod apply;
+mod entry;
 mod generate;
 
 impl SqliteSpindleService {
@@ -10,6 +11,12 @@ impl SqliteSpindleService {
     }
     pub async fn get_planning_session(&self, id: &str) -> Result<PlanningSession> {
         self.repository.get_planning_session(id).await
+    }
+    pub async fn configure_planning_session(
+        &self,
+        input: ConfigurePlanningSessionInput,
+    ) -> Result<PlanningSession> {
+        self.repository.configure_planning_session(input).await
     }
     pub async fn stage_planning(&self, input: StagePlanningInput) -> Result<PlanningProposal> {
         self.repository.stage_planning(input).await

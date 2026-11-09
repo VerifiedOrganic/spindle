@@ -1,0 +1,5 @@
+version = 1
+name = "new-book"
+profiles = ["new-book"]
+requires_skills = ["spindle"]
+tools = ["authoring_prepare_run", "create_book", "create_chapter", "create_project", "planning_advance", "planning_begin", "planning_decide", "planning_status"]
