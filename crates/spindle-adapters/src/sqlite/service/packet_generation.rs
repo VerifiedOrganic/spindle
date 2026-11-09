@@ -955,8 +955,13 @@ impl SqliteSpindleService {
             let mut judge_admission: Option<RevisionBudgetAdmission> = None;
             let mut judge_usage = RevisionPassUsage::default();
             let mut judge_call_ids: Vec<String> = Vec::new();
-            let mut judge_preexisting_pass = false;
             let mut judge_started: Option<std::time::Instant> = None;
+            let pass_1_preexisting = loop_artifact.rounds[(round_num - 1) as usize]
+                .judge_pass_1
+                .is_some();
+            let pass_2_preexisting = loop_artifact.rounds[(round_num - 1) as usize]
+                .judge_pass_2
+                .is_some();
 
             // Judge Pass 1
             if loop_artifact.rounds[(round_num - 1) as usize]
@@ -1078,15 +1083,17 @@ impl SqliteSpindleService {
                     revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
                     break;
                 }
-                if judge_admission.is_none() {
-                    judge_preexisting_pass = true;
-                    judge_admission = gate
-                        .map(|gate| {
-                            gate.admit(EditorialActionKind::Judge, round_num, "judge_pass_2")
-                        })
-                        .transpose()
+                // Always claim the distinct pass-2 slot before dispatch, even
+                // on an uninterrupted run where pass 1 already supplied the
+                // admission object. A concurrent resume must see this claim.
+                if let Some(gate) = gate {
+                    let pass_2_admission = gate
+                        .admit(EditorialActionKind::Judge, round_num, "judge_pass_2")
                         .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
-                    judge_started = Some(std::time::Instant::now());
+                    if judge_admission.is_none() {
+                        judge_started = Some(std::time::Instant::now());
+                    }
+                    judge_admission = Some(pass_2_admission);
                 }
                 let (swap_p1_arm, swap_p2_arm) = (p2_arm, p1_arm);
                 let (p1_text, p2_text) = if swap_p1_arm == DeblindedArm::Baseline {
@@ -1172,7 +1179,7 @@ impl SqliteSpindleService {
             if let (Some(gate), Some(admission)) = (gate, &judge_admission)
                 && judge_usage.calls > 0
             {
-                let usage = if judge_preexisting_pass {
+                let usage = if pass_1_preexisting || pass_2_preexisting {
                     // A prior run already charged one pass; do not refund it.
                     None
                 } else {

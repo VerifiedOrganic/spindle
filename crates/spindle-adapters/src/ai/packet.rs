@@ -2090,10 +2090,20 @@ max_tokens = 500
         })
     }
 
-    #[derive(Default)]
     struct RecordingRevisionGate {
         admitted: std::sync::Mutex<Vec<(String, u32, String)>>,
         seen: std::sync::Mutex<std::collections::BTreeSet<(String, u32, String)>>,
+        pass_2_claim: tokio::sync::Notify,
+    }
+
+    impl Default for RecordingRevisionGate {
+        fn default() -> Self {
+            Self {
+                admitted: std::sync::Mutex::new(Vec::new()),
+                seen: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+                pass_2_claim: tokio::sync::Notify::new(),
+            }
+        }
     }
 
     impl crate::drafting::revision::RevisionBudgetGate for RecordingRevisionGate {
@@ -2112,6 +2122,9 @@ max_tokens = 500
                 .lock()
                 .map_err(|_| "gate lock".to_string())?
                 .push(key);
+            if claim == "judge_pass_2" {
+                self.pass_2_claim.notify_one();
+            }
             Ok(crate::drafting::revision::RevisionBudgetAdmission {
                 admission_id: format!("{}:{}:{}", action.as_str(), attempt, claim),
                 action,
@@ -2129,6 +2142,66 @@ max_tokens = 500
         }
     }
 
+    /// Serves fixed JSON responses and blocks the fourth request until the test
+    /// releases it, so a concurrent resume can race the in-flight pass-2 call.
+    fn spawn_blocking_pass_two_server(
+        responses: Vec<(u16, String)>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> (String, std::thread::JoinHandle<usize>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let handle = std::thread::spawn(move || {
+            let mut handled = 0usize;
+            for (index, (status, body)) in responses.into_iter().enumerate() {
+                let (mut stream, _) = listener.accept().expect("accept request");
+                let mut raw = Vec::new();
+                let mut chunk = [0_u8; 65536];
+                loop {
+                    let count = stream.read(&mut chunk).expect("read request");
+                    if count == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&chunk[..count]);
+                    let current = String::from_utf8_lossy(&raw);
+                    if let Some((headers, body_part)) = current.split_once("\r\n\r\n") {
+                        let expected_len = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (k, v) = line.split_once(':')?;
+                                k.trim()
+                                    .eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if body_part.len() >= expected_len {
+                            break;
+                        }
+                    }
+                }
+                if index == 3 {
+                    release.recv().expect("release pass 2");
+                }
+                let status_text = match status {
+                    200 => "OK",
+                    _ => "Test Response",
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {status_text}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write response");
+                stream.flush().expect("flush response");
+                handled += 1;
+            }
+            handled
+        });
+        (format!("http://{address}/v1"), handle)
+    }
+
     #[tokio::test]
     async fn revision_loop_promotes_double_order_winner_and_recovers_from_crash_at_every_boundary()
     {
@@ -2142,7 +2215,7 @@ max_tokens = 500
         use spindle_core::drafting::{DeblindedArm, EditorialPolicy, EditorialStage};
 
         let temp = tempfile::tempdir().unwrap();
-        let gate = RecordingRevisionGate::default();
+        let gate = std::sync::Arc::new(RecordingRevisionGate::default());
         let draft_prose = "Cold floodwater rose around the stone sluice.\n\nThe lantern flickered in the damp wind.";
         let revised_prose = "Cold floodwater surged against the stone sluice as Mara braced her shoulder.\n\nThe lantern flickered in the damp wind.";
 
@@ -2378,7 +2451,7 @@ max_tokens = 500
                         crash_after: Some(crash_point),
                         ..Default::default()
                     },
-                    Some(&gate),
+                    Some(gate.as_ref()),
                 )
                 .await
                 .unwrap_err();
@@ -2410,7 +2483,7 @@ max_tokens = 500
                     crash_after: Some(BoundaryCrashPoint::AfterDraftPromotionSave),
                     ..Default::default()
                 },
-                Some(&gate),
+                Some(gate.as_ref()),
             )
             .await
             .unwrap_err();
@@ -2456,7 +2529,7 @@ max_tokens = 500
                 &judge_budget,
                 Some(&VerifiedFixtureTokenizer),
                 RevisionLoopOptions::default(),
-                Some(&gate),
+                Some(gate.as_ref()),
             )
             .await
             .unwrap();
@@ -2521,7 +2594,7 @@ max_tokens = 500
                 &judge_budget,
                 Some(&VerifiedFixtureTokenizer),
                 RevisionLoopOptions::default(),
-                Some(&gate),
+                Some(gate.as_ref()),
             )
             .await
             .unwrap();
@@ -2546,6 +2619,167 @@ max_tokens = 500
         );
         // Exactly 4 HTTP requests were made across all 8 crash boundaries + resume + idempotent rerun!
         assert_eq!(loop_srv.join().unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn concurrent_resume_cannot_duplicate_judge_pass_two() {
+        use crate::drafting::critique::CriticBudget;
+        use crate::drafting::revision::{JudgeBudget, RevisionBudget, RevisionLoopOptions};
+        use crate::drafting::tests::{VerifiedFixtureTokenizer, budget, fixture};
+        use crate::sqlite::SqliteSpindleService;
+        use spindle_core::drafting::EditorialPolicy;
+        use std::sync::Arc;
+
+        let temp = tempfile::tempdir().unwrap();
+        let gate = Arc::new(RecordingRevisionGate::default());
+        let draft_prose = "Cold floodwater rose around the stone sluice.";
+        let revised_prose = "Cold floodwater surged against the stone sluice.";
+
+        let draft_reply = serde_json::json!({
+            "choices": [{"message": {"content": draft_prose}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 18, "total_tokens": 118}
+        })
+        .to_string();
+        let (draft_url, _, draft_srv) = spawn_http_capture_server(vec![(200, draft_reply)]);
+
+        let pool = crate::sqlite::SqlitePool::open(&temp.path().join("spindle.db"))
+            .await
+            .unwrap();
+        let router = ModelRouter::local_only();
+        let cfg_path = temp.path().join("spindle.toml");
+        let cfg_text = format!(
+            "[health_check]\nenabled = false\n[[agents]]\nid = \"venice\"\nname = \"Venice\"\nprovider = \"venice\"\nendpoint = \"{draft_url}\"\nmodel = \"venice-model\"\nratings = [\"general\"]\n[[routing]]\nroute = \"draft\"\nagent = \"venice\"\nmax_tokens = 300\n[[routing]]\nroute = \"review\"\nagent = \"venice\"\nmax_tokens = 500\n"
+        );
+        std::fs::write(&cfg_path, &cfg_text).unwrap();
+        router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+        let repository = crate::sqlite::repository::Repository::with_model_router(
+            pool.clone(),
+            temp.path().join("data"),
+            router.clone(),
+        );
+        let service = SqliteSpindleService::new(repository.clone());
+        let created = service
+            .create_project(spindle_core::models::CreateProjectInput {
+                name: "Overlap Judge Test".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: spindle_core::models::ReaderContract {
+                    promise: "A crossing".into(),
+                    style_notes: vec![],
+                    boundaries: vec![],
+                },
+            })
+            .await
+            .unwrap();
+        let active_branch = repository
+            .get_active_branch(&created.project_id)
+            .await
+            .unwrap();
+        let mut pkt = fixture();
+        pkt.project_id = created.project_id.clone();
+        pkt.branch_id = active_branch.id.clone();
+        for src in &mut pkt.source_versions {
+            src.branch_id = active_branch.id.clone();
+        }
+        pkt.scene_card.source.branch_id = active_branch.id.clone();
+        pkt.scene_card.pov.source.branch_id = active_branch.id.clone();
+        for c in &mut pkt.hard_constraints {
+            c.source.branch_id = active_branch.id.clone();
+        }
+        let mut draft_budget = budget();
+        draft_budget.model_id = "venice-model".into();
+        let draft_path = temp.path().join("overlap_draft.artifact.json");
+        let draft_art = service
+            .draft_packet_to_artifact(
+                EditorialPolicy::CritiqueV1,
+                pkt.clone(),
+                &draft_budget,
+                Some(&VerifiedFixtureTokenizer),
+                &draft_path,
+            )
+            .await
+            .unwrap();
+
+        let critique_json = make_valid_critique_json(
+            &draft_art.packet_hash,
+            &draft_art.text_sha256,
+            None,
+            &draft_art.text,
+        );
+        let judge_json = make_judge_json("tie");
+        let responses = vec![
+            (
+                200,
+                serde_json::json!({"choices": [{"message": {"content": critique_json.to_string()}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 120, "completion_tokens": 40, "total_tokens": 160}}).to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({"choices": [{"message": {"content": revised_prose}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 100, "completion_tokens": 12, "total_tokens": 112}}).to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({"choices": [{"message": {"content": judge_json.to_string()}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}}).to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({"choices": [{"message": {"content": judge_json.to_string()}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 150, "completion_tokens": 60, "total_tokens": 210}}).to_string(),
+            ),
+        ];
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (loop_url, loop_srv) = spawn_blocking_pass_two_server(responses, release_rx);
+        let loop_cfg = cfg_text.replace(&draft_url, &loop_url);
+        std::fs::write(&cfg_path, loop_cfg).unwrap();
+        router.configure(Some(cfg_path.to_str().unwrap())).unwrap();
+
+        let loop_path = temp.path().join("overlap_loop.artifact.json");
+        let critic_budget = CriticBudget::scene_default("venice-model".into(), 20_000);
+        let revision_budget = RevisionBudget::scene_default("venice-model".into(), 25_000);
+        let judge_budget = JudgeBudget::scene_default("venice-model".into(), 20_000);
+        let options = RevisionLoopOptions::default();
+        let pass_2_wait = gate.pass_2_claim.notified();
+        let first = service.revise_artifact_loop_with_gate(
+            EditorialPolicy::CritiqueV1,
+            &draft_path,
+            &loop_path,
+            vec![],
+            &critic_budget,
+            &revision_budget,
+            &judge_budget,
+            Some(&VerifiedFixtureTokenizer),
+            options.clone(),
+            Some(gate.as_ref()),
+        );
+        let second = async {
+            pass_2_wait.await;
+            let error = service
+                .revise_artifact_loop_with_gate(
+                    EditorialPolicy::CritiqueV1,
+                    &draft_path,
+                    &loop_path,
+                    vec![],
+                    &critic_budget,
+                    &revision_budget,
+                    &judge_budget,
+                    Some(&VerifiedFixtureTokenizer),
+                    options.clone(),
+                    Some(gate.as_ref()),
+                )
+                .await
+                .expect_err("a concurrent resume must not dispatch pass 2 again");
+            release_tx.send(()).expect("release pass 2");
+            error
+        };
+        let (first_result, second_error) = tokio::join!(first, second);
+        assert!(
+            second_error
+                .to_string()
+                .contains("duplicate dispatch claim"),
+            "unexpected concurrent resume error: {second_error}"
+        );
+        first_result.expect("the owning run completes after release");
+        assert_eq!(loop_srv.join().unwrap(), 4, "no duplicate pass-2 request");
+        assert_eq!(draft_srv.join().unwrap(), 1);
     }
 
     #[tokio::test]

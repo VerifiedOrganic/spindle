@@ -885,8 +885,9 @@ prose-affecting is activated by this step.
   and a retry must pass the caps again as a new admission. A two-call judge
   reservation claims `judge_pass_1` and `judge_pass_2` separately, so a crash
   between the swapped-order passes can dispatch the remaining reserved pass
-  without replaying pass 1. Host judge admission also runs inside the same
-  locked transaction.
+  without replaying pass 1. Pass 2 is claimed on uninterrupted runs too, so a
+  concurrent resume cannot duplicate the in-flight request. Host judge
+  admission also runs inside the same locked transaction.
 - `EditorialAttributionV1` is prose-free: it records stage/attempt, stable
   prompt template id and version, prompt/context/packet/source hashes,
   tokenizer identity, parent/candidate hashes, judge order, outcome, durations,
