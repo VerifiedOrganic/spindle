@@ -67,6 +67,73 @@ async fn unknown_and_removed_profiles_fail_closed() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn secondary_proxy_defaults_to_generated_workflow_write() {
+    use rmcp::ServiceExt as _;
+    let registry = router().await;
+    let service = registry.service().clone();
+    let primary = crate::server::SpindleMcpServer::with_tool_profile(
+        service.clone(),
+        Some("workflow-write".to_owned()),
+    );
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let primary_task = tokio::spawn(primary.serve(server_io));
+    let primary_client = timeout(Duration::from_secs(20), ().serve(client_io))
+        .await
+        .unwrap()
+        .unwrap();
+    let primary_server = primary_task.await.unwrap().unwrap();
+    let proxy = crate::proxy::ProxyHandler::new(
+        primary_client.peer().clone(),
+        tokio_util::sync::CancellationToken::new(),
+        Some("workflow-write".to_owned()),
+    );
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let proxy_task = tokio::spawn(proxy.serve(server_io));
+    let client = timeout(Duration::from_secs(20), ().serve(client_io))
+        .await
+        .unwrap()
+        .unwrap();
+    let proxy_server = proxy_task.await.unwrap().unwrap();
+    let actual = timeout(Duration::from_secs(20), client.list_all_tools())
+        .await
+        .unwrap()
+        .unwrap();
+    let names: std::collections::BTreeSet<_> = actual.iter().map(|t| t.name.as_ref()).collect();
+    let workflow = spindle_adapters::guidance::list_profiles()
+        .iter()
+        .find(|p| p.name == "workflow-write")
+        .unwrap();
+    assert_eq!(names, workflow.tools.iter().copied().collect());
+    assert!(names.contains("save_scene_draft"));
+    assert!(!names.contains("create_branch"));
+
+    let result = timeout(
+        Duration::from_secs(20),
+        client.call_tool(
+            rmcp::model::CallToolRequestParams::new("create_branch").with_arguments(
+                serde_json::json!({"project_id":"project:test","name":"out-of-profile"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        format!("{:?}", result.content).contains("unknown tool"),
+        "secondary must deny an out-of-profile call: {result:?}"
+    );
+
+    client.cancel().await.unwrap();
+    proxy_server.cancel().await.unwrap();
+    primary_client.cancel().await.unwrap();
+    primary_server.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn secondary_proxy_keeps_its_profile_and_denies_mutations_by_name() {
     use rmcp::ServiceExt as _;
     let registry = router().await;

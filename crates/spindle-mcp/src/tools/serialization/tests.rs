@@ -302,23 +302,68 @@ async fn internal_call_token_allows_reentrant_dispatch_while_blocking_external_c
     .expect("create_save_point via internal token must succeed");
     assert!(!reentrant_res.save_point_id.is_empty());
 
-    // (2) An external HTTP caller without the token blocks on the held project lock.
+    // (2) A tokenless HTTP caller gets the model-facing startup profile: it
+    // cannot discover or call the out-of-profile create_save_point tool.
     let external_url = format!("http://{addr}/mcp");
     let external_client = McpHarnessClient::connect(&TransportConfig::Http { url: external_url })
         .await
         .expect("connect external client");
+    let external_tools = timeout(Duration::from_secs(20), external_client.list_all_tools())
+        .await
+        .unwrap()
+        .unwrap();
+    let external_names: std::collections::BTreeSet<_> = external_tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect();
+    let workflow = spindle_adapters::guidance::list_profiles()
+        .iter()
+        .find(|profile| profile.name == "workflow-write")
+        .unwrap();
+    assert_eq!(
+        external_names,
+        workflow.tools.iter().copied().collect(),
+        "tokenless HTTP client must see the startup workflow-write profile"
+    );
+    assert!(!external_names.contains("create_save_point"));
+    let denied = timeout(
+        Duration::from_millis(150),
+        external_client.call_tool::<_, serde_json::Value>(
+            "create_save_point",
+            &serde_json::json!({
+                "project_id": project_id.clone(),
+                "name": "external-checkpoint",
+                "description": "External call without token"
+            }),
+        ),
+    )
+    .await
+    .expect("out-of-profile call must be denied, not blocked");
+    let denied = denied.expect_err("tokenless caller is denied");
+    assert!(
+        format!("{denied:#}").contains("unknown tool"),
+        "tokenless out-of-profile call must be an unknown tool: {denied:#}"
+    );
+
+    // A profile-visible mutation still contends on the held project lock.
     let blocked_external = timeout(
         Duration::from_millis(150),
-        external_client.create_save_point(&CreateSavePointInput {
-            project_id: project_id.clone(),
-            name: "external-checkpoint".to_string(),
-            description: Some("External call without token".to_string()),
-        }),
+        external_client.call_tool::<_, serde_json::Value>(
+            "save_scene_draft",
+            &serde_json::json!({
+                "project_id": project_id.clone(),
+                "book_number": 1,
+                "chapter_number": 1,
+                "scene_order": 1,
+                "full_text": "The lock must hold.",
+                "summary": "Lock check."
+            }),
+        ),
     )
     .await;
     assert!(
         blocked_external.is_err(),
-        "external HTTP caller without internal_token must block while project lock is held"
+        "external HTTP caller must block on the held project lock for an in-profile mutation"
     );
 
     // (3) Dropping the token guard invalidates the token immediately.

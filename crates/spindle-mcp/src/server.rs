@@ -17,9 +17,21 @@ use tokio_util::sync::CancellationToken;
 use crate::resources::ResourceRouter;
 use crate::tools::{ToolRouter, ToolSerializationState};
 
+/// Resolve the model-facing startup profile. Unset uses the generated
+/// `workflow-write` profile; legacy names are rejected by `validate_tool_profile`.
+pub(crate) fn resolved_startup_tool_profile() -> Option<String> {
+    std::env::var("SPINDLE_TOOL_PROFILE")
+        .ok()
+        .or_else(|| Some("workflow-write".to_string()))
+}
+
 #[derive(Clone)]
 pub struct SpindleMcpServer {
-    tool_router: ToolRouter,
+    service: SpindleService,
+    /// Model-facing base profile. A valid internal dispatch token upgrades a
+    /// request to the full orchestration registry.
+    base_profile: Option<String>,
+    serialization_state: Arc<ToolSerializationState>,
     resource_router: ResourceRouter,
 }
 
@@ -34,33 +46,42 @@ impl SpindleMcpServer {
         serialization_state: Arc<ToolSerializationState>,
     ) -> Self {
         Self {
-            tool_router: ToolRouter::with_tool_profile_and_serialization(
-                service.clone(),
-                std::env::var("SPINDLE_TOOL_PROFILE")
-                    .ok()
-                    .or_else(|| Some("workflow-write".to_string())),
-                serialization_state,
-            ),
+            service: service.clone(),
+            base_profile: resolved_startup_tool_profile(),
+            serialization_state,
             resource_router: ResourceRouter::new(service),
         }
     }
 
     #[cfg(test)]
     pub fn serialization_state(&self) -> &Arc<ToolSerializationState> {
-        self.tool_router.serialization_state()
+        &self.serialization_state
     }
 
     #[cfg(test)]
     pub fn with_tool_profile(service: SpindleService, tool_profile: Option<String>) -> Self {
         let serialization_state = ToolSerializationState::for_service(&service);
         Self {
-            tool_router: ToolRouter::with_tool_profile_and_serialization(
-                service.clone(),
-                tool_profile,
-                serialization_state,
-            ),
+            service: service.clone(),
+            base_profile: tool_profile,
+            serialization_state,
             resource_router: ResourceRouter::new(service),
         }
+    }
+
+    /// Build a router for one request. A validated internal token gets the full
+    /// registry; every other caller, including tokenless clients of the
+    /// addr-file HTTP listener and secondary proxies, gets the model profile.
+    fn router(&self, internal: bool) -> ToolRouter {
+        ToolRouter::with_tool_profile_and_serialization(
+            self.service.clone(),
+            if internal {
+                None
+            } else {
+                self.base_profile.clone()
+            },
+            self.serialization_state.clone(),
+        )
     }
 
     /// Build a `StreamableHttpService` that spawns a new `SpindleMcpServer`
@@ -74,32 +95,6 @@ impl SpindleMcpServer {
             service,
             cancellation_token,
             serialization_state,
-        )
-    }
-
-    /// Internal listener variant: in-process orchestration dispatches back to
-    /// this surface, so it must expose the full registry independent of the
-    /// model-facing startup profile.
-    pub(crate) fn streamable_http_service_internal(
-        service: SpindleService,
-        cancellation_token: CancellationToken,
-    ) -> StreamableHttpService<Self, LocalSessionManager> {
-        let serialization_state = ToolSerializationState::for_service(&service);
-        let config =
-            StreamableHttpServerConfig::default().with_cancellation_token(cancellation_token);
-        StreamableHttpService::new(
-            move || {
-                Ok(Self {
-                    tool_router: ToolRouter::with_tool_profile_and_serialization(
-                        service.clone(),
-                        None,
-                        serialization_state.clone(),
-                    ),
-                    resource_router: ResourceRouter::new(service.clone()),
-                })
-            },
-            Arc::new(LocalSessionManager::default()),
-            config,
         )
     }
 
@@ -149,15 +144,19 @@ All hosts can use the `list_skills`, `get_skill`, and `get_reference` tools as e
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        let internal_token = extract_internal_token(&context);
+        let internal = self
+            .serialization_state
+            .is_internal_token(internal_token.as_deref());
         Ok(ListToolsResult::with_all_items(
-            self.tool_router.list_tools(),
+            self.router(internal).list_tools(),
         ))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        self.tool_router
+        self.router(false)
             .list_tools()
             .into_iter()
             .find(|tool| tool.name == name)
@@ -186,7 +185,11 @@ All hosts can use the `list_skills`, `get_skill`, and `get_reference` tools as e
         // beats hanging on it — the caller can log it, fail the step, and move
         // on instead of stalling the loop.
         let internal_token = extract_internal_token(&context);
-        let call = self.tool_router.call_tool_with_internal_token(
+        let internal = self
+            .serialization_state
+            .is_internal_token(internal_token.as_deref());
+        let router = self.router(internal);
+        let call = router.call_tool_with_internal_token(
             &request.name,
             request.arguments.as_ref(),
             internal_token.as_deref(),

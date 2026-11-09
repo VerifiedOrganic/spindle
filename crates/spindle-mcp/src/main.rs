@@ -845,7 +845,7 @@ where
     let handler = ProxyHandler::new(
         client.peer().clone(),
         failover_signal.clone(),
-        std::env::var("SPINDLE_TOOL_PROFILE").ok(),
+        crate::server::resolved_startup_tool_profile(),
     );
 
     let running = handler

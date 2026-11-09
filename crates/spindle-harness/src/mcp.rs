@@ -417,6 +417,14 @@ impl McpHarnessClient {
         select_draft_route_binding(&routes, &routing, &agents, rating)
     }
 
+    pub async fn list_all_tools(&self) -> Result<Vec<rmcp::model::Tool>> {
+        self.client
+            .peer()
+            .list_all_tools()
+            .await
+            .context("list tools failed")
+    }
+
     pub async fn call_tool<I, O>(&self, name: &str, input: &I) -> Result<O>
     where
         I: Serialize,
