@@ -962,7 +962,27 @@ impl SqliteSpindleService {
                     spindle_core::character_mentions::CharacterMentionResolver::new(
                         &mention_records,
                     );
+                let single_protagonist = {
+                    let protagonists: Vec<&str> = characters
+                        .iter()
+                        .filter(|character| character.role.eq_ignore_ascii_case("protagonist"))
+                        .map(|character| character.id.as_str())
+                        .collect();
+                    (protagonists.len() == 1).then(|| protagonists[0].to_string())
+                };
+                let pov_by_chapter: BTreeMap<(i32, i32), String> = scoped_plans
+                    .iter()
+                    .filter_map(|plan| {
+                        plan.pov_character_id
+                            .clone()
+                            .map(|pov| ((plan.book_number, plan.chapter_number), pov))
+                    })
+                    .collect();
                 for scene in &scenes {
+                    let scene_pov = pov_by_chapter
+                        .get(&(scene.book_number, scene.chapter_number))
+                        .cloned()
+                        .or_else(|| single_protagonist.clone());
                     let scene_position =
                         (scene.book_number, scene.chapter_number, scene.scene_order);
                     for fact in &knowledge_facts {
@@ -980,7 +1000,11 @@ impl SqliteSpindleService {
                         let Some(character) = character_by_id.get(&fact.character_id) else {
                             continue;
                         };
-                        if !mention_resolver.mentions(&scene.full_text, &character.id) {
+                        if !mention_resolver.mentions_with_pov(
+                            &scene.full_text,
+                            &character.id,
+                            scene_pov.as_deref(),
+                        ) {
                             continue;
                         }
                         let exact_hit = contains_case_insensitive_phrase(
@@ -1004,6 +1028,8 @@ impl SqliteSpindleService {
                                 character_aliases: mention_resolver
                                     .aliases_for(&character.id)
                                     .to_vec(),
+                                first_person_subject: scene_pov.as_deref()
+                                    == Some(character.id.as_str()),
                                 fact: fact.fact.clone(),
                                 learned_book_number: learned_at.book_number,
                                 learned_chapter_number: learned_at.chapter_number,

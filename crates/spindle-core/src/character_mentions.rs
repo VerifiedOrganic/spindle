@@ -94,15 +94,36 @@ impl CharacterMentionResolver {
     pub fn mentions(&self, text: &str, character_id: &str) -> bool {
         self.patterns_by_id
             .get(character_id)
-            .is_some_and(|patterns| patterns.iter().any(|pattern| pattern.is_match(text)))
+            .is_some_and(|patterns| {
+                patterns
+                    .iter()
+                    .any(|pattern| pattern_has_capitalized_match(pattern, text))
+            })
     }
 
     pub fn mentioned_ids(&self, text: &str) -> BTreeSet<String> {
         self.patterns_by_id
             .iter()
-            .filter(|(_, patterns)| patterns.iter().any(|pattern| pattern.is_match(text)))
+            .filter(|(_, patterns)| {
+                patterns
+                    .iter()
+                    .any(|pattern| pattern_has_capitalized_match(pattern, text))
+            })
             .map(|(id, _)| id.clone())
             .collect()
+    }
+
+    /// Mention check that additionally accepts first-person narration when the
+    /// caller has established that `pov_character_id` is this scene's single
+    /// POV character. Never supplies a POV by itself.
+    pub fn mentions_with_pov(
+        &self,
+        text: &str,
+        character_id: &str,
+        pov_character_id: Option<&str>,
+    ) -> bool {
+        self.mentions(text, character_id)
+            || (pov_character_id == Some(character_id) && first_person_narration(text))
     }
 
     /// Nearest unambiguous character named before the end of `text`. Useful
@@ -112,7 +133,11 @@ impl CharacterMentionResolver {
         let mut best: Option<(usize, String)> = None;
         for (id, patterns) in &self.patterns_by_id {
             for pattern in patterns {
-                if let Some(found) = pattern.find_iter(text).last() {
+                if let Some(found) = pattern
+                    .find_iter(text)
+                    .filter(|found| starts_with_uppercase(found.as_str()))
+                    .last()
+                {
                     let end = found.end();
                     if best.as_ref().is_none_or(|(best_end, _)| end > *best_end) {
                         best = Some((end, id.clone()));
@@ -218,12 +243,54 @@ fn normalize_alias(alias: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn starts_with_uppercase(text: &str) -> bool {
+    text.chars().next().is_some_and(char::is_uppercase)
+}
+
+fn pattern_has_capitalized_match(pattern: &Regex, text: &str) -> bool {
+    pattern
+        .find_iter(text)
+        .any(|found| starts_with_uppercase(found.as_str()))
+}
+
 fn build_alias_regex(alias: &str) -> Option<Regex> {
     let escaped = regex::escape(alias);
     regex::RegexBuilder::new(&format!(r"(?i)\b{escaped}\b"))
         .size_limit(1 << 18)
         .build()
         .ok()
+}
+
+/// True when unquoted prose contains a first-person narrator token
+/// (`I`, `me`, `my`, `mine`, `myself`). Quoted dialogue is ignored so a
+/// character saying "I" does not make the scene first-person.
+pub fn first_person_narration(text: &str) -> bool {
+    unquoted_narration(text)
+        .split(|ch: char| !ch.is_alphanumeric() && ch != '\'')
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            matches!(
+                token.trim_matches('\'').to_ascii_lowercase().as_str(),
+                "i" | "me" | "my" | "mine" | "myself"
+            )
+        })
+}
+
+/// Narration text with quoted dialogue removed. Detectors that resolve a
+/// first-person POV must run their actual evidence scan on this text, not on
+/// the whole scene, so another character's quoted "I" cannot be attributed to
+/// the POV character.
+pub fn unquoted_narration(text: &str) -> String {
+    let mut unquoted = String::with_capacity(text.len());
+    let mut in_quote = false;
+    for ch in text.chars() {
+        match ch {
+            '"' | '“' | '”' => in_quote = !in_quote,
+            _ if !in_quote => unquoted.push(ch),
+            _ => {}
+        }
+    }
+    unquoted
 }
 
 #[cfg(test)]
@@ -251,6 +318,7 @@ mod tests {
         assert!(resolver.mentions("The Kestrel crossed the yard.", "character:sela"));
         assert!(resolver.mentions("Sel crossed the yard.", "character:sela"));
         assert!(!resolver.mentions("Selene crossed the yard.", "character:sela"));
+        assert!(!resolver.mentions("the bell rang.", "character:sela"));
     }
 
     #[test]
@@ -302,5 +370,30 @@ mod tests {
             Some("character:a".to_string())
         );
         assert!(!resolver.mentions("She checked the lock.", "character:a"));
+    }
+
+    #[test]
+    fn first_person_is_unquoted_narration_only() {
+        let resolver =
+            CharacterMentionResolver::new(&[record("character:tam", "Tamsin Okoro", &["Tam"])]);
+        assert!(resolver.mentions_with_pov(
+            "I write the date in the ledger.",
+            "character:tam",
+            Some("character:tam"),
+        ));
+        assert!(!resolver.mentions_with_pov(
+            "I write the date in the ledger.",
+            "character:tam",
+            None,
+        ));
+        assert!(!resolver.mentions_with_pov(
+            "\"I write the date,\" the clerk said.",
+            "character:tam",
+            Some("character:tam"),
+        ));
+        assert!(!first_person_narration("Rook said, \"I saw the crack.\""));
+        assert!(first_person_narration(
+            "Rook said nothing; my own hands were shaking."
+        ));
     }
 }

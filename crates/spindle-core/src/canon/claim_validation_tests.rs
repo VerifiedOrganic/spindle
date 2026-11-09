@@ -18,6 +18,7 @@ fn attribute_fact(key: &str, value: &str, subject_names: &[&str]) -> AttributeVa
             .iter()
             .map(|name| (*name).to_string())
             .collect(),
+        first_person_subject: false,
         key: key.into(),
         value: value.into(),
     }
@@ -29,6 +30,7 @@ fn knowledge_fact(fact: &str, names: &[&str], chapter: i32) -> KnowledgeValidati
         character_id: "character:caelen".into(),
         character_names: names.iter().map(|name| (*name).to_string()).collect(),
         character_aliases: names.iter().map(|name| (*name).to_string()).collect(),
+        first_person_subject: false,
         fact: fact.into(),
         learned_book_number: 1,
         learned_chapter_number: chapter,
@@ -370,6 +372,7 @@ fn knowledge_and_secret_accept_resolver_approved_forenames() {
         character_id: "character:caelen".into(),
         character_names: vec!["Caelen Dravos".into()],
         character_aliases: vec!["Caelen".into(), "Dravos".into()],
+        first_person_subject: false,
         fact: "the eastern gate is unlocked".into(),
         learned_book_number: 1,
         learned_chapter_number: 12,
@@ -418,4 +421,155 @@ fn attribute_height_accepts_a_pronoun_after_the_subject_is_established() {
     )
     .expect("pronoun height conflict");
     assert!(finding.message.contains("height"));
+}
+
+#[test]
+fn knowledge_two_strong_tokens_and_light_stemming_are_enough() {
+    let fact = KnowledgeValidationFactV1 {
+        fact_id: "knowledge_fact:two-token".into(),
+        character_id: "character:soren".into(),
+        character_names: vec!["Soren Pike".into()],
+        character_aliases: vec!["Soren".into()],
+        first_person_subject: false,
+        fact: "Lord Vale forged the harbor tide charts.".into(),
+        learned_book_number: 1,
+        learned_chapter_number: 12,
+        learned_scene_order: Some(1),
+    };
+    assert!(
+        detect_knowledge_paraphrase_leak(&scene("Soren said the charts were forged."), &fact,)
+            .is_some()
+    );
+    assert!(
+        detect_knowledge_paraphrase_leak(
+            &scene("Soren repeated the forgery of the charts."),
+            &fact,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_knowledge_paraphrase_leak(&scene("Soren said the weather was fine."), &fact,)
+            .is_none()
+    );
+}
+
+#[test]
+fn knowledge_first_person_subject_is_used_only_when_declared() {
+    let mut fact = KnowledgeValidationFactV1 {
+        fact_id: "knowledge_fact:pov".into(),
+        character_id: "character:tam".into(),
+        character_names: vec!["Tamsin Okoro".into()],
+        character_aliases: vec!["Tam".into()],
+        first_person_subject: true,
+        fact: "Cassian cut the orchard roots.".into(),
+        learned_book_number: 1,
+        learned_chapter_number: 14,
+        learned_scene_order: Some(1),
+    };
+    assert!(
+        detect_knowledge_paraphrase_leak(
+            &scene("I tell the clerk that Cassian cut the roots."),
+            &fact,
+        )
+        .is_some()
+    );
+    fact.first_person_subject = false;
+    assert!(
+        detect_knowledge_paraphrase_leak(
+            &scene("I tell the clerk that Cassian cut the roots."),
+            &fact,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn numeric_height_sight_and_first_person_attribute_families() {
+    let numeric = attribute_fact("height", "six feet two", &["Mara Voss", "Mara"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara stood five feet nine in her boots."),
+            &numeric,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara stood six feet one in her boots."),
+            &numeric,
+        )
+        .is_none()
+    );
+
+    let metric = attribute_fact("height", "180 cm", &["Mara Voss", "Mara"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara carried a five foot ladder across the yard."),
+            &metric,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara stood beside Tomas, who was six feet tall."),
+            &metric,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara was carrying a five foot ladder across the yard."),
+            &metric,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara stood beside a five foot ladder."),
+            &metric,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(&scene("Mara was five feet tall."), &metric,)
+            .is_some()
+    );
+
+    let sight = attribute_fact("sight", "blind", &["Rook", "Elder Rook"]);
+    assert!(
+        detect_attribute_prose_contradiction(&scene("Rook saw the crack in the glass."), &sight,)
+            .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Rook was blind and read the tree by touch."),
+            &sight,
+        )
+        .is_none()
+    );
+
+    let handed = AttributeValidationFactV1 {
+        fact_id: "canonical_fact:pov-hand".into(),
+        subject_id: Some("character:tam".into()),
+        subject_names: vec!["Tamsin Okoro".into(), "Tam".into()],
+        first_person_subject: true,
+        key: "handedness".into(),
+        value: "right-handed".into(),
+    };
+    assert!(detect_attribute_prose_contradiction(&scene("I am left-handed."), &handed,).is_some());
+}
+
+#[test]
+fn height_parser_handles_word_digit_apostrophe_and_metric_forms() {
+    for (text, expected) in [
+        ("six feet two", 74.0),
+        ("5 feet 9", 69.0),
+        ("5'9\"", 69.0),
+        ("five foot four", 64.0),
+        ("180 cm", 180.0 / 2.54),
+        ("1.8 m", 1.8 * 39.370_078_740_157_48),
+    ] {
+        let got = parse_height_inches(text).unwrap_or_else(|| panic!("no parse: {text}"));
+        assert!((got - expected).abs() < 0.01, "{text}: {got} vs {expected}");
+    }
 }
