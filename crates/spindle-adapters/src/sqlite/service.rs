@@ -458,6 +458,7 @@ mod entities;
 mod entity_updates;
 mod export;
 mod generation;
+mod history;
 mod import_hydration;
 mod imports;
 mod memory;

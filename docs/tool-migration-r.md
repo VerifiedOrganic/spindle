@@ -75,6 +75,18 @@ rows remain committed. The
 `batch_create_narrative_promises`, and `batch_set_character_voice_profiles`
 names delegate to them as one-release compatibility aliases.
 
+### Unified history and undo
+
+`list_changes` is the discoverable history surface: it paginates scene saves,
+branch checkpoints, style applications/patches, and prior undo records, and
+marks each receipt `reversible`, `checkpoint_only`, or `irreversible` with a
+reason. `undo_change(project_id, operation_id, expected_head, dry_run)` restores
+scene versions and style operations only after the expected head matches and
+records a compensating audit row; it never deletes history. Branch save points
+remain checkpoint-scoped: use `restore_save_point`, not `undo_change`.
+`restore_scene_version`, `restore_save_point`, and the style rollback tools keep
+their original inputs and scopes.
+
 ### Profiles
 
 Unset and `legacy-all` keep the full compatibility catalog except the

@@ -14,7 +14,7 @@ Manage structural revisions, "what-if" exploration branches, multi-candidate sce
 
 1. Call `set_active_project` once per session to bind the active project and branch.
 2. Call `record_note` before risky branch or revision work to log intent and scope.
-3. Use `create_save_point` and `restore_save_point` for branch-level snapshot recovery, or `list_scene_versions` and `restore_scene_version` for single-scene version rollback.
+3. Use `list_changes` for compact unified history receipts and `undo_change` for scene-version or style operations with an expected-head check. `undo_change` refuses stale heads and creates a compensating operation; branch save points remain `checkpoint_only`, so use `create_save_point` and `restore_save_point` for whole-branch recovery. `list_scene_versions` and `restore_scene_version` remain the explicit single-scene scope.
 4. Execute the branch, alternative, or ripple-revision workflow below.
 5. Inspect downstream flags with `list_revision_markers` and clear each addressed item with `resolve_revision_marker`.
 6. Verify branch health with `check_consistency` and `run_dual_persona_review`, record outcome rationale with `record_note`, confirm visibility in `get_writer_state`, and park the cursor with `update_writer_position`.
@@ -61,6 +61,7 @@ When comparing branches or alternatives with subagents, dispatch one read-only s
 <!-- tool: get_scene_context -->
 <!-- tool: get_writer_state -->
 <!-- tool: list_revision_markers -->
+<!-- tool: list_changes -->
 <!-- tool: list_scene_versions -->
 <!-- tool: merge_branch -->
 <!-- tool: preview_refresh_style_profile -->
@@ -76,5 +77,6 @@ When comparing branches or alternatives with subagents, dispatch one read-only s
 <!-- tool: select_alternative -->
 <!-- tool: set_active_project -->
 <!-- tool: switch_branch -->
+<!-- tool: undo_change -->
 <!-- tool: update_entity -->
 <!-- tool: update_writer_position -->

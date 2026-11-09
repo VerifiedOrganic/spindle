@@ -758,6 +758,20 @@ review_by = "R"
 reason = "Current public API; declared by an owning skill or reference."
 
 [[tools]]
+name = "list_changes"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R+1"
+reason = "Unified paginated history receipts with explicit undo support."
+
+[[tools]]
+name = "undo_change"
+classification = "retained"
+owner = "revision-manager"
+review_by = "R+1"
+reason = "Unified compensating undo for scene versions and style operations with expected-head checks."
+
+[[tools]]
 name = "list_scene_versions"
 classification = "retained"
 owner = "revision-manager"

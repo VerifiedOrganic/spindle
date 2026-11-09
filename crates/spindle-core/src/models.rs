@@ -3985,6 +3985,92 @@ pub struct RestoreSavePointInput {
     pub save_point_id: String,
 }
 
+/// How far a recorded change can be backed out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UndoSupport {
+    /// A compensating operation can restore the prior state.
+    Reversible,
+    /// Restore the whole branch checkpoint explicitly; not a single-record undo.
+    CheckpointOnly,
+    /// No safe automatic compensation; manual recovery is required.
+    Irreversible,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListChangesInput {
+    pub project_id: String,
+    /// Branch to inspect; defaults to the active branch.
+    #[serde(default)]
+    pub branch_id: Option<String>,
+    /// Restrict to changes touching this scene.
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    /// `scene_save`, `branch_checkpoint`, `style_apply`, `style_patch`, or `undo`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Page size, 1-100; defaults to 20.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChangeReceipt {
+    /// Prefix-qualified operation id accepted by `undo_change`.
+    pub operation_id: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub kind: String,
+    pub subject_id: String,
+    pub summary: String,
+    pub created_at: String,
+    pub undo_support: UndoSupport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_reason: Option<String>,
+    #[serde(default)]
+    pub undone: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListChangesOutput {
+    pub changes: Vec<ChangeReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UndoChangeInput {
+    pub project_id: String,
+    /// Operation id from `list_changes` (for example `scene_version:...`).
+    pub operation_id: String,
+    /// Current head the caller observed; guards against intervening edits.
+    pub expected_head: String,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UndoAffected {
+    pub table: String,
+    pub id: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UndoChangeOutput {
+    pub operation_id: String,
+    pub kind: String,
+    pub project_id: String,
+    pub branch_id: String,
+    pub affected: Vec<UndoAffected>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compensating_operation_id: Option<String>,
+    pub dry_run: bool,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RestoreSavePointOutput {
     pub save_point_id: String,

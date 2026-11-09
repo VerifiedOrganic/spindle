@@ -621,6 +621,14 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "operator_delete_scene",
             "Delete an active-branch scene after removing scene_source_link records and invalidating stale chapter_plan/chapter_summary artifacts, but only when no other blockers or semantic risks remain. Accepts scene_id for unambiguous addressing, like delete_scene",
         ),
+        tool::<ListChangesInput, ListChangesOutput>(
+            "list_changes",
+            "List compact, paginated history receipts across scene versions, branch checkpoints, style applications/patches, and prior undo records. Each receipt names its undo support and an operation id accepted by undo_change.",
+        ),
+        tool::<UndoChangeInput, UndoChangeOutput>(
+            "undo_change",
+            "Undo a recorded scene-version or style operation with an expected-head check. Creates a compensating operation and never deletes audit history. Branch save points are checkpoint_only and must use restore_save_point.",
+        ),
         tool::<ListSceneVersionsInput, ListSceneVersionsOutput>(
             "list_scene_versions",
             "List saved historical versions for a scene",

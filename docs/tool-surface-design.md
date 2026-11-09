@@ -707,3 +707,15 @@ entry instead of an ordinary error after rows have committed. The four existing 
 compatibility aliases that delegate to the canonical operation. Cross-branch
 voice batches are rejected by requiring the active branch. Durable idempotency
 receipts are not part of this slice; per-item IDs are returned as receipts.
+
+Phase 7 unified history now ships `list_changes` and `undo_change`.
+`list_changes` paginates compact receipts across scene versions, branch
+save-point checkpoints, style profile applications, style revision patches, and
+prior undo records, each with an explicit `undo_support` and reason.
+`undo_change` supports scene-version restoration and style application/patch
+rollback with a required `expected_head` check and an audited compensating
+operation. Branch save points are explicitly `checkpoint_only` and direct the
+caller to `restore_save_point` with the original scope; unknown scopes fail
+closed. Compensations are recorded in `history_undo`, so undo never deletes
+audit history. Old scene versions whose prior derived state is insufficient are
+marked current/irreversible rather than silently rewound.
