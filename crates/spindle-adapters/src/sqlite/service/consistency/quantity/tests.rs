@@ -619,7 +619,7 @@ async fn affordability_resolves_spelled_price_and_pronoun_but_keeps_ambiguity_in
     for (scene_order, full_text) in [
         (
             1,
-            "Mara Voss checked the stall. She paid twelve silver for the blade.",
+            "Soren Pike left.\n\nMara Voss checked the stall. She paid twelve silver for the blade.",
         ),
         (
             2,
@@ -749,7 +749,7 @@ async fn affordability_first_person_protagonist_warns() {
         chapter_number: 1,
         chapter_id: None,
         scene_order: 1,
-        full_text: "I paid Mara twelve silver for the shard.".into(),
+        full_text: "I paid Mara twelve silver ✦ Élodie’s note was short.".into(),
         summary: "market".into(),
         content_rating: ContentRating::General,
         tone: None,

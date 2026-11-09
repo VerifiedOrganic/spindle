@@ -2805,7 +2805,10 @@ fn spending_verb_for_mention(sentence: &str, mention_offset: usize) -> Option<(u
     if contains_any_marker(between, BALANCE_MARKERS) {
         return None;
     }
-    let after_end = (mention_offset + 40).min(sentence.len());
+    let mut after_end = (mention_offset + 40).min(sentence.len());
+    while after_end < sentence.len() && !sentence.is_char_boundary(after_end) {
+        after_end += 1;
+    }
     if contains_any_marker(&sentence[mention_offset..after_end], BALANCE_MARKERS) {
         return None;
     }
@@ -2877,7 +2880,7 @@ fn resolve_price_spender(
         .min(sentence.len());
     if sentence_starts_with_pronoun(sentence) {
         let prefix_start = text[..spend_verb_start]
-            .rfind("\\n\\n")
+            .rfind("\n\n")
             .map_or(0, |index| index + 2);
         let antecedents = resolver.mentioned_ids(&text[prefix_start..spend_verb_start]);
         return match antecedents.len() {
