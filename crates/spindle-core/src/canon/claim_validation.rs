@@ -1230,7 +1230,7 @@ fn parse_height_measurement(text: &str) -> Option<(f64, usize, usize)> {
         return Some((value * 39.370_078_740_157_48, full.start(), full.end()));
     }
     let feet = regex::Regex::new(
-        r#"(\d+(?:\.\d+)?)\s*(?:'|ft|feet|foot)\s*(?:(\d+(?:\.\d+)?)\s*(?:"|in|inch|inches)?)?"#,
+        r#"(\d+(?:\.\d+)?)\s*(?:'|ft|feet|foot)\s*(?:(\d+(?:\.\d+)?)\s*(?:"|inch|inches)?)?"#,
     )
     .ok()?
     .captures(&normalized)?;
@@ -1257,15 +1257,13 @@ fn height_measurement_belongs_to_subject(sentence: &str, fact: &AttributeValidat
     let Some((subject_start, subject_end)) = subject_position(&normalized, fact) else {
         return false;
     };
-    let (between, between_case, gap) = if measurement_start >= subject_end {
+    let (between_case, gap) = if measurement_start >= subject_end {
         (
-            &normalized[subject_end..measurement_start],
             &normalized_case[subject_end..measurement_start],
             measurement_start - subject_end,
         )
     } else if subject_start >= measurement_end {
         (
-            &normalized[measurement_end..subject_start],
             &normalized_case[measurement_end..subject_start],
             subject_start - measurement_end,
         )
@@ -1275,14 +1273,50 @@ fn height_measurement_belongs_to_subject(sentence: &str, fact: &AttributeValidat
     if gap > 80 {
         return false;
     }
-    let stature_cue = [
-        "stood", "stand", "stands", "was", "were", "is", "are", "measured", "measures", "height",
-        "stature", "tall", "short", "frame",
-    ]
-    .iter()
-    .any(|word| contains_inflected_word(between, word));
-    if !stature_cue {
+    // The word immediately before the number must express stature, not merely
+    // appear somewhere before it ("was carrying a five foot ladder").
+    let before_measurement = normalized[..measurement_start]
+        .trim_end_matches(|ch: char| !ch.is_alphanumeric() && !ch.is_whitespace());
+    let relation_word = before_measurement
+        .split_whitespace()
+        .next_back()
+        .unwrap_or_default()
+        .trim_matches(|ch: char| !ch.is_alphanumeric())
+        .to_ascii_lowercase();
+    if !matches!(
+        relation_word.as_str(),
+        "stood"
+            | "stands"
+            | "stand"
+            | "was"
+            | "were"
+            | "is"
+            | "are"
+            | "measured"
+            | "measures"
+            | "height"
+            | "stature"
+    ) {
         return false;
+    }
+    // A measured object noun after the number ("five foot ladder", "five feet
+    // of rope", "five feet from the door") is not a height assertion. Accept a
+    // sentence boundary or an explicit height qualifier/unit follow-up.
+    let after_measurement = normalized[measurement_end..]
+        .split(|ch: char| ch.is_ascii_punctuation() || ch == '\n')
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if let Some(first) = after_measurement.split_whitespace().next() {
+        let first = first
+            .trim_matches(|ch: char| !ch.is_alphanumeric())
+            .to_ascii_lowercase();
+        if !matches!(
+            first.as_str(),
+            "tall" | "short" | "in" | "inch" | "inches" | "and" | "with"
+        ) {
+            return false;
+        }
     }
     // A different capitalized name between the subject and the measurement
     // means the measurement likely belongs to that person, not the subject.

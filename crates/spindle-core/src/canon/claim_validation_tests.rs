@@ -516,6 +516,24 @@ fn numeric_height_sight_and_first_person_attribute_families() {
         )
         .is_none()
     );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara was carrying a five foot ladder across the yard."),
+            &metric,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara stood beside a five foot ladder."),
+            &metric,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(&scene("Mara was five feet tall."), &metric,)
+            .is_some()
+    );
 
     let sight = attribute_fact("sight", "blind", &["Rook", "Elder Rook"]);
     assert!(
