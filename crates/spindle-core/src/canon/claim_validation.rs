@@ -364,6 +364,67 @@ fn tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn word_indices(haystack: &str, needle: &str) -> Vec<usize> {
+    let needle = needle.to_ascii_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let lower = haystack.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = lower[from..].find(&needle) {
+        let start = from + rel;
+        let end = start + needle.len();
+        let before_ok = lower[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric());
+        let after_ok = lower[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric());
+        if before_ok && after_ok {
+            out.push(start);
+        }
+        from = end;
+    }
+    out
+}
+
+const NEGATED_VERB_PREFIXES: &[&str] = &[
+    "not ",
+    "never ",
+    "no ",
+    "didn't ",
+    "did not ",
+    "doesn't ",
+    "does not ",
+    "without ",
+    "failed to ",
+    "refused to ",
+    "denied ",
+];
+
+const NEGATED_VERB_SUFFIXES: &[&str] = &[" no one", " nobody", " nothing", " not "];
+
+/// Reject "never warned" / "did not mention" / "warned no one" before treating
+/// a communication verb as evidence that the learner referenced the fact.
+fn communication_is_negated(sentence_lower: &str, verb_index: usize, verb: &str) -> bool {
+    let prefix_start = sentence_lower[..verb_index]
+        .char_indices()
+        .rev()
+        .nth(40)
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let prefix = &sentence_lower[prefix_start..verb_index];
+    if NEGATED_VERB_PREFIXES.iter().any(|cue| prefix.contains(cue)) {
+        return true;
+    }
+    let suffix_end = (verb_index + verb.len() + 24).min(sentence_lower.len());
+    let suffix = &sentence_lower[verb_index + verb.len()..suffix_end];
+    NEGATED_VERB_SUFFIXES.iter().any(|cue| suffix.contains(cue))
+}
+
 fn contains_word(haystack: &str, needle: &str) -> bool {
     let needle = needle.trim().to_ascii_lowercase();
     if needle.is_empty() {
@@ -673,7 +734,12 @@ pub fn detect_knowledge_paraphrase_leak(
         {
             continue;
         }
-        if contains_any_token(&lower, LEAK_VERBS).is_none() {
+        let leak_verb_present = LEAK_VERBS.iter().any(|verb| {
+            word_indices(&lower, verb)
+                .into_iter()
+                .any(|index| !communication_is_negated(&lower, index, verb))
+        });
+        if !leak_verb_present {
             continue;
         }
         let matched: Vec<String> = fact_tokens

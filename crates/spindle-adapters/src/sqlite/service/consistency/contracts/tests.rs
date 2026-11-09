@@ -6623,7 +6623,7 @@ mod claim_validation_lanes {
         })
         .await
         .unwrap();
-        save_scene(
+        let scene_id = save_scene(
             &svc,
             &project.project_id,
             6,
@@ -6638,6 +6638,63 @@ mod claim_validation_lanes {
                     && issue.message.contains("Caelen Dravos")
             }),
             "expected paraphrased knowledge leak, got {issues:?}"
+        );
+        let scene = svc.repository().get_scene(&scene_id).await.unwrap();
+        let retcon = svc
+            .scan_retcon_findings(&project.project_id, &scene)
+            .await
+            .unwrap();
+        assert!(
+            retcon.iter().any(|finding| matches!(
+                finding,
+                spindle_core::models::RetconFinding::PrematureKnowledge { .. }
+            )),
+            "write-time retcon scanner must share the paraphrase lane: {retcon:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn negated_communication_control_is_clean_in_retcon_scanner() {
+        let (_tmp, svc) = fresh_service().await;
+        let (project, _seed_scene_id, _) = project_with_scene(&svc, "Negated Knowledge").await;
+        let character_id = create_character_named(&svc, &project.project_id, "Caelen Dravos").await;
+        svc.record_knowledge(RecordKnowledgeInput {
+            project_id: project.project_id.clone(),
+            character_id,
+            branch_id: None,
+            fact: "Commander Varek poisoned the well at Salt Spire".into(),
+            source_summary: "Nightshade found at the well.".into(),
+            learned_at: Some(StoryPlacement {
+                book_number: 1,
+                chapter_number: 16,
+                scene_order: Some(1),
+                note: None,
+            }),
+            confidence: Some(1.0),
+            tags: Vec::new(),
+            reader_visible: true,
+            secret_of_fact_id: None,
+        })
+        .await
+        .unwrap();
+        let scene_id = save_scene(
+            &svc,
+            &project.project_id,
+            6,
+            "Caelen Dravos never warned the guards that Varek had tainted the water beneath Salt Spire.",
+        )
+        .await;
+        let scene = svc.repository().get_scene(&scene_id).await.unwrap();
+        let retcon = svc
+            .scan_retcon_findings(&project.project_id, &scene)
+            .await
+            .unwrap();
+        assert!(
+            !retcon.iter().any(|finding| matches!(
+                finding,
+                spindle_core::models::RetconFinding::PrematureKnowledge { .. }
+            )),
+            "negated communication must not become premature-knowledge: {retcon:?}"
         );
     }
 

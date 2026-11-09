@@ -335,7 +335,7 @@ fn expand_plain_verb_alternation(pattern: &str) -> Option<String> {
                 return alternative.to_string();
             }
             if let Some(stem) = alternative.strip_suffix('e') {
-                format!("(?:{alternative}(?:s|d)|{stem}ing)")
+                format!("(?:{alternative}(?:s|d)?|{stem}ing)")
             } else {
                 format!("(?:{alternative}(?:s|es|ed|ing)?)")
             }
@@ -560,6 +560,29 @@ mod tests {
         )];
         let hits = scan_prose_for_world_rules(prose, &rules);
         assert_eq!(hits.len(), 1, "expected an inflected invoke hit");
+    }
+
+    #[test]
+    fn inflected_plain_verb_alternation_preserves_base_and_matches_forms() {
+        let rules = vec![make_rule(
+            "world_rule:splice",
+            "channel|cast|invoke|unleash",
+            "Neural Splice Cooldown",
+            "Running a deep neural splice drains battery and causes eye strain.",
+        )];
+        for prose in [
+            "They invoke the splice without paying its cost.",
+            "She invokes the splice.",
+            "He invoked the splice.",
+            "It is invoking the splice.",
+        ] {
+            let hits = scan_prose_for_world_rules(prose, &rules);
+            assert_eq!(hits.len(), 1, "expected one hit for: {prose}");
+        }
+
+        let prose = "They invoke the splice without paying its cost.";
+        let hits = scan_prose_for_world_rules(prose, &rules);
+        assert_eq!(hits[0].severity, WorldRuleSeverity::Likely);
     }
 
     #[test]

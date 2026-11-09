@@ -143,6 +143,9 @@ fn knowledge_negation_time_and_thin_overlap_controls_do_not_flag() {
         "Caelen Dravos warned the guards about the bridge.",
         "Kira Sato warned that Varek had poisoned the well at Salt Spire.",
         "Three years ago, Caelen Dravos warned that Varek had poisoned the well at Salt Spire.",
+        "Caelen Dravos never warned the guards that Varek had tainted the water beneath Salt Spire.",
+        "Caelen Dravos did not mention that Varek poisoned the well at Salt Spire.",
+        "Caelen Dravos warned no one that Varek poisoned the well at Salt Spire.",
     ] {
         assert!(
             detect_knowledge_paraphrase_leak(&scene(text), &fact).is_none(),
