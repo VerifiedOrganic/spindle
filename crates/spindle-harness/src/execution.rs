@@ -2705,6 +2705,8 @@ mod tests {
             max_revise_attempts: None,
             checkpoint_policy: None,
             replan_policy: None,
+            resolved_editorial: None,
+            editorial_controller_path: None,
             chapters: Vec::new(),
             checkpoint_history: Vec::new(),
         }
@@ -3181,6 +3183,8 @@ mod tests {
             max_revise_attempts: None,
             checkpoint_policy: None,
             replan_policy: None,
+            resolved_editorial: None,
+            editorial_controller_path: None,
             chapters: Vec::new(),
             checkpoint_history: Vec::new(),
         };

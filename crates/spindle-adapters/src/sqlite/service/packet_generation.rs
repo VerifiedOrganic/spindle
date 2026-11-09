@@ -3,17 +3,19 @@ use crate::drafting::{
     DraftTokenizer, PacketBudget, artifact,
     critique::{self, CRITIC_RUBRIC_VERSION, CriticBudget},
     revision::{
-        self, BoundaryCrashPoint, JudgeBudget, RevisionBudget, RevisionLoopOptions,
-        compare_candidate_checks, compute_edit_span_summary, evaluate_deterministic_checks,
-        resolve_double_order_judgment, select_initial_judge_order,
+        self, BoundaryCrashPoint, JudgeBudget, RevisionBudget, RevisionBudgetAdmission,
+        RevisionBudgetGate, RevisionLoopOptions, RevisionPassUsage, compare_candidate_checks,
+        compute_edit_span_summary, evaluate_deterministic_checks, resolve_double_order_judgment,
+        select_initial_judge_order,
     },
 };
 use spindle_core::drafting::{
-    CasVersionExpectation, CriticFindingInput, DeblindedArm, DraftingPacketV1, EditorialPolicy,
-    EditorialStage, HARD_MAX_REVISION_ROUNDS, HARD_MAX_SCENE_CALLS, HARD_MAX_SCENE_TOKENS,
-    PendingRevisionPromotion, REVISION_LOOP_ARTIFACT_SCHEMA_VERSION, RevisionLoopArtifactV1,
-    RevisionRetentionReason, RevisionRoundRecord, SHADOW_CRITIQUE_ARTIFACT_SCHEMA_VERSION,
-    ShadowCritiqueArtifactV1, ShadowCritiqueOutcome, StageTransitionKey, StageTransitionRecord,
+    CasVersionExpectation, CriticFindingInput, DeblindedArm, DraftingPacketV1, EditorialActionKind,
+    EditorialPolicy, EditorialStage, HARD_MAX_REVISION_ROUNDS, HARD_MAX_SCENE_CALLS,
+    HARD_MAX_SCENE_TOKENS, PendingRevisionPromotion, REVISION_LOOP_ARTIFACT_SCHEMA_VERSION,
+    RevisionLoopArtifactV1, RevisionRetentionReason, RevisionRoundRecord,
+    SHADOW_CRITIQUE_ARTIFACT_SCHEMA_VERSION, ShadowCritiqueArtifactV1, ShadowCritiqueOutcome,
+    StageTransitionKey, StageTransitionRecord,
     extraction::{DraftReceiptBinding, PlainTextDraftArtifactV1},
 };
 
@@ -232,6 +234,38 @@ impl SqliteSpindleService {
         judge_budget: &JudgeBudget,
         tokenizer: Option<&dyn DraftTokenizer>,
         options: RevisionLoopOptions,
+    ) -> Result<RevisionLoopArtifactV1> {
+        self.revise_artifact_loop_with_gate(
+            policy,
+            draft_artifact_path,
+            loop_artifact_path,
+            external_findings,
+            critic_budget,
+            revision_budget,
+            judge_budget,
+            tokenizer,
+            options,
+            None,
+        )
+        .await
+    }
+
+    /// Gate-aware revision loop used by the editorial controller. Each paid
+    /// pass is admitted before dispatch and reconciled afterwards; a failed
+    /// pass reconciles with `None` so its maximum reservation stays charged.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn revise_artifact_loop_with_gate(
+        &self,
+        policy: EditorialPolicy,
+        draft_artifact_path: &std::path::Path,
+        loop_artifact_path: &std::path::Path,
+        external_findings: Vec<CriticFindingInput>,
+        critic_budget: &CriticBudget,
+        revision_budget: &RevisionBudget,
+        judge_budget: &JudgeBudget,
+        tokenizer: Option<&dyn DraftTokenizer>,
+        options: RevisionLoopOptions,
+        gate: Option<&dyn RevisionBudgetGate>,
     ) -> Result<RevisionLoopArtifactV1> {
         anyhow::ensure!(
             policy == EditorialPolicy::CritiqueV1,
@@ -558,7 +592,12 @@ impl SqliteSpindleService {
                         suggested_fix: f.suggested_fix.clone(),
                     })
                     .collect();
-                let critic_res = self
+                let critic_admission = gate
+                    .map(|gate| gate.admit(EditorialActionKind::Critique, round_num, "critic"))
+                    .transpose()
+                    .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
+                let critic_start = std::time::Instant::now();
+                let critic_result = self
                     .repository
                     .model_router()
                     .critique_draft_shadow(
@@ -572,9 +611,29 @@ impl SqliteSpindleService {
                         tokenizer,
                         critic_max_calls,
                     )
-                    .await?;
+                    .await;
+                let critic_res = match critic_result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if let (Some(gate), Some(admission)) = (gate, &critic_admission) {
+                            let _ = gate.reconcile(admission, None, Vec::new());
+                        }
+                        return Err(error);
+                    }
+                };
                 let calls_spent = u32::try_from(critic_res.prompt_hashes.len()).unwrap_or(1);
                 let critic_tokens = critic_res.tokens_used;
+                if let (Some(gate), Some(admission)) = (gate, &critic_admission) {
+                    let usage = RevisionPassUsage {
+                        calls: calls_spent,
+                        input_tokens: None,
+                        output_tokens: None,
+                        total_tokens: critic_tokens,
+                        millis: elapsed_millis(critic_start),
+                    };
+                    gate.reconcile(admission, Some(usage), critic_res.model_call_ids.clone())
+                        .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
+                }
                 loop_artifact.total_calls_used =
                     loop_artifact.total_calls_used.saturating_add(calls_spent);
                 loop_artifact.total_tokens_used = loop_artifact
@@ -682,7 +741,12 @@ impl SqliteSpindleService {
                 let strengths = loop_artifact.rounds[(round_num - 1) as usize]
                     .strengths_to_preserve
                     .clone();
-                let rev_res = self
+                let revision_admission = gate
+                    .map(|gate| gate.admit(EditorialActionKind::Revise, round_num, "revision"))
+                    .transpose()
+                    .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
+                let revision_start = std::time::Instant::now();
+                let revision_result = self
                     .repository
                     .model_router()
                     .revise_draft_candidate(
@@ -695,7 +759,31 @@ impl SqliteSpindleService {
                         revision_budget,
                         tokenizer,
                     )
-                    .await?;
+                    .await;
+                let rev_res = match revision_result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if let (Some(gate), Some(admission)) = (gate, &revision_admission) {
+                            let _ = gate.reconcile(admission, None, Vec::new());
+                        }
+                        return Err(error);
+                    }
+                };
+                if let (Some(gate), Some(admission)) = (gate, &revision_admission) {
+                    let usage = RevisionPassUsage {
+                        calls: 1,
+                        input_tokens: Some(rev_res.input_tokens),
+                        output_tokens: Some(rev_res.output_tokens),
+                        total_tokens: rev_res.input_tokens.saturating_add(rev_res.output_tokens),
+                        millis: elapsed_millis(revision_start),
+                    };
+                    gate.reconcile(
+                        admission,
+                        Some(usage),
+                        rev_res.response.call_id.clone().into_iter().collect(),
+                    )
+                    .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
+                }
                 let receipt = self
                     .register_generation_receipt_with_calls(
                         &rev_res.route_used,
@@ -864,6 +952,17 @@ impl SqliteSpindleService {
                 judge_budget.generation_seed,
             );
 
+            let mut judge_admission: Option<RevisionBudgetAdmission> = None;
+            let mut judge_usage = RevisionPassUsage::default();
+            let mut judge_call_ids: Vec<String> = Vec::new();
+            let mut judge_started: Option<std::time::Instant> = None;
+            let pass_1_preexisting = loop_artifact.rounds[(round_num - 1) as usize]
+                .judge_pass_1
+                .is_some();
+            let pass_2_preexisting = loop_artifact.rounds[(round_num - 1) as usize]
+                .judge_pass_2
+                .is_some();
+
             // Judge Pass 1
             if loop_artifact.rounds[(round_num - 1) as usize]
                 .judge_pass_1
@@ -877,6 +976,15 @@ impl SqliteSpindleService {
                     loop_artifact.retention_reason = Some(RevisionRetentionReason::BudgetExhausted);
                     revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
                     break;
+                }
+                if judge_admission.is_none() {
+                    judge_admission = gate
+                        .map(|gate| {
+                            gate.admit(EditorialActionKind::Judge, round_num, "judge_pass_1")
+                        })
+                        .transpose()
+                        .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
+                    judge_started = Some(std::time::Instant::now());
                 }
                 let (p1_text, p2_text) = if p1_arm == DeblindedArm::Baseline {
                     (working_text.as_str(), cand_text.as_str())
@@ -907,6 +1015,24 @@ impl SqliteSpindleService {
                             loop_artifact.total_calls_used.saturating_add(1);
                         loop_artifact.total_tokens_used =
                             loop_artifact.total_tokens_used.saturating_add(pass1_tokens);
+                        judge_usage.calls = judge_usage.calls.saturating_add(1);
+                        judge_usage.input_tokens = Some(
+                            judge_usage
+                                .input_tokens
+                                .unwrap_or(0)
+                                .saturating_add(pass1_res.input_tokens),
+                        );
+                        judge_usage.output_tokens = Some(
+                            judge_usage
+                                .output_tokens
+                                .unwrap_or(0)
+                                .saturating_add(pass1_res.output_tokens),
+                        );
+                        judge_usage.total_tokens =
+                            judge_usage.total_tokens.saturating_add(pass1_tokens);
+                        if let Some(cid) = pass1_res.record.model_call_id.clone() {
+                            judge_call_ids.push(cid);
+                        }
                         let r = &mut loop_artifact.rounds[(round_num - 1) as usize];
                         if let Some(cid) = pass1_res.record.model_call_id.clone() {
                             r.model_call_ids.push(cid);
@@ -932,6 +1058,9 @@ impl SqliteSpindleService {
                         loop_artifact.retention_reason =
                             Some(RevisionRetentionReason::JudgeInvalidOrUnavailable);
                         revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                        if let (Some(gate), Some(admission)) = (gate, &judge_admission) {
+                            let _ = gate.reconcile(admission, None, Vec::new());
+                        }
                         break;
                     }
                 }
@@ -953,6 +1082,18 @@ impl SqliteSpindleService {
                     loop_artifact.retention_reason = Some(RevisionRetentionReason::BudgetExhausted);
                     revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
                     break;
+                }
+                // Always claim the distinct pass-2 slot before dispatch, even
+                // on an uninterrupted run where pass 1 already supplied the
+                // admission object. A concurrent resume must see this claim.
+                if let Some(gate) = gate {
+                    let pass_2_admission = gate
+                        .admit(EditorialActionKind::Judge, round_num, "judge_pass_2")
+                        .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
+                    if judge_admission.is_none() {
+                        judge_started = Some(std::time::Instant::now());
+                    }
+                    judge_admission = Some(pass_2_admission);
                 }
                 let (swap_p1_arm, swap_p2_arm) = (p2_arm, p1_arm);
                 let (p1_text, p2_text) = if swap_p1_arm == DeblindedArm::Baseline {
@@ -984,6 +1125,24 @@ impl SqliteSpindleService {
                             loop_artifact.total_calls_used.saturating_add(1);
                         loop_artifact.total_tokens_used =
                             loop_artifact.total_tokens_used.saturating_add(pass2_tokens);
+                        judge_usage.calls = judge_usage.calls.saturating_add(1);
+                        judge_usage.input_tokens = Some(
+                            judge_usage
+                                .input_tokens
+                                .unwrap_or(0)
+                                .saturating_add(pass2_res.input_tokens),
+                        );
+                        judge_usage.output_tokens = Some(
+                            judge_usage
+                                .output_tokens
+                                .unwrap_or(0)
+                                .saturating_add(pass2_res.output_tokens),
+                        );
+                        judge_usage.total_tokens =
+                            judge_usage.total_tokens.saturating_add(pass2_tokens);
+                        if let Some(cid) = pass2_res.record.model_call_id.clone() {
+                            judge_call_ids.push(cid);
+                        }
                         let r = &mut loop_artifact.rounds[(round_num - 1) as usize];
                         if let Some(cid) = pass2_res.record.model_call_id.clone() {
                             r.model_call_ids.push(cid);
@@ -1009,9 +1168,31 @@ impl SqliteSpindleService {
                         loop_artifact.retention_reason =
                             Some(RevisionRetentionReason::JudgeInvalidOrUnavailable);
                         revision::save_revision_loop_artifact(loop_artifact_path, &loop_artifact)?;
+                        if let (Some(gate), Some(admission)) = (gate, &judge_admission) {
+                            let _ = gate.reconcile(admission, None, Vec::new());
+                        }
                         break;
                     }
                 }
+            }
+
+            if let (Some(gate), Some(admission)) = (gate, &judge_admission)
+                && judge_usage.calls > 0
+            {
+                let usage = if pass_1_preexisting || pass_2_preexisting {
+                    // A prior run already charged one pass; do not refund it.
+                    None
+                } else {
+                    Some(RevisionPassUsage {
+                        calls: judge_usage.calls,
+                        input_tokens: judge_usage.input_tokens,
+                        output_tokens: judge_usage.output_tokens,
+                        total_tokens: judge_usage.total_tokens,
+                        millis: judge_started.map(elapsed_millis).unwrap_or(0),
+                    })
+                };
+                gate.reconcile(admission, usage, judge_call_ids.clone())
+                    .map_err(|error| anyhow::anyhow!("editorial_budget_gate: {error}"))?;
             }
 
             // Combine Pass 1 and Pass 2 into DoubleOrderJudgeEvaluation.
@@ -1663,4 +1844,8 @@ fn project_external_findings_to_text(
         }
     }
     projected
+}
+
+fn elapsed_millis(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }

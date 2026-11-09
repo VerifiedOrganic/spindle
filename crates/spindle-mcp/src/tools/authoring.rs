@@ -256,6 +256,8 @@ pub(super) fn map_records_to_harness(
         max_revise_attempts: run.max_revise_attempts,
         checkpoint_policy: run.checkpoint_policy.clone(),
         replan_policy: run.replan_policy.clone(),
+        resolved_editorial: None,
+        editorial_controller_path: None,
         chapters: ch_states,
         checkpoint_history: cp_history,
     };
@@ -575,6 +577,8 @@ impl ToolRouter {
             max_revise_attempts,
             checkpoint_policy,
             replan_policy,
+            editorial: None,
+            editorial_controller_path: None,
             chapters: chapter_seeds,
         };
 
