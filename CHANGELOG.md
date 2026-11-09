@@ -34,6 +34,9 @@ workflow profiles for new sessions.
   `life_status` and recognize irregular/third-person finite verbs; attribute
   checks cover numeric heights, sight/vision, handedness, colour, scars and
   build.
+- Secret-leak detection also catches paraphrased disclosures through reported
+  speech, written notices/broadsheets/letters read aloud, and role or collective
+  actors, while holder/in-circle and framed sentences stay silent.
 
 **Drafting packets, critic, and revision (off by default)**
 

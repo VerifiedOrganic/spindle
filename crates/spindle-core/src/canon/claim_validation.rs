@@ -1524,13 +1524,21 @@ pub fn detect_secret_narration_leak(
         else {
             continue;
         };
-        let Some(value_index) = lower_sentence.find(&candidate.value.to_ascii_lowercase()) else {
-            continue;
-        };
-        if name_index >= value_index {
+        let value_index = lower_sentence.find(&candidate.value.to_ascii_lowercase());
+        let paraphrased = value_index.is_none();
+        if !paraphrased {
+            let value_index = value_index.unwrap_or_default();
+            if name_index >= value_index {
+                continue;
+            }
+        }
+        if paraphrased
+            && !secret_content_overlap(sentence, &candidate.value, &candidate.character_name)
+        {
             continue;
         }
-        let actor_window = &sentence[name_index + name_len..value_index];
+        let window_end = value_index.unwrap_or(sentence.len());
+        let actor_window = &sentence[name_index + name_len..window_end];
         let mut other_names = candidate.other_present_character_names.clone();
         other_names.extend(candidate.other_present_character_aliases.iter().cloned());
         if other_names
@@ -1568,6 +1576,228 @@ pub fn detect_secret_narration_leak(
                 "secret-narration:{}:{}:{}",
                 candidate.fact_id, candidate.character_id, scene.scene_id
             ),
+        ));
+    }
+    None
+}
+
+pub fn secret_content_overlap(text: &str, value: &str, excluded_names: &str) -> bool {
+    let excluded = if excluded_names.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![excluded_names.to_string()]
+    };
+    let tokens = distinctive_tokens(value, &excluded);
+    let lower = text.to_ascii_lowercase();
+    let matched: Vec<&String> = tokens
+        .iter()
+        .filter(|token| contains_stemmed_word(&lower, token))
+        .collect();
+    matched.len() >= 2 && matched.iter().any(|token| token.len() >= 5)
+}
+
+const SECRET_DISCLOSURE_VERBS: &[&str] = &[
+    "said",
+    "says",
+    "shouted",
+    "shouts",
+    "announced",
+    "announces",
+    "printed",
+    "prints",
+    "wrote",
+    "writes",
+    "written",
+    "reported",
+    "reports",
+    "claimed",
+    "claims",
+    "spread",
+    "spreads",
+    "told",
+    "tells",
+    "whispered",
+    "whispers",
+    "murmured",
+    "murmurs",
+    "repeated",
+    "repeats",
+    "knew",
+    "knows",
+    "know",
+    "learned",
+    "learns",
+    "disclosed",
+    "discloses",
+    "revealed",
+    "reveals",
+    "published",
+    "publishes",
+    "posted",
+    "posts",
+    "carved",
+    "carves",
+    "sang",
+    "sings",
+];
+
+const SECRET_DISCLOSURE_PHRASES: &[&str] = &["read aloud", "read out"];
+
+const SECRET_GENERIC_ACTORS: &[&str] = &[
+    "everyone",
+    "everybody",
+    "someone",
+    "somebody",
+    "people",
+    "crowd",
+    "town",
+    "village",
+    "dockworker",
+    "dockworkers",
+    "worker",
+    "workers",
+    "clerk",
+    "clerks",
+    "carrier",
+    "carriers",
+    "picker",
+    "pickers",
+    "sailor",
+    "sailors",
+    "guard",
+    "guards",
+    "servant",
+    "servants",
+    "merchant",
+    "merchants",
+    "courier",
+    "couriers",
+    "reader",
+    "readers",
+];
+
+const SECRET_WRITTEN_CHANNELS: &[&str] = &[
+    "broadsheet",
+    "broadsheets",
+    "notice",
+    "noticeboard",
+    "board",
+    "letter",
+    "letters",
+    "headline",
+    "headlines",
+    "gazette",
+    "placard",
+    "placards",
+    "handbill",
+    "handbills",
+    "printed",
+    "posted",
+    "published",
+    "read aloud",
+];
+
+fn contains_any_word(text: &str, words: &[&str]) -> bool {
+    words.iter().any(|word| contains_inflected_word(text, word))
+}
+
+/// Paraphrased secret disclosure through a generic/collective actor, reported
+/// speech or a written notice. Named-character dialogue/narration remains in
+/// the caller's circle-aware lane.
+pub fn detect_secret_generic_disclosure(
+    scene: &SceneValidationInputV1<'_>,
+    fact_id: &str,
+    value: &str,
+    holder_names: &[String],
+    in_circle_names: &[String],
+) -> Option<ClaimValidationFindingV1> {
+    if value.trim().is_empty() || value == "<unset>" {
+        return None;
+    }
+    let tokens = distinctive_tokens(value, &[]);
+    for range in sentence_spans(scene.text) {
+        let sentence = &scene.text[range.start..range.end];
+        let lower = sentence.to_ascii_lowercase();
+        if [
+            "in a dream",
+            "dreamed",
+            "dream",
+            "remembered",
+            "memory",
+            "flashback",
+            "years ago",
+            "before the death",
+            "before her death",
+            "before his death",
+        ]
+        .iter()
+        .any(|marker| contains_phrase(&lower, marker))
+        {
+            continue;
+        }
+        let matched = tokens
+            .iter()
+            .filter(|token| contains_stemmed_word(&lower, token))
+            .count();
+        if matched < 2
+            || !tokens
+                .iter()
+                .any(|token| token.len() >= 5 && contains_stemmed_word(&lower, token))
+        {
+            continue;
+        }
+        let read_aloud = (contains_word(&lower, "read") || contains_word(&lower, "reads"))
+            && (contains_word(&lower, "aloud") || contains_word(&lower, "out"));
+        let verb = contains_any_word(&lower, SECRET_DISCLOSURE_VERBS)
+            || read_aloud
+            || SECRET_DISCLOSURE_PHRASES
+                .iter()
+                .any(|phrase| contains_phrase(&lower, phrase));
+        let written = contains_any_word(&lower, SECRET_WRITTEN_CHANNELS);
+        let generic_actor = contains_any_word(&lower, SECRET_GENERIC_ACTORS);
+        if !(verb && (written || generic_actor)) {
+            continue;
+        }
+        // If an in-circle actor/author appears before the first disclosure verb,
+        // treat the sentence as the holder's own knowledge/private writing.
+        let mut verb_positions: Vec<usize> = SECRET_DISCLOSURE_VERBS
+            .iter()
+            .filter_map(|verb| lower.match_indices(verb).next().map(|(pos, _)| pos))
+            .collect();
+        if read_aloud && let Some(pos) = lower.find("read").or_else(|| lower.find("reads")) {
+            verb_positions.push(pos);
+        }
+        let first_verb_pos = verb_positions.into_iter().min().unwrap_or(lower.len());
+        let in_circle_before = in_circle_names.iter().any(|name| {
+            let name = name.to_ascii_lowercase();
+            lower
+                .match_indices(&name)
+                .next()
+                .is_some_and(|(pos, _)| pos < first_verb_pos)
+        });
+        let holder_before = holder_names.iter().any(|name| {
+            let name = name.to_ascii_lowercase();
+            lower
+                .match_indices(&name)
+                .next()
+                .is_some_and(|(pos, _)| pos < first_verb_pos)
+        });
+        if in_circle_before || holder_before {
+            continue;
+        }
+        let quote = context_quote(scene.text, range);
+        let message = format!(
+            "book {} chapter {} scene {}: paraphrased secret fact '{}' is disclosed through a generic/reported/written channel — no recorded reveal before this scene ({})",
+            scene.book_number, scene.chapter_number, scene.scene_order, fact_id, quote
+        );
+        return Some(finding(
+            "secret_leak",
+            ClaimValidationSeverity::Warning,
+            message,
+            range,
+            vec![fact_id.to_string(), scene.scene_id.to_string()],
+            quote,
+            format!("secret-generic:{}:{}", fact_id, scene.scene_id),
         ));
     }
     None

@@ -544,9 +544,13 @@ Three enforcement surfaces:
   `knowledge_learned` save-package entry / mined delta) with `secret_of_fact_id`
   set; it expands the circle from that placement forward and never leaks backward.
 - **`secret_leak` audit** — the audience-direction complement to
-  `knowledge_timing`. A deterministic dialogue-attribution tier always runs; a
-  model-backed behavioral tier (`deep_secret_behavioral_leak_issues`) runs under
-  `deep_check`, rating-gated through the chokepoint with honest-skip.
+  `knowledge_timing`. A deterministic tier runs for exact or paraphrased secret
+  content in attributed dialogue/narration, reported speech, written
+  notices/broadsheets/letters read aloud, and role/collective disclosers
+  (`a dockworker`, `the clerk`, `everyone`). Holder/in-circle actors and
+  dream/memory/flashback/rumor frames stay silent. A model-backed behavioral
+  tier (`deep_secret_behavioral_leak_issues`) runs under `deep_check`,
+  rating-gated through the chokepoint with honest-skip.
 - **Reader-visibility rule for reader artifacts** (below) is deliberately stricter
   than the character-facing context gate.
 
