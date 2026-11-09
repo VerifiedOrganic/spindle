@@ -155,6 +155,21 @@ fn knowledge_negation_time_and_thin_overlap_controls_do_not_flag() {
 }
 
 #[test]
+fn knowledge_paraphrase_handles_curly_punctuation_and_multibyte_names() {
+    let fact = knowledge_fact(
+        "Commander Varek poisoned the well at Salt Spire",
+        &["Caelen Drávos"],
+        16,
+    );
+    for text in [
+        "Caelen Drávos warned the guards about Varek’s attack at Salt Spire.",
+        "Caelen Drávos warned the guards about Varek’s attack at Salt Spire — “and worse.”",
+    ] {
+        let _ = detect_knowledge_paraphrase_leak(&scene(text), &fact);
+    }
+}
+
+#[test]
 fn secret_narration_leak_is_detected_but_negation_and_dialogue_are_not() {
     let candidate = SecretValidationCandidateV1 {
         fact_id: "canonical_fact:secret".into(),

@@ -364,6 +364,16 @@ fn tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn floor_char_boundary(text: &str, mut index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
 fn word_indices(haystack: &str, needle: &str) -> Vec<usize> {
     let needle = needle.to_ascii_lowercase();
     if needle.is_empty() {
@@ -420,7 +430,10 @@ fn communication_is_negated(sentence_lower: &str, verb_index: usize, verb: &str)
     if NEGATED_VERB_PREFIXES.iter().any(|cue| prefix.contains(cue)) {
         return true;
     }
-    let suffix_end = (verb_index + verb.len() + 24).min(sentence_lower.len());
+    let suffix_end = floor_char_boundary(
+        sentence_lower,
+        (verb_index + verb.len() + 24).min(sentence_lower.len()),
+    );
     let suffix = &sentence_lower[verb_index + verb.len()..suffix_end];
     NEGATED_VERB_SUFFIXES.iter().any(|cue| suffix.contains(cue))
 }
