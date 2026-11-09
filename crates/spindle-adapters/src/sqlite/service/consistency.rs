@@ -947,6 +947,21 @@ impl SqliteSpindleService {
                     .await?;
                 let character_by_id: BTreeMap<String, &crate::sqlite::records::Character> =
                     characters.iter().map(|c| (c.id.clone(), c)).collect();
+                let mention_records: Vec<spindle_core::character_mentions::CharacterMentionRecord> =
+                    characters
+                        .iter()
+                        .map(
+                            |character| spindle_core::character_mentions::CharacterMentionRecord {
+                                id: character.id.clone(),
+                                name: character.name.clone(),
+                                aliases: character.aliases.clone(),
+                            },
+                        )
+                        .collect();
+                let mention_resolver =
+                    spindle_core::character_mentions::CharacterMentionResolver::new(
+                        &mention_records,
+                    );
                 for scene in &scenes {
                     let scene_position =
                         (scene.book_number, scene.chapter_number, scene.scene_order);
@@ -965,10 +980,7 @@ impl SqliteSpindleService {
                         let Some(character) = character_by_id.get(&fact.character_id) else {
                             continue;
                         };
-                        if !contains_case_insensitive_word_boundary(
-                            &scene.full_text,
-                            &character.name,
-                        ) {
+                        if !mention_resolver.mentions(&scene.full_text, &character.id) {
                             continue;
                         }
                         let exact_hit = contains_case_insensitive_phrase(
@@ -989,6 +1001,9 @@ impl SqliteSpindleService {
                                 fact_id: fact.id.clone(),
                                 character_id: fact.character_id.clone(),
                                 character_names: vec![character.name.clone()],
+                                character_aliases: mention_resolver
+                                    .aliases_for(&character.id)
+                                    .to_vec(),
                                 fact: fact.fact.clone(),
                                 learned_book_number: learned_at.book_number,
                                 learned_chapter_number: learned_at.chapter_number,
@@ -1559,7 +1574,22 @@ impl SqliteSpindleService {
                             && existing.message == issue.message
                             && existing.entity_ids == issue.entity_ids
                     }) {
-                        issues.push(issue);
+                        issues.push(issue.clone());
+                    }
+                    // Stable detector-name alias: dead-character acting is a
+                    // first-class contradiction type for consumers that do not
+                    // know the historical `retcon_reachability` bucket.
+                    if matches!(
+                        finding,
+                        spindle_core::models::RetconFinding::DeadCharacterAct { .. }
+                    ) && !issues.iter().any(|existing| {
+                        existing.check_type == "dead_character_acting"
+                            && existing.message == issue.message
+                            && existing.entity_ids == issue.entity_ids
+                    }) {
+                        let mut alias = issue;
+                        alias.check_type = "dead_character_acting".to_string();
+                        issues.push(alias);
                     }
                 }
             }
@@ -2112,8 +2142,6 @@ impl SqliteSpindleService {
         // Narration/behavior scanning is deliberately out of v1 scope (deep tier,
         // next wave). Silent for projects with no secret facts.
         if should_run_check(&requested_checks_set, "secret_leak") {
-            use spindle_core::voice::{VoiceDriftCharacter, attributed_dialogue_ranges};
-
             let secret_facts = self
                 .repository
                 .list_active_canonical_facts_by_project_and_branch(&project_id, &active_branch.id)
@@ -2127,6 +2155,21 @@ impl SqliteSpindleService {
                     .repository
                     .list_characters_by_project(&project_id)
                     .await?;
+                let mention_records: Vec<spindle_core::character_mentions::CharacterMentionRecord> =
+                    characters
+                        .iter()
+                        .map(
+                            |character| spindle_core::character_mentions::CharacterMentionRecord {
+                                id: character.id.clone(),
+                                name: character.name.clone(),
+                                aliases: character.aliases.clone(),
+                            },
+                        )
+                        .collect();
+                let mention_resolver =
+                    spindle_core::character_mentions::CharacterMentionResolver::new(
+                        &mention_records,
+                    );
 
                 // Circle-at-cursor per fact is cursor-dependent, so compute it
                 // per (scene, fact). Cache the raw circle rows per fact to avoid
@@ -2180,35 +2223,27 @@ impl SqliteSpindleService {
                             .iter()
                             .filter(|character| !circle_at_cursor.contains(character.id.as_str()))
                             .filter(|character| {
-                                spindle_core::voice::character_present_in_scene(
-                                    &scene.full_text,
-                                    &VoiceDriftCharacter {
-                                        id: character.id.clone(),
-                                        name: character.name.clone(),
-                                    },
-                                )
+                                mention_resolver.mentions(&scene.full_text, &character.id)
                             })
                             .collect();
                         leakers.sort_by(|a, b| a.id.cmp(&b.id));
 
                         for character in leakers {
-                            let speaker = VoiceDriftCharacter {
-                                id: character.id.clone(),
-                                name: character.name.clone(),
-                            };
                             let dialogue_leak =
-                                attributed_dialogue_ranges(&scene.full_text, &speaker)
-                                    .into_iter()
-                                    .filter(|range| {
-                                        range.end > range.start
-                                            && range.end <= scene.full_text.len()
-                                    })
-                                    .any(|range| {
-                                        crate::sqlite::validators::contains_case_insensitive_word(
-                                            &scene.full_text[range.start..range.end],
-                                            &value,
-                                        )
-                                    });
+                                spindle_core::voice::attributed_dialogue_ranges_for_aliases(
+                                    &scene.full_text,
+                                    mention_resolver.aliases_for(&character.id),
+                                )
+                                .into_iter()
+                                .filter(|range| {
+                                    range.end > range.start && range.end <= scene.full_text.len()
+                                })
+                                .any(|range| {
+                                    crate::sqlite::validators::contains_case_insensitive_word(
+                                        &scene.full_text[range.start..range.end],
+                                        &value,
+                                    )
+                                });
                             let suggested_action = |medium: &str| {
                                 format!(
                                     "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the {medium}"
@@ -2250,10 +2285,20 @@ impl SqliteSpindleService {
                                 value: value.clone(),
                                 character_id: character.id.clone(),
                                 character_name: character.name.clone(),
+                                character_aliases: mention_resolver
+                                    .aliases_for(&character.id)
+                                    .to_vec(),
                                 other_present_character_names: characters
                                     .iter()
                                     .filter(|other| other.id != character.id)
                                     .map(|other| other.name.clone())
+                                    .collect(),
+                                other_present_character_aliases: characters
+                                    .iter()
+                                    .filter(|other| other.id != character.id)
+                                    .flat_map(|other| {
+                                        mention_resolver.aliases_for(&other.id).iter().cloned()
+                                    })
                                     .collect(),
                             };
                             if let Some(finding) =

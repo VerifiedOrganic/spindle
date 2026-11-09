@@ -7,9 +7,16 @@ pub struct VoiceDriftCharacter {
 }
 
 pub fn character_present_in_scene(scene_text: &str, character: &VoiceDriftCharacter) -> bool {
-    character_aliases(&character.name)
-        .into_iter()
-        .any(|alias| contains_alias(scene_text, &alias))
+    character_present_with_aliases(scene_text, &character_aliases(&character.name))
+}
+
+/// Presence check with resolver-provided aliases (full/forename/surname/cast
+/// nicknames, already de-ambiguated by the caller).
+pub fn character_present_with_aliases(scene_text: &str, aliases: &[String]) -> bool {
+    aliases
+        .iter()
+        .filter(|alias| !alias.trim().is_empty())
+        .any(|alias| contains_alias(scene_text, alias))
 }
 
 pub fn check_voice_drift(
@@ -75,10 +82,18 @@ pub fn attributed_dialogue_ranges(
     scene_text: &str,
     character: &VoiceDriftCharacter,
 ) -> Vec<TextByteRange> {
-    let aliases = character_aliases(&character.name);
+    attributed_dialogue_ranges_for_aliases(scene_text, &character_aliases(&character.name))
+}
+
+/// Attribution with resolver-provided aliases. Kept separate so secret_leak
+/// and voice drift share the same quote-window machinery and ambiguity rules.
+pub fn attributed_dialogue_ranges_for_aliases(
+    scene_text: &str,
+    aliases: &[String],
+) -> Vec<TextByteRange> {
     let mut ranges = Vec::new();
-    collect_attributed_ranges(scene_text, &aliases, r#""([^"]+)""#, &mut ranges);
-    collect_attributed_ranges(scene_text, &aliases, r#"“([^”]+)”"#, &mut ranges);
+    collect_attributed_ranges(scene_text, aliases, r#""([^"]+)""#, &mut ranges);
+    collect_attributed_ranges(scene_text, aliases, r#"“([^”]+)”"#, &mut ranges);
     ranges
 }
 

@@ -492,6 +492,23 @@ impl SqliteSpindleService {
             .repository
             .list_character_states_by_project_and_branch(project_id, branch_id)
             .await?;
+        let life_facts = self
+            .repository
+            .list_active_canonical_facts_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let mention_records: Vec<spindle_core::character_mentions::CharacterMentionRecord> =
+            characters
+                .iter()
+                .map(
+                    |character| spindle_core::character_mentions::CharacterMentionRecord {
+                        id: character.id.clone(),
+                        name: character.name.clone(),
+                        aliases: character.aliases.clone(),
+                    },
+                )
+                .collect();
+        let mention_resolver =
+            spindle_core::character_mentions::CharacterMentionResolver::new(&mention_records);
         let characters_by_id = characters
             .into_iter()
             .map(|character| (character.id.clone(), character))
@@ -502,13 +519,33 @@ impl SqliteSpindleService {
             .as_ref()
             .and_then(|clock| clock.temporal_mode.as_deref())
             .is_some_and(|mode| mode.eq_ignore_ascii_case("flashback"));
+        let framed_scene = [
+            "letter",
+            "dream",
+            "flashback",
+            "memory",
+            "remembered",
+            "recording",
+            "testimony",
+            "portrait",
+            "photograph",
+            "legend",
+            "rumor",
+            "rumour",
+        ]
+        .iter()
+        .any(|frame| contains_case_insensitive_word_boundary(&scene.full_text, frame));
         for (character_id, character) in &characters_by_id {
             if is_flashback {
                 continue;
             }
-            if !has_named_character_action(&scene.full_text, &character.name) {
-                continue;
-            }
+            let has_action = has_named_character_action(
+                &scene.full_text,
+                mention_resolver.aliases_for(character_id),
+            ) || has_named_character_alive_assertion(
+                &scene.full_text,
+                mention_resolver.aliases_for(character_id),
+            );
             let latest_state = states
                 .iter()
                 .filter(|state| state.character_id == *character_id)
@@ -518,26 +555,81 @@ impl SqliteSpindleService {
                     position_lte(state_position, scene_position)
                 })
                 .max_by_key(|state| (state.book_number, state.chapter_number, state.scene_order));
-            let Some(latest_state) = latest_state else {
-                continue;
+            let state_position = latest_state
+                .map(|state| (state.book_number, state.chapter_number, state.scene_order));
+            let current_scene_state = state_position == Some(scene_position);
+            // A same-scene state proves cast presence, not that a canonical
+            // death happened in this scene; only a same-scene dead status is
+            // ambiguous and withheld.
+            let state_death = if current_scene_state {
+                None
+            } else {
+                latest_state.and_then(|state| {
+                    state
+                        .status
+                        .iter()
+                        .find(|status| is_dead_status(status))
+                        .cloned()
+                })
             };
-            // A final state cannot tell us whether an action preceded a death
-            // inside this same scene. A current alive state still clears death.
-            if (
-                latest_state.book_number,
-                latest_state.chapter_number,
-                latest_state.scene_order,
-            ) == scene_position
-            {
+            // Canonical life_status facts are a second, independent death
+            // store. Only facts strictly before this scene count; a later
+            // explicit non-dead character state clears an older death.
+            let life_death = life_facts
+                .iter()
+                .filter(|fact| fact.subject_id.as_deref() == Some(character_id.as_str()))
+                .filter(|fact| {
+                    matches!(
+                        fact.predicate.trim().to_ascii_lowercase().as_str(),
+                        "life_status" | "status" | "vital_status" | "vital" | "state" | "condition"
+                    )
+                })
+                .filter_map(|fact| {
+                    let value = crate::format::canonical_fact_value(fact);
+                    if !is_dead_status(&value) {
+                        return None;
+                    }
+                    if fact.scene_id.as_deref() == Some(scene.id.as_str()) {
+                        return None;
+                    }
+                    let fact_position = (fact.book_number, fact.chapter_number);
+                    let scene_chapter = (scene.book_number, scene.chapter_number);
+                    if fact_position >= scene_chapter {
+                        return None;
+                    }
+                    Some(((fact.book_number, fact.chapter_number, 0), value))
+                })
+                .max_by_key(|(position, _)| *position);
+            // Canonical death + current-scene cast state is presence after
+            // death even when the prose uses a pronoun or an unlisted verb.
+            // Otherwise require a named/alive action to avoid mere mentions.
+            if !has_action && !(current_scene_state && life_death.is_some()) {
                 continue;
             }
-            let Some(dead_status) = latest_state
-                .status
-                .iter()
-                .find(|status| is_dead_status(status))
-                .cloned()
-            else {
+            if framed_scene && !current_scene_state && life_death.is_some() {
                 continue;
+            }
+            let dead_status = match (state_death, life_death) {
+                (Some(status), Some((fact_position, fact_status))) => {
+                    if state_position.is_some_and(|position| position >= fact_position) {
+                        status
+                    } else {
+                        fact_status
+                    }
+                }
+                (Some(status), None) => status,
+                (None, Some((fact_position, fact_status))) => {
+                    let later_living_state = latest_state.is_some_and(|state| {
+                        state_position.is_some_and(|position| position > fact_position)
+                            && !state.status.is_empty()
+                            && !state.status.iter().any(|status| is_dead_status(status))
+                    });
+                    if later_living_state {
+                        continue;
+                    }
+                    fact_status
+                }
+                (None, None) => continue,
             };
             findings.push(RetconFinding::DeadCharacterAct {
                 character_id: character_id.clone(),
@@ -577,7 +669,7 @@ impl SqliteSpindleService {
             let Some(character) = characters_by_id.get(&fact.character_id) else {
                 continue;
             };
-            if !contains_case_insensitive_word_boundary(&scene.full_text, &character.name) {
+            if !mention_resolver.mentions(&scene.full_text, &character.id) {
                 continue;
             }
             let exact_hit =
@@ -596,6 +688,7 @@ impl SqliteSpindleService {
                     fact_id: fact.id.clone(),
                     character_id: fact.character_id.clone(),
                     character_names: vec![character.name.clone()],
+                    character_aliases: mention_resolver.aliases_for(&character.id).to_vec(),
                     fact: fact.fact.clone(),
                     learned_book_number: learned_at.book_number,
                     learned_chapter_number: learned_at.chapter_number,
@@ -659,11 +752,26 @@ impl SqliteSpindleService {
             .list_temporal_interventions_by_project_and_branch(project_id, branch_id)
             .await?;
 
+        let mention_records: Vec<spindle_core::character_mentions::CharacterMentionRecord> =
+            characters
+                .iter()
+                .map(
+                    |character| spindle_core::character_mentions::CharacterMentionRecord {
+                        id: character.id.clone(),
+                        name: character.name.clone(),
+                        aliases: character.aliases.clone(),
+                    },
+                )
+                .collect();
+        let mention_resolver =
+            spindle_core::character_mentions::CharacterMentionResolver::new(&mention_records);
         let subject_names_by_id: std::collections::BTreeMap<String, Vec<String>> = characters
             .iter()
             .map(|character| {
-                let mut names = vec![character.name.clone()];
-                names.extend(character.aliases.iter().cloned());
+                let mut names = mention_resolver.aliases_for(&character.id).to_vec();
+                if names.is_empty() {
+                    names.push(character.name.clone());
+                }
                 (character.id.clone(), names)
             })
             .collect();
@@ -1885,130 +1993,289 @@ impl SqliteSpindleService {
 
 /// Conservative lexical prefilter, not a general prose claim extractor. Only a
 /// named subject followed by an action is evidence; mentions alone are not.
-fn has_named_character_action(text: &str, name: &str) -> bool {
-    if name.trim().is_empty() {
+const NARRATIVE_ACTIONS: &[&str] = &[
+    "said",
+    "says",
+    "asked",
+    "asks",
+    "whispered",
+    "whispers",
+    "shouted",
+    "shouts",
+    "stepped",
+    "steps",
+    "walked",
+    "walks",
+    "ran",
+    "runs",
+    "entered",
+    "enters",
+    "vaulted",
+    "vaults",
+    "loosed",
+    "looses",
+    "locked",
+    "locks",
+    "drew",
+    "draws",
+    "pointed",
+    "points",
+    "fired",
+    "fires",
+    "lifted",
+    "lifts",
+    "opened",
+    "opens",
+    "signed",
+    "signs",
+    "spoke",
+    "speaks",
+    "replied",
+    "replies",
+    "nodded",
+    "nods",
+    "reached",
+    "reaches",
+    "grabbed",
+    "grabs",
+    "laughed",
+    "laughs",
+    "smiled",
+    "smiles",
+    "frowned",
+    "frowns",
+    "crossed",
+    "crosses",
+    "turned",
+    "turns",
+    "moved",
+    "moves",
+    "stood",
+    "stands",
+    "sat",
+    "sits",
+    "rose",
+    "rises",
+    "climbed",
+    "climbs",
+    "knelt",
+    "kneels",
+    "fell",
+    "falls",
+    "struck",
+    "strikes",
+    "swung",
+    "swings",
+    "thrust",
+    "thrusts",
+    "kicked",
+    "kicks",
+    "pushed",
+    "pushes",
+    "pulled",
+    "pulls",
+    "carried",
+    "carries",
+    "threw",
+    "throws",
+    "caught",
+    "catches",
+    "held",
+    "holds",
+    "released",
+    "releases",
+    "attacked",
+    "attacks",
+    "defended",
+    "defends",
+    "screamed",
+    "screams",
+    "wept",
+    "weeps",
+    "cried",
+    "cries",
+    "breathed",
+    "breathes",
+    "stared",
+    "stares",
+    "looked",
+    "looks",
+    "watched",
+    "watches",
+    "listened",
+    "listens",
+    "read",
+    "reads",
+    "wrote",
+    "writes",
+    "sang",
+    "sings",
+    "danced",
+    "dances",
+    "drank",
+    "drinks",
+    "ate",
+    "eats",
+    "slept",
+    "sleeps",
+    "woke",
+    "wakes",
+    "waited",
+    "waits",
+    "returned",
+    "returns",
+    "left",
+    "leaves",
+    "arrived",
+    "arrives",
+    "followed",
+    "follows",
+    "led",
+    "leads",
+    "rode",
+    "rides",
+    "sailed",
+    "sails",
+    "flew",
+    "flies",
+    "jumped",
+    "jumps",
+    "crawled",
+    "crawls",
+    "touched",
+    "touches",
+];
+
+fn has_named_character_action(text: &str, aliases: &[String]) -> bool {
+    if aliases.is_empty() {
         return false;
     }
-    let name = name.trim().to_lowercase();
-    const ACTIONS: &[&str] = &[
-        "said",
-        "says",
-        "asked",
-        "asks",
-        "whispered",
-        "whispers",
-        "shouted",
-        "shouts",
-        "stepped",
-        "steps",
-        "walked",
-        "walks",
-        "ran",
-        "runs",
-        "entered",
-        "enters",
-        "vaulted",
-        "vaults",
-        "loosed",
-        "looses",
-        "locked",
-        "locks",
-        "drew",
-        "draws",
-        "pointed",
-        "points",
-        "fired",
-        "fires",
-        "lifted",
-        "lifts",
-        "opened",
-        "opens",
-        "signed",
-        "signs",
-        "spoke",
-        "speaks",
-        "replied",
-        "replies",
-        "nodded",
-        "nods",
-        "reached",
-        "reaches",
-        "grabbed",
-        "grabs",
-    ];
+
     text.split(['.', '!', '?', '\n']).any(|sentence| {
         let lower = sentence.to_lowercase();
-        lower.match_indices(&name).any(|(start, matched)| {
-            // Exclusions qualify this named action, not arbitrary words in
-            // its objects or another clause (e.g. a recording-room door).
-            let before = lower[..start].rsplit(';').next().unwrap_or_default();
-            let before = before.rsplit(" but ").next().unwrap_or_default();
-            let before = before.rsplit(" yet ").next().unwrap_or_default();
-            let hypothetical = ["if", "unless", "suppose", "supposing"]
+        aliases.iter().any(|alias| {
+            let name = alias.trim().to_lowercase();
+            lower.match_indices(&name).any(|(start, matched)| {
+                // Exclusions qualify this named action, not arbitrary words in
+                // its objects or another clause (e.g. a recording-room door).
+                let before = lower[..start].rsplit(';').next().unwrap_or_default();
+                let before = before.rsplit(" but ").next().unwrap_or_default();
+                let before = before.rsplit(" yet ").next().unwrap_or_default();
+                let hypothetical = ["if", "unless", "suppose", "supposing"]
+                    .iter()
+                    .any(|word| contains_case_insensitive_word_boundary(before, word));
+                let framed = [
+                    "in a flashback",
+                    "years ago",
+                    "before the death",
+                    "before her death",
+                    "before his death",
+                    "in her memory",
+                    "in his memory",
+                    "in the memory",
+                    "in a dream",
+                    "in her dream",
+                    "in his dream",
+                    "remembered how",
+                    "remembered when",
+                    "remembered that",
+                    "imagined that",
+                    "dreamed that",
+                    "the recording played",
+                ]
                 .iter()
-                .any(|word| contains_case_insensitive_word_boundary(before, word));
-            let framed = [
-                "in a flashback",
-                "years ago",
-                "before the death",
-                "before her death",
-                "before his death",
-                "in her memory",
-                "in his memory",
-                "in the memory",
-                "in a dream",
-                "in her dream",
-                "in his dream",
-                "remembered how",
-                "remembered when",
-                "remembered that",
-                "imagined that",
-                "dreamed that",
-                "the recording played",
-            ]
-            .iter()
-            .any(|frame| {
-                before
-                    .trim_end()
-                    .trim_end_matches([',', ':'])
-                    .trim_end()
-                    .ends_with(frame)
-            });
-            let framed_subject = [
-                "on the recording,",
-                "in the recording,",
-                "a ghost",
-                "the ghost",
-                "a hologram of",
-                "the hologram of",
-            ]
-            .iter()
-            .any(|frame| before.trim_end().ends_with(frame));
-            if hypothetical || framed || framed_subject {
-                return false;
-            }
-            if lower[..start]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric())
-            {
-                return false;
-            }
-            let tail = &lower[start + matched.len()..];
-            if !tail.starts_with(char::is_whitespace) {
-                return false;
-            }
-            let mut words = tail.split_whitespace();
-            let first = words.next().unwrap_or_default();
-            let verb =
-                if ["quietly", "quickly", "slowly", "suddenly", "also", "then"].contains(&first) {
+                .any(|frame| {
+                    before
+                        .trim_end()
+                        .trim_end_matches([',', ':'])
+                        .trim_end()
+                        .ends_with(frame)
+                });
+                let framed_subject = [
+                    "on the recording,",
+                    "in the recording,",
+                    "a ghost",
+                    "the ghost",
+                    "a hologram of",
+                    "the hologram of",
+                ]
+                .iter()
+                .any(|frame| before.trim_end().ends_with(frame));
+                if hypothetical || framed || framed_subject {
+                    return false;
+                }
+                if lower[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric())
+                {
+                    return false;
+                }
+                let tail = &lower[start + matched.len()..];
+                if !tail.starts_with(char::is_whitespace) {
+                    return false;
+                }
+                let mut words = tail.split_whitespace();
+                let first = words.next().unwrap_or_default();
+                let verb = if ["quietly", "quickly", "slowly", "suddenly", "also", "then"]
+                    .contains(&first)
+                {
                     words.next().unwrap_or_default()
                 } else {
                     first
                 };
-            ACTIONS.contains(&verb.trim_matches(|c: char| !c.is_alphabetic()))
+                let verb = verb.trim_matches(|c: char| !c.is_alphabetic());
+                NARRATIVE_ACTIONS.contains(&verb) || looks_like_narrative_verb(verb)
+            })
         })
     })
+}
+
+/// Explicit post-death aliveness assertions ("was still alive", "kept
+/// breathing") are acting evidence even though they use a copula rather than a
+/// narrative verb. Keep the phrase list tight so memory/negation controls do
+/// not become dead-character hits.
+fn has_named_character_alive_assertion(text: &str, aliases: &[String]) -> bool {
+    const ALIVE_PHRASES: &[&str] = &[
+        "was alive",
+        "is alive",
+        "still alive",
+        "was still alive",
+        "is still alive",
+        "was breathing",
+        "is breathing",
+        "still breathing",
+        "kept breathing",
+        "had survived",
+        "has survived",
+    ];
+    text.split(['.', '!', '?', '\n']).any(|sentence| {
+        let lower = sentence.to_ascii_lowercase();
+        aliases.iter().any(|alias| {
+            let alias = alias.trim().to_ascii_lowercase();
+            !alias.is_empty()
+                && lower.match_indices(&alias).any(|(start, matched)| {
+                    lower[..start]
+                        .chars()
+                        .next_back()
+                        .is_none_or(|ch| !ch.is_alphanumeric())
+                        && lower[start + matched.len()..].starts_with(|ch: char| ch.is_whitespace())
+                        && ALIVE_PHRASES.iter().any(|phrase| lower.contains(phrase))
+                })
+        })
+    })
+}
+
+/// Broad, conservative verb shape fallback: past-tense/present-participle
+/// narrative verbs not enumerated above. State adjectives that happen to end
+/// in -ed are excluded so "was tired" is not an action.
+fn looks_like_narrative_verb(verb: &str) -> bool {
+    const NON_ACTION_ED: &[&str] = &[
+        "bed", "red", "need", "feed", "seed", "shed", "wed", "dead", "tired", "sacred", "wicked",
+        "rugged", "jagged", "naked", "aged", "indeed", "hundred", "afraid",
+    ];
+    (verb.len() > 3 && (verb.ends_with("ed") || verb.ends_with("ing")))
+        && !NON_ACTION_ED.contains(&verb)
 }
 
 #[cfg(test)]
@@ -2017,6 +2284,7 @@ mod dead_action_tests {
 
     #[test]
     fn named_actions_require_unqualified_narrative_evidence() {
+        let aliases = vec!["Veyra".to_string()];
         for text in [
             "Veyra stepped into the hall.",
             "Veyra quietly opened the door.",
@@ -2028,7 +2296,7 @@ mod dead_action_tests {
             "In a flashback exhibit room, Veyra opened the door.",
             "Garrick remembered how Eli died, but Veyra opened the door.",
         ] {
-            assert!(has_named_character_action(text, "Veyra"), "{text}");
+            assert!(has_named_character_action(text, &aliases), "{text}");
         }
         for text in [
             "Garrick remembered Veyra and whispered a prayer.",
@@ -2045,7 +2313,7 @@ mod dead_action_tests {
             "Veyra would have opened the door.",
             "OtherVeyra stepped into the hall.",
         ] {
-            assert!(!has_named_character_action(text, "Veyra"), "{text}");
+            assert!(!has_named_character_action(text, &aliases), "{text}");
         }
     }
 }
