@@ -185,8 +185,8 @@ async fn read_project_resource_dispatches_simple_and_paginated_shapes() {
 #[tokio::test]
 async fn search_bible_returns_results_in_both_modes() {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
-        CreateCharacterInput, SearchBibleInput, SearchBibleMode,
+        CharacterStatePatch, CharacterVoiceProfileData, CreateCharacterInput, SearchBibleInput,
+        SearchBibleMode,
     };
     let (_tmp, svc) = fresh_service().await;
     let proj = svc
@@ -220,7 +220,7 @@ async fn search_bible_returns_results_in_both_modes() {
             established_in_scene_id: None,
             updated_at: None,
         },
-        emotional_profile: CharacterEmotionalProfileData {
+        emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
             base_emotions: std::collections::BTreeMap::new(),
             suppressed: Vec::new(),
             triggers: Vec::new(),
@@ -281,9 +281,9 @@ async fn search_bible_returns_results_in_both_modes() {
 #[tokio::test]
 async fn full_mcp_priority_flow_through_service() {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
-        ContentRating, CreateBranchInput, CreateCharacterInput, CreateLocationInput,
-        CreateRelationshipInput, SaveSceneDraftInput, SwitchBranchInput, WorldStateInput,
+        CharacterStatePatch, CharacterVoiceProfileData, ContentRating, CreateBranchInput,
+        CreateCharacterInput, CreateLocationInput, CreateRelationshipInput, SaveSceneDraftInput,
+        SwitchBranchInput, WorldStateInput,
     };
     let (_tmp, svc) = fresh_service().await;
 
@@ -321,7 +321,7 @@ async fn full_mcp_priority_flow_through_service() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -358,7 +358,7 @@ async fn full_mcp_priority_flow_through_service() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -465,10 +465,10 @@ async fn full_mcp_priority_flow_through_service() {
 #[tokio::test]
 async fn end_to_end_full_flow_against_sqlite() {
     use spindle_core::models::{
-        CanonicalFactScope, CharacterEmotionalProfileData, CharacterStatePatch,
-        CharacterVoiceProfileData, CommitCharacterStateInput, ContentRating, CreateBranchInput,
-        CreateCharacterInput, CreateLocationInput, CreateProjectInput, CreateRelationshipInput,
-        PlanChapterInput, PlanChapterSceneInput, RecordKnowledgeInput, RegisterCanonicalFactInput,
+        CanonicalFactScope, CharacterStatePatch, CharacterVoiceProfileData,
+        CommitCharacterStateInput, ContentRating, CreateBranchInput, CreateCharacterInput,
+        CreateLocationInput, CreateProjectInput, CreateRelationshipInput, PlanChapterInput,
+        PlanChapterSceneInput, RecordKnowledgeInput, RegisterCanonicalFactInput,
         SaveSceneDraftInput, SaveSummaryInput, SearchBibleInput, SearchBibleMode, StoryPlacement,
         SwitchBranchInput, UpdateRelationshipInput, WorldStateInput,
     };
@@ -507,7 +507,7 @@ async fn end_to_end_full_flow_against_sqlite() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: vec!["fear".into()],
                 triggers: Vec::new(),
@@ -543,7 +543,7 @@ async fn end_to_end_full_flow_against_sqlite() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -1334,10 +1334,10 @@ async fn compare_alternatives_ranks_by_quality_score() {
 #[tokio::test]
 async fn style_enforcement_pipeline_flags_offgenre_comedy_scene() {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
-        CheckConsistencyInput, ConsistencyScopeInput, ContentRating, ContextFormat,
-        CreateCharacterInput, CreateLocationInput, CreateWorldRuleInput, GetSceneContextInput,
-        RunDualPersonaReviewInput, SaveSceneDraftInput, SetNarratorVoiceInput, WorldStateInput,
+        CharacterStatePatch, CharacterVoiceProfileData, CheckConsistencyInput,
+        ConsistencyScopeInput, ContentRating, ContextFormat, CreateCharacterInput,
+        CreateLocationInput, CreateWorldRuleInput, GetSceneContextInput, RunDualPersonaReviewInput,
+        SaveSceneDraftInput, SetNarratorVoiceInput, WorldStateInput,
     };
 
     let (_tmp, svc) = fresh_service_local().await;
@@ -1399,7 +1399,7 @@ async fn style_enforcement_pipeline_flags_offgenre_comedy_scene() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -2053,8 +2053,8 @@ async fn update_world_rule_style_contradicts_reader_contract_warns() {
 #[tokio::test]
 async fn get_entity_character_arc_projects_milestones() {
     use spindle_core::models::{
-        CharacterArcMilestone, CharacterEmotionalProfileData, CharacterVoiceProfileData,
-        CreateCharacterArcInput, CreateCharacterInput, StoryPlacement,
+        CharacterArcMilestone, CharacterVoiceProfileData, CreateCharacterArcInput,
+        CreateCharacterInput, StoryPlacement,
     };
 
     let (_tmp, svc) = fresh_service().await;
@@ -2080,7 +2080,7 @@ async fn get_entity_character_arc_projects_milestones() {
             role: "protagonist".into(),
             realm: None,
             voice_profile: CharacterVoiceProfileData::default(),
-            emotional_profile: CharacterEmotionalProfileData::default(),
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData::default(),
             initial_state: None,
         })
         .await
@@ -2146,8 +2146,7 @@ async fn get_entity_character_arc_projects_milestones() {
 #[tokio::test]
 async fn get_entity_returns_snapshot_for_character_subject() {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
-        CreateCharacterInput, GetEntityInput,
+        CharacterStatePatch, CharacterVoiceProfileData, CreateCharacterInput, GetEntityInput,
     };
     use spindle_core::subject::SubjectTable;
 
@@ -2183,7 +2182,7 @@ async fn get_entity_returns_snapshot_for_character_subject() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -2247,8 +2246,8 @@ async fn get_entity_rejects_project_subject_table() {
 #[tokio::test]
 async fn get_character_snapshot_unpacks_into_output_fields() {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
-        CreateCharacterInput, GetCharacterSnapshotInput,
+        CharacterStatePatch, CharacterVoiceProfileData, CreateCharacterInput,
+        GetCharacterSnapshotInput,
     };
 
     let (_tmp, svc) = fresh_service().await;
@@ -2283,7 +2282,7 @@ async fn get_character_snapshot_unpacks_into_output_fields() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -2708,9 +2707,8 @@ async fn check_consistency_happy_path_no_blocking_issues() {
 #[tokio::test]
 async fn commit_surfaces_premature_knowledge_retcon() {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterVoiceProfileData, CommitSceneChangesInput,
-        ContentRating, CreateCharacterInput, RecordKnowledgeInput, RetconFinding,
-        SaveSceneDraftInput, StoryPlacement,
+        CharacterVoiceProfileData, CommitSceneChangesInput, ContentRating, CreateCharacterInput,
+        RecordKnowledgeInput, RetconFinding, SaveSceneDraftInput, StoryPlacement,
     };
 
     let (_tmp, svc) = fresh_service().await;
@@ -2745,7 +2743,7 @@ async fn commit_surfaces_premature_knowledge_retcon() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -3278,9 +3276,8 @@ async fn check_consistency_flags_pacing_drift_on_sustained_sag() {
 #[tokio::test]
 async fn check_consistency_flags_premature_knowledge() {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterVoiceProfileData, CheckConsistencyInput,
-        ConsistencyScopeInput, ContentRating, CreateCharacterInput, RecordKnowledgeInput,
-        SaveSceneDraftInput, StoryPlacement,
+        CharacterVoiceProfileData, CheckConsistencyInput, ConsistencyScopeInput, ContentRating,
+        CreateCharacterInput, RecordKnowledgeInput, SaveSceneDraftInput, StoryPlacement,
     };
 
     let (_tmp, svc) = fresh_service().await;
@@ -3315,7 +3312,7 @@ async fn check_consistency_flags_premature_knowledge() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -3388,9 +3385,9 @@ async fn check_consistency_flags_premature_knowledge() {
 #[tokio::test]
 async fn save_summary_recomputes_pacing_over_budget() {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterVoiceProfileData, CheckConsistencyInput,
-        ConsistencyScopeInput, CreateCharacterArcInput, CreateCharacterInput,
-        CreatePacingConfigInput, SaveSummaryInput, SetArcPacingConstraintsInput,
+        CharacterVoiceProfileData, CheckConsistencyInput, ConsistencyScopeInput,
+        CreateCharacterArcInput, CreateCharacterInput, CreatePacingConfigInput, SaveSummaryInput,
+        SetArcPacingConstraintsInput,
     };
     use std::collections::BTreeMap;
 
@@ -3426,7 +3423,7 @@ async fn save_summary_recomputes_pacing_over_budget() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -3594,9 +3591,8 @@ async fn create_pacing_config_and_curve_upsert_instead_of_failing_on_recreate() 
 #[tokio::test]
 async fn revise_scene_emits_voice_drift_finding() {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterVoiceProfileData, ContentRating, CreateBookInput,
-        CreateBranchInput, CreateChapterInput, ReviseSceneInput, SaveSceneDraftInput,
-        SwitchBranchInput,
+        CharacterVoiceProfileData, ContentRating, CreateBookInput, CreateBranchInput,
+        CreateChapterInput, ReviseSceneInput, SaveSceneDraftInput, SwitchBranchInput,
     };
 
     let (_tmp, svc) = fresh_service().await;
@@ -3648,7 +3644,7 @@ async fn revise_scene_emits_voice_drift_finding() {
             established_in_scene_id: None,
             updated_at: None,
         },
-        emotional_profile: CharacterEmotionalProfileData {
+        emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
             base_emotions: std::collections::BTreeMap::new(),
             suppressed: Vec::new(),
             triggers: Vec::new(),
@@ -3733,9 +3729,8 @@ async fn revise_scene_emits_voice_drift_finding() {
 #[tokio::test]
 async fn check_consistency_subjects_narrowing_filters_scene_set() {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
-        CheckConsistencyInput, ConsistencyScopeInput, ContentRating, CreateCharacterInput,
-        SaveSceneDraftInput,
+        CharacterStatePatch, CharacterVoiceProfileData, CheckConsistencyInput,
+        ConsistencyScopeInput, ContentRating, CreateCharacterInput, SaveSceneDraftInput,
     };
 
     let (_tmp, svc) = fresh_service().await;
@@ -3771,7 +3766,7 @@ async fn check_consistency_subjects_narrowing_filters_scene_set() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -4040,10 +4035,10 @@ async fn read_project_resource_dispatches_scene_impact_arms() {
 mod secret_leak_audit {
     use super::*;
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterVoiceProfileData, CheckConsistencyInput,
-        ConsistencyScopeInput, ContentRating, CreateCharacterInput, CreateLocationInput,
-        RecordKnowledgeInput, RegisterCanonicalFactInput, SaveSceneDraftInput, SecrecyScope,
-        StoryPlacement, WorldStateInput,
+        CharacterVoiceProfileData, CheckConsistencyInput, ConsistencyScopeInput, ContentRating,
+        CreateCharacterInput, CreateLocationInput, RecordKnowledgeInput,
+        RegisterCanonicalFactInput, SaveSceneDraftInput, SecrecyScope, StoryPlacement,
+        WorldStateInput,
     };
 
     async fn make_character(svc: &SqliteSpindleService, project_id: &str, name: &str) -> String {
@@ -4064,7 +4059,7 @@ mod secret_leak_audit {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -4429,9 +4424,8 @@ mod secret_leak_audit {
 mod secret_leak_deep {
     use super::*;
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterVoiceProfileData, CheckConsistencyInput,
-        ConsistencyScopeInput, ContentRating, CreateCharacterInput, RegisterCanonicalFactInput,
-        SaveSceneDraftInput, SecrecyScope,
+        CharacterVoiceProfileData, CheckConsistencyInput, ConsistencyScopeInput, ContentRating,
+        CreateCharacterInput, RegisterCanonicalFactInput, SaveSceneDraftInput, SecrecyScope,
     };
 
     async fn make_character(svc: &SqliteSpindleService, project_id: &str, name: &str) -> String {
@@ -4452,7 +4446,7 @@ mod secret_leak_deep {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -5703,10 +5697,9 @@ fn world_rule_deep_check_prompt_carries_scene_content_rating() {
 async fn recommitting_scene_continuity_package_reverses_omitted_pairs_and_respects_mined_precedence()
  {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterVoiceProfileData, CommitContinuityGate,
-        CommitSceneChangesInput, ContentRating, CreateCharacterInput, CreateProjectInput,
-        CreateRelationshipInput, RelationshipUpdateEntry, SaveSceneDraftInput,
-        UpdateRelationshipInput,
+        CharacterVoiceProfileData, CommitContinuityGate, CommitSceneChangesInput, ContentRating,
+        CreateCharacterInput, CreateProjectInput, CreateRelationshipInput, RelationshipUpdateEntry,
+        SaveSceneDraftInput, UpdateRelationshipInput,
     };
 
     let (_tmp, svc) = fresh_service().await;
@@ -5744,7 +5737,7 @@ async fn recommitting_scene_continuity_package_reverses_omitted_pairs_and_respec
                     established_in_scene_id: None,
                     updated_at: None,
                 },
-                emotional_profile: CharacterEmotionalProfileData {
+                emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                     base_emotions: std::collections::BTreeMap::new(),
                     suppressed: Vec::new(),
                     triggers: Vec::new(),
@@ -5924,9 +5917,9 @@ async fn recommitting_scene_continuity_package_reverses_omitted_pairs_and_respec
 #[tokio::test]
 async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
     use spindle_core::models::{
-        CharacterEmotionalProfileData, CharacterStatePatch, CharacterVoiceProfileData,
-        CommitCharacterStateInput, CommitContinuityGate, CommitSceneChangesInput, ContentRating,
-        CreateCharacterInput, CreateProjectInput, SaveSceneDraftInput,
+        CharacterStatePatch, CharacterVoiceProfileData, CommitCharacterStateInput,
+        CommitContinuityGate, CommitSceneChangesInput, ContentRating, CreateCharacterInput,
+        CreateProjectInput, SaveSceneDraftInput,
     };
 
     assert!(!is_dead_status("dead tired"));
@@ -5980,7 +5973,7 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -6010,7 +6003,7 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
                 established_in_scene_id: None,
                 updated_at: None,
             },
-            emotional_profile: CharacterEmotionalProfileData {
+            emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
                 base_emotions: std::collections::BTreeMap::new(),
                 suppressed: Vec::new(),
                 triggers: Vec::new(),
@@ -6476,6 +6469,145 @@ mod claim_validation_lanes {
         .await
         .unwrap()
         .scene_id
+    }
+
+    #[tokio::test]
+    async fn dead_character_reads_canonical_life_status_and_first_names() {
+        use spindle_core::models::RegisterCanonicalFactInput;
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "canonical-death".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "the dead stay dead".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let sela = svc
+            .create_character(CreateCharacterInput {
+                aliases: vec!["The Kestrel".into()],
+                project_id: project.project_id.clone(),
+                name: "Sela Voss".into(),
+                summary: "Cartographer.".into(),
+                role: "protagonist".into(),
+                realm: None,
+                voice_profile: CharacterVoiceProfileData {
+                    tone: None,
+                    vocabulary: Vec::new(),
+                    sentence_structure: Vec::new(),
+                    tics: Vec::new(),
+                    forbidden_words: Vec::new(),
+                    example_lines: Vec::new(),
+                    established_in_scene_id: None,
+                    updated_at: None,
+                },
+                emotional_profile: spindle_core::models::CharacterEmotionalProfileData {
+                    base_emotions: std::collections::BTreeMap::new(),
+                    suppressed: Vec::new(),
+                    triggers: Vec::new(),
+                    defense_mechanisms: Vec::new(),
+                    flex_range: None,
+                },
+                initial_state: None,
+            })
+            .await
+            .unwrap();
+        let first = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 1,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "Sela Voss closed the atlas and went still.".into(),
+                summary: "Sela dies.".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        svc.register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project.project_id.clone(),
+            scene_id: Some(first.scene_id.clone()),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: Some("life_status".into()),
+            key: Some("Sela Voss:life_status".into()),
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(sela.character_id.clone()),
+            predicate: Some("life_status".into()),
+            value_kind: Some("text".into()),
+            value_text: Some("dead".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: None,
+        })
+        .await
+        .unwrap();
+        let _ = svc
+            .create_chapter(spindle_core::models::CreateChapterInput {
+                project_id: project.project_id.clone(),
+                book_id: None,
+                book_number: Some(1),
+                chapter_number: Some(2),
+                title: None,
+            })
+            .await;
+        let act = svc
+            .save_scene_draft(SaveSceneDraftInput {
+                project_id: project.project_id.clone(),
+                book_number: 1,
+                chapter_number: 2,
+                chapter_id: None,
+                scene_order: 1,
+                full_text: "She nodded at the map as if nothing had happened.".into(),
+                summary: "Sela acts after death.".into(),
+                content_rating: ContentRating::General,
+                tone: None,
+                generation_id: None,
+                source_path: None,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        svc.commit_character_state(CommitCharacterStateInput {
+            character_id: sela.character_id.clone(),
+            scene_id: act.scene_id.clone(),
+            changes: CharacterStatePatch {
+                emotional_state: std::collections::BTreeMap::new(),
+                goals: None,
+                status: None,
+                notes: Some(vec!["present in this scene".into()]),
+                source_summary: None,
+            },
+        })
+        .await
+        .unwrap();
+        let issues = run_checks(&svc, &project.project_id, "retcon_reachability").await;
+        let dead = issues
+            .iter()
+            .find(|issue| {
+                issue.check_type == "retcon_reachability" && issue.message.contains("Sela Voss")
+            })
+            .expect("canonical life_status death must flag a first-name action");
+        assert!(dead.message.contains("life_status") || dead.message.contains("dead"));
     }
 
     async fn run_checks(

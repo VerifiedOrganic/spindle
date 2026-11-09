@@ -487,8 +487,6 @@ removal plan.
   rating cannot be established. See "Mixed-rating chapters" in
   `docs/spindle-agent-config.md`.
 
-### Fixed
-
 - `docs/spindle-agent-config.md` no longer claims `save_scene_draft` persists
   the server-held generation output for explicit saves. The caller's
   `full_text` has been authoritative since the receipt-stub data-loss fix; the

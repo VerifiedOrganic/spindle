@@ -412,6 +412,26 @@ carries an explicit `Degraded`/`Incomplete` status instead of reporting a clean
 scan. Findings carry check type, severity, evidence span/quote, entity ids, lane
 and a stable dedup key.
 
+`spindle_core::character_mentions` is the shared cast mention resolver: it
+builds full-name, forename, surname and explicit cast-alias candidates, and
+disables any candidate that could refer to more than one character. Knowledge
+timing, secret presence/attribution and dead-character detection all use it, so
+first-name prose is visible without guessing across a shared forename. Pronouns
+are only used conservatively (a nearest named antecedent, or a known
+current-scene cast state); the resolver never treats a bare pronoun as a
+character mention.
+
+Dead-character detection reads both `character_states.status` and canonical
+`life_status` facts. A canonical death strictly before the scene plus a
+current-scene cast state or named/alive action is a contradiction; memories,
+letters, dreams, flashbacks, recordings, corpses and graves are framed out. The
+existing `retcon_reachability` issue is retained and a stable
+`dead_character_acting` alias is emitted for consumers that expect the
+detector's first-class name. Attribute prose drift now covers eye/hair/skin
+colour, handedness, height, scars and build with plural/inflected heads,
+family-specific antonyms and conservative negated forms ("not tall", "no scar"),
+while keeping the subject + head + antonym precision gate.
+
 The deterministic lanes are wired into `check_consistency`'s
 `canonical_fact_prose_drift`, `knowledge_timing` and `secret_leak` checks and
 into the shared retcon scanner used by verify/commit. World-rule scanning
