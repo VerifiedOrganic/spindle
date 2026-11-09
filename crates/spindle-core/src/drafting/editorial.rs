@@ -1223,6 +1223,11 @@ pub struct EditorialControllerStateV1 {
     /// Prose-free attribution events linked to `model_call` ids.
     #[serde(default)]
     pub attribution: Vec<EditorialAttributionV1>,
+    /// Stable per-chapter-edit reservation namespaces keyed by
+    /// `chapter:base_hash:proposal_id`. Persisted so a proposal keeps the same
+    /// identity across selection subsets and restarts.
+    #[serde(default)]
+    pub chapter_edit_namespaces: std::collections::BTreeMap<String, u32>,
 }
 
 fn default_controller_schema_version() -> String {
@@ -1244,6 +1249,7 @@ impl EditorialControllerStateV1 {
             settings,
             scenes: Vec::new(),
             attribution: Vec::new(),
+            chapter_edit_namespaces: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1280,6 +1286,24 @@ impl EditorialControllerStateV1 {
             .fold(EditorialBudgetUsage::default(), |usage, (_, scene)| {
                 usage.saturating_add(scene.ledger.run_used())
             })
+    }
+
+    /// Allocate (or reuse) a durable namespace for one chapter-edit proposal.
+    /// Identity must include the chapter, base hash, and proposal id.
+    pub fn allocate_chapter_edit_namespace(&mut self, identity: &str) -> u32 {
+        if let Some(namespace) = self.chapter_edit_namespaces.get(identity) {
+            return *namespace;
+        }
+        let next = self
+            .chapter_edit_namespaces
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.chapter_edit_namespaces
+            .insert(identity.to_string(), next);
+        next
     }
 
     pub fn attribution(&self, event_id: &str) -> Option<&EditorialAttributionV1> {

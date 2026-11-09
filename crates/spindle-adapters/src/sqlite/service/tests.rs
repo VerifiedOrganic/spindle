@@ -2946,19 +2946,19 @@ async fn selected_chapter_edit_that_loses_the_judge_keeps_accepted_prose() {
         windows_skipped: 0,
         no_edit_reason: None,
     };
-    let selection = ChapterEditSelectionV1 {
+    let first_selection = ChapterEditSelectionV1 {
         chapter_number: 1,
-        selected_proposal_ids: vec!["proposal:1".into(), "proposal:2".into()],
+        selected_proposal_ids: vec!["proposal:1".into()],
         author_note: "try the opening".into(),
     };
-    let application = service
+    let first = service
         .apply_editorial_chapter_edits(
             &controller_path,
             0,
             &draft_path,
             "chapter 1 context",
             &critique,
-            &selection,
+            &first_selection,
             &RevisionBudget::scene_default("venice-model".into(), 20_000),
             &JudgeBudget::scene_default("venice-model".into(), 20_000),
             Some(&VerifiedFixtureTokenizer),
@@ -2966,18 +2966,35 @@ async fn selected_chapter_edit_that_loses_the_judge_keeps_accepted_prose() {
             10,
         )
         .await
-        .expect("chapter edit applies");
-    assert_eq!(application.edits.len(), 2);
-    assert!(application.edits.iter().all(|edit| !edit.accepted));
-    assert!(
-        application
-            .edits
-            .iter()
-            .all(|edit| edit.stage == "accepted_original"),
-        "each proposal must reach its own terminal judge path: {:?}",
-        application.edits
-    );
-    assert!(application.invalidation.affected_scene_ids.is_empty());
+        .expect("first chapter edit applies");
+    assert_eq!(first.edits.len(), 1);
+    assert!(!first.edits[0].accepted);
+    assert_eq!(first.edits[0].stage, "accepted_original");
+    let second_selection = ChapterEditSelectionV1 {
+        chapter_number: 1,
+        selected_proposal_ids: vec!["proposal:2".into()],
+        author_note: "then the ending".into(),
+    };
+    let second = service
+        .apply_editorial_chapter_edits(
+            &controller_path,
+            0,
+            &draft_path,
+            "chapter 1 context",
+            &critique,
+            &second_selection,
+            &RevisionBudget::scene_default("venice-model".into(), 20_000),
+            &JudgeBudget::scene_default("venice-model".into(), 20_000),
+            Some(&VerifiedFixtureTokenizer),
+            RevisionLoopOptions::default(),
+            20,
+        )
+        .await
+        .expect("second chapter edit applies");
+    assert_eq!(second.edits.len(), 1);
+    assert!(!second.edits[0].accepted);
+    assert_eq!(second.edits[0].stage, "accepted_original");
+    assert!(second.invalidation.affected_scene_ids.is_empty());
     assert_eq!(std::fs::read(&draft_path).unwrap(), draft_before);
     assert_eq!(
         server.join().unwrap(),
@@ -2990,6 +3007,11 @@ async fn selected_chapter_edit_that_loses_the_judge_keeps_accepted_prose() {
         controller.scenes[0].ledger.scene_reservations.len(),
         4,
         "two distinct Revise and two distinct Judge reservations"
+    );
+    assert_eq!(
+        controller.chapter_edit_namespaces.len(),
+        2,
+        "each proposal keeps a stable durable namespace across selection subsets"
     );
     let _ = (
         DirectiveSeverity::Major,
@@ -3431,7 +3453,7 @@ async fn chapter_critic_dispatches_each_planned_window_and_aggregates() {
         ),
         (
             200,
-            serde_json::json!({"choices": [{"message": {"content": critique("scene:2", text_2, "2")}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 200, "completion_tokens": 40, "total_tokens": 240}}).to_string(),
+            serde_json::json!({"choices": [{"message": {"content": critique("scene:2", text_2, "1")}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 200, "completion_tokens": 40, "total_tokens": 240}}).to_string(),
         ),
     ];
     let (endpoint, server) = spawn_json_response_server(responses);
@@ -3530,6 +3552,36 @@ async fn chapter_critic_dispatches_each_planned_window_and_aggregates() {
     assert_eq!(windows_skipped, 0);
     assert_eq!(critique.edit_proposals.len(), 2);
     assert_eq!(critique.concerns.len(), 2);
+    let proposal_ids: std::collections::BTreeSet<_> = critique
+        .edit_proposals
+        .iter()
+        .map(|proposal| proposal.id.clone())
+        .collect();
+    assert_eq!(
+        proposal_ids.len(),
+        2,
+        "window-local proposal ids must be remapped"
+    );
+    let concern_ids: std::collections::BTreeSet<_> = critique
+        .concerns
+        .iter()
+        .map(|concern| concern.id.clone())
+        .collect();
+    assert_eq!(
+        concern_ids.len(),
+        2,
+        "window-local concern ids must be remapped"
+    );
+    let selection = spindle_core::drafting::ChapterEditSelectionV1 {
+        chapter_number: 1,
+        selected_proposal_ids: vec![critique.edit_proposals[0].id.clone()],
+        author_note: "only the first".into(),
+    };
+    assert_eq!(
+        selection.selected_proposals(&critique).len(),
+        1,
+        "remapped ids must be independently selectable"
+    );
     assert!(std::path::Path::new(&critique_artifact_path).exists());
     let controller =
         crate::drafting::editorial::load_editorial_controller(&controller_path).expect("reload");

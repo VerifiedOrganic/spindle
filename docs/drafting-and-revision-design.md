@@ -999,18 +999,22 @@ activates a prose-affecting default.
 - `run_editorial_chapter_critic` dispatches one `ChapterCritique` call per
   planned window, each with its own charged admission identity, and validates
   each result against that window's exact scene text. It persists per-window
-  critiques plus an aggregate artifact, aggregates concerns/proposals (still
-  capped at two chapter edits), and records `windows_reviewed` /
-  `windows_skipped` so a partial pass is never reported as full coverage. A
+  critiques plus an aggregate artifact, remaps each window's local concern,
+  proposal, and author-decision IDs with a stable window prefix (so equal local
+  IDs remain independently selectable), revalidates the merged critique, caps
+  chapter edits at two, and records `windows_reviewed` / `windows_skipped` so a
+  partial pass is never reported as full coverage. A
   missing route/tokenizer/price returns an honest skip; no prose or plan is
   mutated.
 - Applying edits requires an explicit `ChapterEditSelectionV1`. Each selected
   proposal is converted to a scene `CritiqueDirective` and flows through the
   existing deterministic-check + doubled-order judge loop with
   `pre_selected_directives` (the scene critic is skipped) and bounded chapter
-  context included in both judge orders. Each selected proposal gets a distinct
-  durable reservation namespace so a retained first proposal cannot block or
-  reuse a second proposal's charge. Unselected proposals are never applied;
+  context included in both judge orders. Each selected proposal gets a durable
+  reservation namespace keyed by chapter/base hash/proposal ID and persisted in
+  the controller, so a retained first proposal cannot block or reuse a second
+  proposal's charge and the identity survives selection-subset changes and
+  restarts. Unselected proposals are never applied;
   stale base hashes, invalid anchors, and scene mismatches are skipped. Acceptance returns a
   `ChapterInvalidationPlanV1` covering the chapter summary, scene extraction,
   beat annotations, reader notes, re-extraction, and downstream revalidation.

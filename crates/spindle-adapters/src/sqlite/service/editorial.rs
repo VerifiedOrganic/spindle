@@ -661,20 +661,22 @@ impl SqliteSpindleService {
                         coverage.chapter_number, window.index
                     ));
                     save_chapter_critique(&window_path, &result.critique)?;
-                    for concern in result.critique.concerns {
+                    let mut window_critique = result.critique;
+                    prefix_window_ids(&window.format_key(), &mut window_critique);
+                    for concern in window_critique.concerns {
                         if seen_concern_ids.insert(concern.id.clone()) {
                             aggregate.concerns.push(concern);
                         }
                     }
                     aggregate
                         .edit_proposals
-                        .extend(result.critique.edit_proposals);
+                        .extend(window_critique.edit_proposals);
                     aggregate
                         .strengths_to_preserve
-                        .extend(result.critique.strengths_to_preserve);
+                        .extend(window_critique.strengths_to_preserve);
                     aggregate
                         .requires_author_decision
-                        .extend(result.critique.requires_author_decision);
+                        .extend(window_critique.requires_author_decision);
                     prompt_hashes.push(result.prompt_hash.clone());
                     model_call_ids.extend(result.model_call_ids.clone());
                     let actual =
@@ -728,6 +730,8 @@ impl SqliteSpindleService {
         aggregate
             .requires_author_decision
             .dedup_by(|left, right| left.id == right.id);
+        spindle_core::drafting::validate_chapter_critique(&mut aggregate, scene_texts)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
         let critique_path = controller_path
             .with_extension(format!("chapter-{}.critique.json", coverage.chapter_number));
         save_chapter_critique(&critique_path, &aggregate)?;
@@ -778,6 +782,21 @@ impl SqliteSpindleService {
             .take(spindle_core::drafting::MAX_CHAPTER_EDIT_PROPOSALS)
             .collect();
         selected.sort_by(|left, right| left.id.cmp(&right.id));
+        let identities: Vec<String> = selected
+            .iter()
+            .map(|proposal| {
+                format!(
+                    "chapter:{}:{}:{}",
+                    critique.chapter_number, proposal.base_text_sha256, proposal.id
+                )
+            })
+            .collect();
+        let namespaces = update_editorial_controller(controller_path, |state| {
+            Ok(identities
+                .iter()
+                .map(|identity| state.allocate_chapter_edit_namespace(identity))
+                .collect::<Vec<u32>>())
+        })?;
         let mut edits = Vec::new();
         let mut accepted_scene_ids = Vec::new();
         for (proposal_index, proposal) in selected.into_iter().enumerate() {
@@ -849,7 +868,10 @@ impl SqliteSpindleService {
                 controller_path,
                 scene_index,
                 now_millis,
-                u32::try_from(proposal_index + 1).unwrap_or(u32::MAX),
+                namespaces
+                    .get(proposal_index)
+                    .copied()
+                    .unwrap_or_else(|| u32::try_from(proposal_index + 1).unwrap_or(u32::MAX)),
             );
             let result = self
                 .revise_artifact_loop_with_gate(
@@ -2294,4 +2316,45 @@ fn subscription_reserved(
                 .map(|reservation| reservation.reserved)
         })
         .unwrap_or_default()
+}
+
+trait WindowFormatKey {
+    fn format_key(&self) -> String;
+}
+
+impl WindowFormatKey for spindle_core::drafting::ChapterWindowV1 {
+    fn format_key(&self) -> String {
+        format!("w{}", self.index)
+    }
+}
+
+fn prefix_window_ids(window_key: &str, critique: &mut ChapterCritiqueV1) {
+    use std::collections::BTreeMap;
+    let mut concern_ids = BTreeMap::new();
+    for concern in &mut critique.concerns {
+        let remapped = format!("{window_key}:{}", concern.id);
+        concern_ids.insert(concern.id.clone(), remapped.clone());
+        concern.id = remapped;
+    }
+    for proposal in &mut critique.edit_proposals {
+        proposal.id = format!("{window_key}:{}", proposal.id);
+        proposal.source_concern_ids = proposal
+            .source_concern_ids
+            .iter()
+            .map(|id| {
+                concern_ids
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{window_key}:{id}"))
+            })
+            .collect();
+    }
+    for decision in &mut critique.requires_author_decision {
+        decision.id = format!("{window_key}:{}", decision.id);
+        decision.source_finding_ids = decision
+            .source_finding_ids
+            .iter()
+            .map(|id| format!("{window_key}:{id}"))
+            .collect();
+    }
 }
