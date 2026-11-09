@@ -19,6 +19,12 @@ impl ToolRouter {
         let expected_phase = input.expected_phase;
         let dry_run = input.dry_run;
 
+        // A lost-response retry must reach its stored receipt before any live
+        // phase assertion: the first success already advanced the run phase.
+        if let Some(replay) = self.service.commit_scene_replay(&input).await? {
+            return Ok(replay);
+        }
+
         if let Some(run_id) = run_id.as_deref() {
             self.validate_commit_scene_run(run_id, &input, expected_phase)
                 .await?;
@@ -56,13 +62,48 @@ impl ToolRouter {
                 run.status
             );
         }
-        let state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
-        let (chapter_number, scene_order) = match input.scene_id.as_deref() {
+        if input.project_id != run.project_id {
+            anyhow::bail!(
+                "commit_scene run integration requires project {} but the payload targets {}",
+                run.project_id,
+                input.project_id
+            );
+        }
+        let branch_id = match input
+            .branch_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|branch| !branch.is_empty())
+        {
+            Some(branch_id) => branch_id.to_string(),
+            None => repo.active_branch_id_public(&input.project_id).await?,
+        };
+        if branch_id != run.active_branch_id {
+            anyhow::bail!(
+                "commit_scene run integration requires branch {} but the payload targets {}",
+                run.active_branch_id,
+                branch_id
+            );
+        }
+        let (book_number, chapter_number, scene_order) = match input.scene_id.as_deref() {
             Some(scene_id) => {
                 let scene = repo.get_scene(scene_id).await?;
-                (scene.chapter_number, scene.scene_order)
+                if scene.project_id != run.project_id {
+                    anyhow::bail!(
+                        "scene {scene_id} does not belong to authoring run {run_id}'s project"
+                    );
+                }
+                if scene.branch_id != run.active_branch_id {
+                    anyhow::bail!(
+                        "scene {scene_id} does not belong to authoring run {run_id}'s branch"
+                    );
+                }
+                (scene.book_number, scene.chapter_number, scene.scene_order)
             }
             None => (
+                input
+                    .book_number
+                    .context("commit_scene run integration requires book_number or scene_id")?,
                 input
                     .chapter_number
                     .context("commit_scene run integration requires chapter_number or scene_id")?,
@@ -71,6 +112,14 @@ impl ToolRouter {
                     .context("commit_scene run integration requires scene_order or scene_id")?,
             ),
         };
+        if book_number != run.book_number {
+            anyhow::bail!(
+                "commit_scene run integration requires book {} but the payload targets {}",
+                run.book_number,
+                book_number
+            );
+        }
+        let state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
         let (chapter_index, scene_index) =
             authoring_scene_indices(&state, chapter_number, scene_order).with_context(|| {
                 format!(
@@ -106,6 +155,13 @@ impl ToolRouter {
             .get_authoring_run(run_id)
             .await?
             .with_context(|| format!("authoring run {run_id} not found"))?;
+        if output.branch_id != run.active_branch_id {
+            anyhow::bail!(
+                "committed scene branch {} does not match authoring run {run_id}'s branch {}",
+                output.branch_id,
+                run.active_branch_id
+            );
+        }
         let mut state = map_records_to_harness(&run, &chapters, &scenes, &checkpoints);
         let mut found = false;
         // A first commit on a planned run scene has no stored scene id yet, so

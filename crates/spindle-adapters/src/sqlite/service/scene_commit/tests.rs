@@ -6,9 +6,10 @@ use spindle_core::models::{
     CommitSceneCharacterStatePatch, CommitSceneContinuityPackage, CommitSceneInput,
     CommitSceneKnowledgeEntry, CommitSceneQuantityStateEntry, CommitSceneRelationshipEntry,
     CommitSceneStoryPlacement, CommitSceneTimelineEventEntry, ContentRating, CreateBranchInput,
-    CreateCharacterInput, CreateLocationInput, CreateProjectInput, CreateRelationshipInput,
-    PrepareSceneInput, PrepareSceneIntent, ReaderContract, RegisterCanonicalFactInput,
-    SaveSceneDraftInput, SceneAuthorship, SceneBeatAnnotationInput, SwitchBranchInput,
+    CreateCharacterInput, CreateFutureKnowledgeInput, CreateLocationInput, CreateProjectInput,
+    CreateRelationshipInput, PrepareSceneInput, PrepareSceneIntent, ReaderContract,
+    RegisterCanonicalFactInput, SaveSceneDraftInput, SceneAuthorship, SceneBeatAnnotationInput,
+    SwitchBranchInput,
 };
 
 fn base_commit(project_id: &str, text: &str) -> CommitSceneInput {
@@ -252,7 +253,7 @@ async fn commit_scene_rejects_stale_version_and_preparation_token_without_writin
     // because the scene text dependency changed.
     let mut replay_token = base_commit(&project.project_id, "Another pass.");
     replay_token.scene_id = Some(saved.scene_id);
-    replay_token.expected_scene_version = Some(1);
+    replay_token.expected_scene_version = Some(2);
     replay_token.context_revision_token = Some(prepared.context_revision_token);
     let error = svc.commit_scene(replay_token).await.unwrap_err();
     assert!(error.to_string().contains("stale context_revision_token"));
@@ -461,6 +462,155 @@ async fn commit_scene_replaces_child_branch_continuity_deltas_and_canon() {
     assert!(
         parent_facts.is_empty(),
         "child-branch canon must not leak to the parent branch"
+    );
+}
+
+#[tokio::test]
+async fn commit_scene_version_advances_on_each_revision_and_matches_prepare() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let project = project(&svc, "commit-version").await;
+    let location_id = location(&svc, &project.project_id).await;
+    let saved = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "The lockhouse was quiet.".to_string(),
+            summary: "quiet".to_string(),
+            content_rating: ContentRating::General,
+            location_id: Some(location_id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let mut first = base_commit(&project.project_id, "The lockhouse was not quiet.");
+    first.scene_id = Some(saved.scene_id.clone());
+    first.expected_scene_version = Some(1);
+    let first = svc.commit_scene(first).await.unwrap();
+    assert_eq!(first.version_number, 2);
+
+    let prepared = svc
+        .prepare_scene(PrepareSceneInput {
+            project_id: project.project_id.clone(),
+            scene_id: Some(saved.scene_id.clone()),
+            location_id: Some(location_id),
+            intent: Some(PrepareSceneIntent::Revise),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(prepared.scene_version, Some(2));
+
+    // The same expected version can no longer overwrite the revision.
+    let mut stale = base_commit(&project.project_id, "A second overwrite attempt.");
+    stale.scene_id = Some(saved.scene_id.clone());
+    stale.expected_scene_version = Some(1);
+    let error = svc.commit_scene(stale).await.unwrap_err();
+    assert!(
+        error.to_string().contains("stale expected_scene_version"),
+        "{error:#}"
+    );
+
+    let mut second = base_commit(&project.project_id, "The lockhouse stayed quiet.");
+    second.scene_id = Some(saved.scene_id.clone());
+    second.expected_scene_version = Some(2);
+    let second = svc.commit_scene(second).await.unwrap();
+    assert_eq!(second.version_number, 3);
+    let prepared = svc
+        .prepare_scene(PrepareSceneInput {
+            project_id: project.project_id.clone(),
+            scene_id: Some(saved.scene_id),
+            intent: Some(PrepareSceneIntent::Revise),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(prepared.scene_version, Some(3));
+}
+
+#[tokio::test]
+async fn commit_scene_retcon_scan_uses_proposed_revision_text() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let project = project(&svc, "commit-retcon").await;
+    let character_id = character(&svc, &project.project_id, "Mara").await;
+    svc.create_future_knowledge(CreateFutureKnowledgeInput {
+        project_id: project.project_id.clone(),
+        character_id,
+        knowledge_summary: "the hidden vault".to_string(),
+        source: "an old letter".to_string(),
+        learned_at: spindle_core::models::StoryPlacement {
+            book_number: 3,
+            chapter_number: 1,
+            scene_order: Some(1),
+            note: None,
+        },
+        expires_at: None,
+        notes: Vec::new(),
+    })
+    .await
+    .unwrap();
+
+    // A revision that INTRODUCES future knowledge must be blocked even though
+    // the persisted text was clean.
+    let clean = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "Mara waited by the door.".to_string(),
+            summary: "waiting".to_string(),
+            content_rating: ContentRating::General,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut introducing = base_commit(&project.project_id, "Mara mentioned the hidden vault.");
+    introducing.scene_id = Some(clean.scene_id.clone());
+    introducing.expected_scene_version = Some(1);
+    let blocked = svc.commit_scene(introducing).await.unwrap();
+    assert!(blocked.blocking_count > 0);
+    assert!(
+        blocked
+            .issues
+            .iter()
+            .any(|issue| issue.check_type == "retcon_reachability"),
+        "{:?}",
+        blocked.issues
+    );
+    let unchanged = svc.repository.get_scene(&clean.scene_id).await.unwrap();
+    assert_eq!(unchanged.full_text, "Mara waited by the door.");
+
+    // A revision that REMOVES an existing violation must not inherit the
+    // persisted text's finding.
+    let offending = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: project.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 2,
+            full_text: "Mara mentioned the hidden vault.".to_string(),
+            summary: "telling".to_string(),
+            content_rating: ContentRating::General,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut removing = base_commit(&project.project_id, "Mara waited in silence.");
+    removing.scene_id = Some(offending.scene_id.clone());
+    removing.expected_scene_version = Some(1);
+    let clean_output = svc.commit_scene(removing).await.unwrap();
+    assert_eq!(clean_output.blocking_count, 0);
+    assert!(
+        clean_output
+            .issues
+            .iter()
+            .all(|issue| issue.check_type != "retcon_reachability")
     );
 }
 

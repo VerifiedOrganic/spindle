@@ -82,7 +82,7 @@ impl CanonTransaction<'_> {
             [scene_id],
             |r| r.get(0),
         )?;
-        Ok((latest as i32).max(1))
+        Ok((latest as i32 + 1).max(1))
     }
 
     /// Create or update a scene and its version snapshot inside the caller's

@@ -318,8 +318,8 @@ fn scene_placement(book_number: i32, chapter_number: i32, scene_order: i32) -> S
 
 fn scene_current_version(versions: &[crate::sqlite::records::SceneVersion]) -> i32 {
     versions
-        .last()
-        .map(|version| version.version_number)
+        .first()
+        .map(|version| version.version_number + 1)
         .unwrap_or(1)
 }
 
@@ -338,6 +338,42 @@ fn commit_scene_issue_from_consistency(issue: ConsistencyIssue) -> CommitSceneIs
 }
 
 impl SqliteSpindleService {
+    /// Return a stored idempotency receipt for this exact payload, if one
+    /// exists. Used by both the service and the authoring-run adapter so a
+    /// retry can reach its receipt before any live-state phase assertion.
+    pub async fn commit_scene_replay(
+        &self,
+        input: &CommitSceneInput,
+    ) -> Result<Option<CommitSceneOutput>> {
+        if input.dry_run {
+            return Ok(None);
+        }
+        let Some(key) = input
+            .idempotency_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+        else {
+            return Ok(None);
+        };
+        let payload_hash = commit_scene_payload_hash(input)?;
+        let Some((stored_hash, stored_receipt)) =
+            self.repository.find_scene_commit_receipt(key).await?
+        else {
+            return Ok(None);
+        };
+        if stored_hash != payload_hash {
+            anyhow::bail!(
+                "idempotency_key {key:?} was already used with a different commit payload; \
+                 use a new key for a different scene or content"
+            );
+        }
+        let mut receipt: CommitSceneOutput = serde_json::from_str(&stored_receipt)
+            .with_context(|| format!("stored receipt for idempotency key {key:?} is invalid"))?;
+        receipt.idempotent_replay = true;
+        Ok(Some(receipt))
+    }
+
     /// Atomic ordinary-scene commit: prose, author-declared continuity, beats,
     /// optional chapter summary, writer cursor, and an idempotency receipt all
     /// land in one SQLite write transaction. Blocking deterministic gates are
@@ -351,27 +387,8 @@ impl SqliteSpindleService {
         }
 
         let payload_hash = commit_scene_payload_hash(&input)?;
-        if !input.dry_run
-            && let Some(key) = input
-                .idempotency_key
-                .as_deref()
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-            && let Some((stored_hash, stored_receipt)) =
-                self.repository.find_scene_commit_receipt(key).await?
-        {
-            if stored_hash != payload_hash {
-                anyhow::bail!(
-                    "idempotency_key {key:?} was already used with a different commit payload; \
-                     use a new key for a different scene or content"
-                );
-            }
-            let mut receipt: CommitSceneOutput = serde_json::from_str(&stored_receipt)
-                .with_context(|| {
-                    format!("stored receipt for idempotency key {key:?} is invalid")
-                })?;
-            receipt.idempotent_replay = true;
-            return Ok(receipt);
+        if let Some(replay) = self.commit_scene_replay(&input).await? {
+            return Ok(replay);
         }
 
         let project = self.repository.get_project(&input.project_id).await?;
@@ -672,27 +689,41 @@ impl SqliteSpindleService {
         // still scan the prospective prose with a synthetic record so the gate
         // does not silently disappear; the clock-specific temporal scan is the
         // only pass that requires a persisted scene.
-        let scan_scene = existing_scene.clone().unwrap_or_else(|| {
-            use chrono::Utc;
-            crate::sqlite::records::Scene {
-                id: "scene:pending".to_string(),
-                project_id: input.project_id.clone(),
-                branch_id: branch.id.clone(),
-                book_id: String::new(),
-                chapter_id: String::new(),
-                book_number,
-                chapter_number,
-                scene_order,
-                full_text: input.full_text.clone(),
-                summary: input.summary.clone(),
-                content_rating: input.content_rating.as_db_str().to_string(),
-                tone: input.tone.clone(),
-                draft_origin: draft_origin.clone(),
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                location_id: input.location_id.clone(),
-            }
-        });
+        // Scan the PROPOSED prose, not the persisted revision: a revision that
+        // introduces future knowledge must be caught, and one that removes a
+        // violation must not inherit the old text's finding.
+        let scan_scene = existing_scene
+            .clone()
+            .map(|mut scene| {
+                scene.full_text = input.full_text.clone();
+                scene.summary = input.summary.clone();
+                scene.content_rating = input.content_rating.as_db_str().to_string();
+                scene.tone = input.tone.clone();
+                scene.draft_origin = draft_origin.clone();
+                scene.location_id = input.location_id.clone().or(scene.location_id);
+                scene
+            })
+            .unwrap_or_else(|| {
+                use chrono::Utc;
+                crate::sqlite::records::Scene {
+                    id: "scene:pending".to_string(),
+                    project_id: input.project_id.clone(),
+                    branch_id: branch.id.clone(),
+                    book_id: String::new(),
+                    chapter_id: String::new(),
+                    book_number,
+                    chapter_number,
+                    scene_order,
+                    full_text: input.full_text.clone(),
+                    summary: input.summary.clone(),
+                    content_rating: input.content_rating.as_db_str().to_string(),
+                    tone: input.tone.clone(),
+                    draft_origin: draft_origin.clone(),
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    location_id: input.location_id.clone(),
+                }
+            });
         checks_run.push("retcon_reachability".to_string());
         let retcon_findings = self
             .scan_retcon_findings(&input.project_id, &scan_scene)

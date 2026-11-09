@@ -317,6 +317,7 @@ async fn commit_scene_advances_the_authoring_run_phase_only_on_success() {
             "project_id": project_id,
             "run_id": run_id,
             "expected_phase": "pending",
+            "idempotency_key": "run-phase-1",
             "book_number": 1,
             "chapter_number": 1,
             "scene_order": 1,
@@ -352,6 +353,45 @@ async fn commit_scene_advances_the_authoring_run_phase_only_on_success() {
         scenes[0].scene_id.as_deref(),
         Some(commit.scene_id.as_str())
     );
+
+    // A lost-response retry with the same key/payload must return the stored
+    // receipt even though the run phase has already advanced.
+    let retried_val = invoke_json(
+        &router,
+        "commit_scene",
+        json!({
+            "project_id": project_id,
+            "run_id": run_id,
+            "expected_phase": "pending",
+            "idempotency_key": "run-phase-1",
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1,
+            "full_text": "The lockhouse door opened before Mara knocked.",
+            "summary": "Mara enters the lockhouse.",
+            "content_rating": "general",
+            "continuity": {
+                "canonical_facts": [{
+                    "subject_table": "project",
+                    "predicate": "lockhouse_door",
+                    "value_text": "unlatched",
+                    "value_kind": "string"
+                }]
+            }
+        }),
+    )
+    .await;
+    let retried: CommitSceneOutput = serde_json::from_value(retried_val).unwrap();
+    assert!(retried.idempotent_replay);
+    assert_eq!(retried.operation_id, commit.operation_id);
+    let (_, _, scenes, _) = router
+        .service
+        .repository()
+        .get_authoring_run(&run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(scenes[0].phase, "beats_annotated");
 
     // A mismatched expected phase is rejected before any prose is written.
     let other_run = install_run(&router, &project_id, "pending").await;
@@ -400,5 +440,156 @@ async fn commit_scene_advances_the_authoring_run_phase_only_on_success() {
     assert_eq!(
         unchanged.full_text,
         "The lockhouse door opened before Mara knocked."
+    );
+
+    // Run target ownership: project, branch, and book must all match the run.
+    let other_project = invoke_json(
+        &router,
+        "create_project",
+        json!({
+            "name": "Other Project",
+            "project_type": "novel",
+            "genre": "fantasy",
+            "reader_contract": { "promise": "p", "style_notes": [], "boundaries": [] }
+        }),
+    )
+    .await;
+    let other_project_id = other_project["project_id"].as_str().unwrap().to_string();
+    let wrong_project = router
+        .call_tool(
+            "commit_scene",
+            json!({
+                "project_id": other_project_id,
+                "run_id": run_id,
+                "book_number": 1,
+                "chapter_number": 1,
+                "scene_order": 1,
+                "full_text": "This must not write anywhere.",
+                "summary": "wrong project",
+                "content_rating": "general"
+            })
+            .as_object(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_project.is_error, Some(true));
+    assert!(
+        serde_json::to_string(&wrong_project)
+            .unwrap()
+            .contains("requires project"),
+        "project mismatch must name the run project"
+    );
+
+    let branch = invoke_json(
+        &router,
+        "create_branch",
+        json!({
+            "project_id": project_id,
+            "name": "run-child",
+            "branch_type": "alternate",
+            "parent_branch_id": branch_id
+        }),
+    )
+    .await;
+    let child_branch_id = branch["branch_id"].as_str().unwrap().to_string();
+    let wrong_branch = router
+        .call_tool(
+            "commit_scene",
+            json!({
+                "project_id": project_id,
+                "branch_id": child_branch_id,
+                "run_id": run_id,
+                "book_number": 1,
+                "chapter_number": 1,
+                "scene_order": 1,
+                "full_text": "This must not write to the child branch.",
+                "summary": "wrong branch",
+                "content_rating": "general"
+            })
+            .as_object(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_branch.is_error, Some(true));
+    assert!(
+        serde_json::to_string(&wrong_branch)
+            .unwrap()
+            .contains("requires branch"),
+        "branch mismatch must name the run branch"
+    );
+    assert!(
+        router
+            .service
+            .repository()
+            .find_scene_by_natural_key(&project_id, &child_branch_id, 1, 1, 1)
+            .await
+            .unwrap()
+            .is_none(),
+        "rejected branch target must not create a scene"
+    );
+
+    // A scene_id target must also belong to the run's project and branch.
+    let child_scene = invoke_json(
+        &router,
+        "commit_scene",
+        json!({
+            "project_id": project_id,
+            "branch_id": child_branch_id,
+            "book_number": 1,
+            "chapter_number": 1,
+            "scene_order": 1,
+            "full_text": "A child-branch scene for target validation.",
+            "summary": "child scene",
+            "content_rating": "general"
+        }),
+    )
+    .await;
+    let child_scene_id = child_scene["scene_id"].as_str().unwrap().to_string();
+    let wrong_scene_branch = router
+        .call_tool(
+            "commit_scene",
+            json!({
+                "project_id": project_id,
+                "run_id": run_id,
+                "scene_id": child_scene_id,
+                "full_text": "This must not overwrite the child-branch scene.",
+                "summary": "wrong scene branch",
+                "content_rating": "general"
+            })
+            .as_object(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_scene_branch.is_error, Some(true));
+    assert!(
+        serde_json::to_string(&wrong_scene_branch)
+            .unwrap()
+            .contains("does not belong to authoring run"),
+        "scene_id branch mismatch must be rejected"
+    );
+
+    let wrong_book = router
+        .call_tool(
+            "commit_scene",
+            json!({
+                "project_id": project_id,
+                "run_id": run_id,
+                "book_number": 2,
+                "chapter_number": 1,
+                "scene_order": 1,
+                "full_text": "This must not write into book two.",
+                "summary": "wrong book",
+                "content_rating": "general"
+            })
+            .as_object(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_book.is_error, Some(true));
+    assert!(
+        serde_json::to_string(&wrong_book)
+            .unwrap()
+            .contains("requires book"),
+        "book mismatch must name the run book"
     );
 }
