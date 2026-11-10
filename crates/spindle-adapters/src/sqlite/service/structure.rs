@@ -338,6 +338,7 @@ impl SqliteSpindleService {
                 months: Vec::new(),
                 days_per_year: 365,
                 epoch_label: None,
+                leap_rule: Default::default(),
             }))
     }
 

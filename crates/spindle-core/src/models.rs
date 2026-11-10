@@ -201,9 +201,53 @@ pub struct CalendarMonth {
     pub days: i32,
 }
 
+/// A human-facing date in a project calendar. Year 1 starts at day index zero;
+/// `month` is one-based in [`CalendarDef::months`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CalendarDate {
+    pub year: i64,
+    pub month: i32,
+    pub day: i32,
+}
+
+/// How a calendar's years gain days. Existing calendars deserialize as `None`
+/// (fixed-length years); a project opts into leap years by setting a rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LeapYearRule {
+    /// Fixed-length years: current behavior for every pre-existing calendar.
+    #[default]
+    None,
+    /// Proleptic Gregorian: every 4 years, except every 100, except every 400.
+    /// The calendar must declare a `February` month with 28 common-year days.
+    Gregorian,
+    /// Add days to one named month every N years. `anchor_year` controls the
+    /// phase; year 0 is the default anchor, so year 4 is the first leap year in
+    /// a four-year cycle.
+    Custom {
+        month: String,
+        every_years: i32,
+        #[serde(default = "default_leap_extra_days")]
+        extra_days: i32,
+        #[serde(default)]
+        anchor_year: i64,
+    },
+}
+
+fn default_leap_extra_days() -> i32 {
+    1
+}
+
+impl LeapYearRule {
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
 /// Per-project calendar definition mapping the abstract day index to/from a
-/// human-facing date. Supports non-24h days and fully invented month/week
-/// schemes, so an invented fantasy calendar is handled identically to Gregorian.
+/// human-facing date. Supports non-24h days, leap years, and fully invented
+/// month/week schemes, so an invented fantasy calendar is handled identically to
+/// Gregorian.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CalendarDef {
     pub days_per_week: i32,
@@ -214,16 +258,266 @@ pub struct CalendarDef {
     pub week_day_names: Vec<String>,
     #[serde(default)]
     pub months: Vec<CalendarMonth>,
+    /// Days in a common (non-leap) year. A leap rule adds its extra days on
+    /// top of this; legacy calendars with `leap_rule = None` keep this exact
+    /// year length.
     pub days_per_year: i32,
     #[serde(default)]
     pub epoch_label: Option<String>,
+    #[serde(default, skip_serializing_if = "LeapYearRule::is_none")]
+    pub leap_rule: LeapYearRule,
 }
 
 impl CalendarDef {
+    /// The standard twelve-month Gregorian calendar with leap years enabled.
+    /// Year 1 starts at day index zero. Use this as the starting point for a
+    /// Gregorian-style project, then replace any month names/lengths the
+    /// project actually needs.
+    pub fn gregorian() -> Self {
+        let months = [
+            ("January", 31),
+            ("February", 28),
+            ("March", 31),
+            ("April", 30),
+            ("May", 31),
+            ("June", 30),
+            ("July", 31),
+            ("August", 31),
+            ("September", 30),
+            ("October", 31),
+            ("November", 30),
+            ("December", 31),
+        ]
+        .into_iter()
+        .map(|(name, days)| CalendarMonth {
+            name: name.to_string(),
+            days,
+        })
+        .collect();
+        Self {
+            days_per_week: 7,
+            hours_per_day: 24,
+            week_day_names: Vec::new(),
+            months,
+            days_per_year: 365,
+            epoch_label: None,
+            leap_rule: LeapYearRule::Gregorian,
+        }
+    }
+
     /// Minutes in one in-world day. Folds `(day_index, time_of_day)` into a single
     /// total-order index.
     pub fn minutes_per_day(&self) -> i64 {
         self.hours_per_day.max(0) as i64 * 60
+    }
+
+    /// Whether `year` is a leap year under this calendar's rule.
+    pub fn is_leap_year(&self, year: i64) -> bool {
+        match &self.leap_rule {
+            LeapYearRule::None => false,
+            LeapYearRule::Gregorian => {
+                year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0)
+            }
+            LeapYearRule::Custom {
+                every_years,
+                anchor_year,
+                ..
+            } => {
+                year >= 1
+                    && *every_years > 0
+                    && (year - *anchor_year).rem_euclid(*every_years as i64) == 0
+            }
+        }
+    }
+
+    /// Extra days added by the leap rule (0 for a fixed calendar).
+    pub fn leap_extra_days(&self) -> i32 {
+        match &self.leap_rule {
+            LeapYearRule::None => 0,
+            LeapYearRule::Gregorian => 1,
+            LeapYearRule::Custom { extra_days, .. } => *extra_days,
+        }
+    }
+
+    /// Days in `year`, including the leap-rule extra when applicable.
+    pub fn days_in_year(&self, year: i64) -> i32 {
+        self.days_per_year
+            + if self.is_leap_year(year) {
+                self.leap_extra_days()
+            } else {
+                0
+            }
+    }
+
+    fn leap_month_index(&self) -> Option<usize> {
+        match &self.leap_rule {
+            LeapYearRule::None => None,
+            LeapYearRule::Gregorian => self
+                .months
+                .iter()
+                .position(|month| month.name.eq_ignore_ascii_case("february")),
+            LeapYearRule::Custom { month, .. } => self
+                .months
+                .iter()
+                .position(|candidate| candidate.name.eq_ignore_ascii_case(month)),
+        }
+    }
+
+    /// Days in a one-based calendar month for `year`.
+    pub fn days_in_month(&self, year: i64, month: i32) -> Option<i32> {
+        if month < 1 {
+            return None;
+        }
+        let index = (month - 1) as usize;
+        let base = self.months.get(index)?.days;
+        let leap = self.is_leap_year(year) && self.leap_month_index() == Some(index);
+        Some(base + if leap { self.leap_extra_days() } else { 0 })
+    }
+
+    /// Number of leap years before `year` (negative for years before year 1).
+    fn leap_years_before(&self, year: i64) -> i64 {
+        match &self.leap_rule {
+            LeapYearRule::None => 0,
+            LeapYearRule::Gregorian => {
+                let n = year - 1;
+                n.div_euclid(4) - n.div_euclid(100) + n.div_euclid(400)
+            }
+            LeapYearRule::Custom {
+                every_years,
+                anchor_year,
+                ..
+            } => {
+                if *every_years <= 0 {
+                    return 0;
+                }
+                let every = *every_years as i64;
+                if year <= 1 {
+                    0
+                } else {
+                    let n = year - 1;
+                    let first = 1 + (anchor_year - 1).rem_euclid(every);
+                    if first > n {
+                        0
+                    } else {
+                        (n - first) / every + 1
+                    }
+                }
+            }
+        }
+    }
+
+    /// Days elapsed before January 1 of `year` (year 1 starts at day zero).
+    fn days_before_year(&self, year: i64) -> i64 {
+        (year - 1) * self.days_per_year as i64
+            + self.leap_years_before(year) * self.leap_extra_days() as i64
+    }
+
+    /// Convert a calendar date to its absolute `day_index`.
+    pub fn day_index_for_date(&self, date: &CalendarDate) -> Result<i64, String> {
+        if self.months.is_empty() {
+            return Err("calendar has no months; date conversion is unavailable".to_string());
+        }
+        if date.month < 1 || date.month as usize > self.months.len() {
+            return Err(format!(
+                "month {} is outside 1..={}",
+                date.month,
+                self.months.len()
+            ));
+        }
+        let days_in_month = self
+            .days_in_month(date.year, date.month)
+            .ok_or_else(|| "invalid calendar month".to_string())?;
+        if date.day < 1 || date.day > days_in_month {
+            return Err(format!(
+                "day {} is outside 1..={} for year {} month {}",
+                date.day, days_in_month, date.year, date.month
+            ));
+        }
+        let mut day_of_year = 0i64;
+        for (index, _month) in self.months.iter().enumerate() {
+            let month_number = index as i32 + 1;
+            if month_number == date.month {
+                break;
+            }
+            day_of_year +=
+                self.days_in_month(date.year, month_number)
+                    .ok_or_else(|| "invalid calendar month".to_string())? as i64;
+        }
+        Ok(self.days_before_year(date.year) + day_of_year + date.day as i64 - 1)
+    }
+
+    /// Alias for [`Self::day_index_for_date`].
+    pub fn date_to_day_index(&self, date: &CalendarDate) -> Result<i64, String> {
+        self.day_index_for_date(date)
+    }
+
+    /// Alias for [`Self::date_for_day_index`].
+    pub fn day_index_to_date(&self, day_index: i64) -> Result<CalendarDate, String> {
+        self.date_for_day_index(day_index)
+    }
+
+    /// Convert an absolute `day_index` to a calendar date.
+    pub fn date_for_day_index(&self, day_index: i64) -> Result<CalendarDate, String> {
+        if self.months.is_empty() {
+            return Err("calendar has no months; date conversion is unavailable".to_string());
+        }
+        // The base-year estimate is never below the true year because leap days
+        // only make years longer. Expand around it, then binary-search.
+        let estimate = 1 + day_index.div_euclid(self.days_per_year as i64);
+        let mut low = estimate.saturating_sub(4);
+        let mut high = estimate.saturating_add(4);
+        while self.days_before_year(low) > day_index {
+            low = low.saturating_sub((low.abs() / 4).max(4));
+        }
+        while self.days_before_year(high) <= day_index {
+            high = high.saturating_add((high.abs() / 4).max(4));
+        }
+        while low < high {
+            let mid = low + (high - low + 1) / 2;
+            if self.days_before_year(mid) <= day_index {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        let year = low;
+        let mut day_of_year = day_index - self.days_before_year(year);
+        for (index, _) in self.months.iter().enumerate() {
+            let month = index as i32 + 1;
+            let days = self
+                .days_in_month(year, month)
+                .ok_or_else(|| "invalid calendar month".to_string())?;
+            if day_of_year < days as i64 {
+                return Ok(CalendarDate {
+                    year,
+                    month,
+                    day: day_of_year as i32 + 1,
+                });
+            }
+            day_of_year -= days as i64;
+        }
+        Err("day_index is outside the calendar year".to_string())
+    }
+
+    /// Whole-year age at `at` for someone born on `birth`.
+    pub fn age_years(&self, birth: &CalendarDate, at: &CalendarDate) -> Result<i64, String> {
+        let birth_index = self.day_index_for_date(birth)?;
+        let at_index = self.day_index_for_date(at)?;
+        if at_index < birth_index {
+            return Err("at date precedes birth date".to_string());
+        }
+        let mut age = at.year - birth.year;
+        if (at.month, at.day) < (birth.month, birth.day) {
+            age -= 1;
+        }
+        Ok(age)
+    }
+
+    /// Whole-year age from absolute day indices.
+    pub fn age_years_at_day(&self, birth_day_index: i64, at_day_index: i64) -> Result<i64, String> {
+        let birth = self.date_for_day_index(birth_day_index)?;
+        let at = self.date_for_day_index(at_day_index)?;
+        self.age_years(&birth, &at)
     }
 
     /// Validate the calendar's internal consistency.
@@ -270,6 +564,52 @@ impl CalendarDef {
                 self.week_day_names.len(),
                 self.days_per_week
             ));
+        }
+        match &self.leap_rule {
+            LeapYearRule::None => {}
+            LeapYearRule::Gregorian => {
+                let Some(month) = self
+                    .months
+                    .iter()
+                    .find(|month| month.name.eq_ignore_ascii_case("february"))
+                else {
+                    return Err(
+                        "Gregorian leap rule requires a February month in `months`".to_string()
+                    );
+                };
+                if month.days != 28 {
+                    return Err(format!(
+                        "Gregorian February must have 28 common-year days (got {})",
+                        month.days
+                    ));
+                }
+            }
+            LeapYearRule::Custom {
+                month,
+                every_years,
+                extra_days,
+                ..
+            } => {
+                if *every_years < 1 {
+                    return Err(format!(
+                        "custom leap rule every_years must be >= 1 (got {every_years})"
+                    ));
+                }
+                if *extra_days < 1 {
+                    return Err(format!(
+                        "custom leap rule extra_days must be >= 1 (got {extra_days})"
+                    ));
+                }
+                if !self
+                    .months
+                    .iter()
+                    .any(|candidate| candidate.name.eq_ignore_ascii_case(month))
+                {
+                    return Err(format!(
+                        "custom leap month '{month}' is not present in `months`"
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -971,7 +1311,47 @@ mod story_clock_tests {
             months: Vec::new(),
             days_per_year: 365,
             epoch_label: None,
+            leap_rule: Default::default(),
         }
+    }
+
+    fn gregorian_months() -> Vec<CalendarMonth> {
+        [
+            ("January", 31),
+            ("February", 28),
+            ("March", 31),
+            ("April", 30),
+            ("May", 31),
+            ("June", 30),
+            ("July", 31),
+            ("August", 31),
+            ("September", 30),
+            ("October", 31),
+            ("November", 30),
+            ("December", 31),
+        ]
+        .into_iter()
+        .map(|(name, days)| CalendarMonth {
+            name: name.to_string(),
+            days,
+        })
+        .collect()
+    }
+
+    fn gregorian_leap_calendar() -> CalendarDef {
+        CalendarDef {
+            days_per_week: 7,
+            hours_per_day: 24,
+            week_day_names: Vec::new(),
+            months: gregorian_months(),
+            days_per_year: 365,
+            epoch_label: None,
+            leap_rule: LeapYearRule::Gregorian,
+        }
+    }
+
+    fn date(year: i64, month: i32, day: i32) -> CalendarDate {
+        CalendarDate { year, month, day }
     }
 
     #[test]
@@ -1096,6 +1476,165 @@ mod story_clock_tests {
             .validate(&cal)
             .is_err()
         );
+    }
+
+    #[test]
+    fn gregorian_leap_years_exclude_1900_and_include_2000() {
+        let cal = gregorian_leap_calendar();
+        assert!(!cal.is_leap_year(1900));
+        assert!(cal.is_leap_year(2000));
+        assert!(cal.is_leap_year(2024));
+        assert!(!cal.is_leap_year(2023));
+        assert_eq!(cal.days_in_year(1900), 365);
+        assert_eq!(cal.days_in_year(2000), 366);
+        assert_eq!(cal.days_in_month(2000, 2), Some(29));
+        assert_eq!(cal.days_in_month(1900, 2), Some(28));
+    }
+
+    #[test]
+    fn february_29_round_trips_only_on_leap_years() {
+        let cal = gregorian_leap_calendar();
+        let leap_day = date(2000, 2, 29);
+        let index = cal.day_index_for_date(&leap_day).expect("Feb 29 2000");
+        assert_eq!(cal.date_for_day_index(index).unwrap(), leap_day);
+        assert!(cal.day_index_for_date(&date(1900, 2, 29)).is_err());
+        assert!(cal.day_index_for_date(&date(2023, 2, 29)).is_err());
+        assert_eq!(
+            cal.day_index_for_date(&date(2024, 2, 29)).unwrap(),
+            cal.day_index_for_date(&date(2024, 3, 1)).unwrap() - 1
+        );
+    }
+
+    #[test]
+    fn multi_year_date_spans_account_for_leap_days() {
+        let cal = gregorian_leap_calendar();
+        let start = cal.day_index_for_date(&date(1896, 1, 1)).unwrap();
+        let end = cal.day_index_for_date(&date(1904, 1, 1)).unwrap();
+        // 1896 and 1904 are leap years, but 1904's Feb 29 has not happened by
+        // Jan 1; 1900 is not a leap year.
+        assert_eq!(end - start, 8 * 365 + 1);
+        for ordinal in [0, 1, 365, 366, 10_000, -1, -366, -10_000] {
+            let date = cal.date_for_day_index(ordinal).unwrap();
+            assert_eq!(cal.day_index_for_date(&date).unwrap(), ordinal);
+        }
+    }
+
+    #[test]
+    fn age_across_a_leap_day_uses_the_actual_birthday() {
+        let cal = gregorian_leap_calendar();
+        assert_eq!(
+            cal.age_years(&date(2000, 2, 29), &date(2001, 2, 28))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            cal.age_years(&date(2000, 2, 29), &date(2001, 3, 1))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            cal.age_years(&date(2000, 2, 29), &date(2004, 2, 29))
+                .unwrap(),
+            4
+        );
+        // Year 0 is a Gregorian leap year; a pre-epoch Feb 29 birthday still
+        // keeps its actual anniversary in year 1.
+        assert_eq!(cal.age_years(&date(0, 2, 29), &date(1, 2, 28)).unwrap(), 0);
+        assert_eq!(cal.age_years(&date(0, 2, 29), &date(1, 3, 1)).unwrap(), 1);
+        assert_eq!(
+            cal.age_years(&date(1899, 3, 1), &date(1900, 2, 28))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            cal.age_years(&date(1899, 3, 1), &date(1900, 3, 1)).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn custom_leap_rule_adds_days_to_the_named_month() {
+        let mut cal = gregorian_leap_calendar();
+        cal.months = vec![
+            CalendarMonth {
+                name: "First".into(),
+                days: 10,
+            },
+            CalendarMonth {
+                name: "Second".into(),
+                days: 10,
+            },
+            CalendarMonth {
+                name: "Third".into(),
+                days: 10,
+            },
+            CalendarMonth {
+                name: "Fourth".into(),
+                days: 10,
+            },
+        ];
+        cal.days_per_year = 40;
+        cal.leap_rule = LeapYearRule::Custom {
+            month: "Second".into(),
+            every_years: 2,
+            extra_days: 2,
+            anchor_year: 0,
+        };
+        assert!(cal.validate().is_ok());
+        assert_eq!(cal.days_in_month(2, 2), Some(12));
+        assert_eq!(cal.days_in_month(4, 2), Some(12));
+        assert_eq!(cal.days_in_month(3, 2), Some(10));
+        let index = cal.day_index_for_date(&date(2, 2, 12)).unwrap();
+        assert_eq!(cal.date_for_day_index(index).unwrap(), date(2, 2, 12));
+
+        // Year 2 has 42 days; year 3 starts after both extra days.
+        assert_eq!(cal.day_index_for_date(&date(3, 1, 1)).unwrap(), 82);
+        assert_eq!(cal.date_for_day_index(81).unwrap(), date(2, 4, 10));
+        assert_eq!(cal.date_for_day_index(82).unwrap(), date(3, 1, 1));
+        for ordinal in [0, 39, 40, 41, 81, 82, 123, 164, 205, 246] {
+            let date = cal.date_for_day_index(ordinal).unwrap();
+            assert_eq!(cal.day_index_for_date(&date).unwrap(), ordinal);
+        }
+        // Leap years 2 and 4 have occurred; year 7 follows three leap years
+        // (2, 4, 6), each contributing two days.
+        assert_eq!(cal.day_index_for_date(&date(7, 1, 1)).unwrap(), 246);
+    }
+
+    #[test]
+    fn legacy_calendar_json_defaults_to_fixed_years() {
+        let raw = serde_json::json!({
+            "days_per_week": 7,
+            "hours_per_day": 24,
+            "week_day_names": [],
+            "months": [],
+            "days_per_year": 365,
+            "epoch_label": null
+        });
+        let cal: CalendarDef = serde_json::from_value(raw).unwrap();
+        assert_eq!(cal.leap_rule, LeapYearRule::None);
+        assert!(!cal.is_leap_year(2000));
+        assert!(cal.validate().is_ok());
+    }
+
+    #[test]
+    fn gregorian_preset_is_valid_and_leap_aware() {
+        let cal = CalendarDef::gregorian();
+        assert!(cal.validate().is_ok());
+        assert!(cal.is_leap_year(2000));
+        assert_eq!(cal.date_for_day_index(0).unwrap(), date(1, 1, 1));
+        assert_eq!(
+            cal.date_for_day_index(cal.day_index_for_date(&date(2000, 2, 29)).unwrap())
+                .unwrap(),
+            date(2000, 2, 29)
+        );
+    }
+
+    #[test]
+    fn legacy_calendar_without_rule_keeps_fixed_years() {
+        let mut cal = gregorian_leap_calendar();
+        cal.leap_rule = LeapYearRule::None;
+        assert!(!cal.is_leap_year(2000));
+        assert!(cal.day_index_for_date(&date(2000, 2, 29)).is_err());
     }
 }
 

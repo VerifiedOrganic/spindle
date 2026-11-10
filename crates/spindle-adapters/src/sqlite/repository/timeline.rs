@@ -15,6 +15,7 @@ impl Repository {
         let hours_per_day = calendar.hours_per_day;
         let days_per_year = calendar.days_per_year;
         let epoch_label = calendar.epoch_label.clone();
+        let leap_rule = serde_json::to_string(&calendar.leap_rule)?;
         self.inner
             .pool
             .write(move |conn| {
@@ -22,8 +23,8 @@ impl Repository {
                 conn.execute(
                     "INSERT INTO project_calendar \
                      (project_id, days_per_week, hours_per_day, week_day_names, months, \
-                      days_per_year, epoch_label, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) \
+                      days_per_year, epoch_label, created_at, updated_at, leap_rule) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9) \
                      ON CONFLICT(project_id) DO UPDATE SET \
                        days_per_week = excluded.days_per_week, \
                        hours_per_day = excluded.hours_per_day, \
@@ -31,7 +32,8 @@ impl Repository {
                        months = excluded.months, \
                        days_per_year = excluded.days_per_year, \
                        epoch_label = excluded.epoch_label, \
-                       updated_at = excluded.updated_at",
+                       updated_at = excluded.updated_at, \
+                       leap_rule = excluded.leap_rule",
                     rusqlite::params![
                         &project_id,
                         days_per_week,
@@ -41,6 +43,7 @@ impl Repository {
                         days_per_year,
                         &epoch_label,
                         now,
+                        &leap_rule,
                     ],
                 )?;
                 Ok(())

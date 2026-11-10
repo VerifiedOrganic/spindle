@@ -3149,7 +3149,7 @@ mod tests {
 // =============================================================================
 
 pub const PROJECT_CALENDAR_COLUMNS: &str = "project_id, days_per_week, hours_per_day, \
-     week_day_names, months, days_per_year, epoch_label, created_at, updated_at";
+     week_day_names, months, days_per_year, epoch_label, created_at, updated_at, leap_rule";
 
 #[derive(Debug, Clone)]
 pub struct StoredProjectCalendar {
@@ -3170,6 +3170,7 @@ impl<'a> TryFrom<&Row<'a>> for StoredProjectCalendar {
                 months: row::opt_json(r, 4)?.unwrap_or_default(),
                 days_per_year: row::int(r, 5)? as i32,
                 epoch_label: row::opt_text(r, 6)?,
+                leap_rule: row::opt_json(r, 9)?.unwrap_or_default(),
             },
             updated_at: row::time(r, 8)?,
         })

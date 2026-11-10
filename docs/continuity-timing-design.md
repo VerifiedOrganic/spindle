@@ -227,13 +227,21 @@ CalendarDef {
                                    //   order computes on non-24h calendars
   week_day_names:  Vec<String>,
   months:          Vec<CalendarMonth>,   // { name, days } — invented calendars
-  days_per_year:   i32,
+  days_per_year:   i32,           // common-year days
   epoch_label:     Option<String>,
+  leap_rule:       LeapYearRule,   // none | gregorian | custom { month, every_years, extra_days, anchor_year }
 }
 ```
 
 Mirror `StoredStoryClock` in `json_records.rs` (parallel to `StoredStoryPlacement` at
 `json_records.rs:139`).
+
+Leap years are additive: `leap_rule = none` preserves every existing calendar's
+fixed-year behavior; `gregorian` applies the proleptic 4/100/400 rule to a
+February with 28 common-year days; `custom` names the month that gains
+`extra_days` every `every_years` from `anchor_year` (default anchor 0). Dates use
+year 1 = day index zero, and `CalendarDef` owns date↔day-index, days-in-year,
+days-in-month, and whole-year age conversion.
 
 **Non-linear support (all-three-shapes):** also add nullable `temporal_mode`
 (`linear | flashback | flashforward | concurrent`, default `linear`) and `thread_key`

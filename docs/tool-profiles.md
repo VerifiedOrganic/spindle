@@ -23,10 +23,10 @@ generated profiles are opt-in:
 | Profile | Enabled work | Tools | Input bytes | Full bytes |
 | --- | --- | ---: | ---: | ---: |
 | workflow-write | Scene-writer core + craft/packet/research refs + setup | 44 | 57,633 | 112,551 |
-| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 74 | 86,211 | 181,344 |
+| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 74 | 86,589 | 181,722 |
 | workflow-import | Manuscript importer and source sync | 20 | 12,306 | 30,747 |
 | revision | Branch/revision/history workflow | 34 | 22,509 | 57,746 |
-| worldbuilding | Worldbuilder + character creator | 50 | 48,690 | 84,179 |
+| worldbuilding | Worldbuilder + character creator | 50 | 49,068 | 84,557 |
 | planning | Plot architect | 38 | 32,352 | 63,550 |
 | new-book | New-book entry: planning sessions, human gates and handoff | 14 | 20,204 | 26,534 |
 | research | Researcher | 15 | 7,602 | 20,069 |
