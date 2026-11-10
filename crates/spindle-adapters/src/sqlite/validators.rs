@@ -146,20 +146,37 @@ impl SceneValidator for WorldRuleComplianceValidator {
 
         let mut findings = Vec::new();
         for hit in hits {
-            let severity = match hit.severity {
-                WorldRuleSeverity::Likely => ValidatorSeverity::Warning,
-                WorldRuleSeverity::Possible => ValidatorSeverity::Info,
-            };
             let rule_name = rule_names
                 .get(&hit.rule_id)
                 .cloned()
                 .unwrap_or_else(|| hit.rule_id.clone());
-            let message = match hit.severity {
-                WorldRuleSeverity::Likely => format!(
+            let description = context
+                .world_rules
+                .iter()
+                .find(|rule| rule.rule_id == hit.rule_id)
+                .map(|rule| rule.description.as_str())
+                .unwrap_or("");
+            let severity = match hit.severity {
+                WorldRuleSeverity::Likely => ValidatorSeverity::Warning,
+                WorldRuleSeverity::Possible => {
+                    // A neutral rule mention is advisory, but an explicit
+                    // on-page cost payment is a clean demonstration, not drift.
+                    if possible_rule_mention_is_clean_cost_demonstration(
+                        &scene.full_text,
+                        &hit,
+                        description,
+                    ) {
+                        continue;
+                    }
+                    ValidatorSeverity::Info
+                }
+            };
+            let message = match severity {
+                ValidatorSeverity::Warning => format!(
                     "scene likely violates world rule '{}'; surrounding prose suggests violation",
                     rule_name
                 ),
-                WorldRuleSeverity::Possible => format!(
+                _ => format!(
                     "scene references world rule '{}' (no violation context detected)",
                     rule_name
                 ),
@@ -176,6 +193,68 @@ impl SceneValidator for WorldRuleComplianceValidator {
         }
         Ok(findings)
     }
+}
+
+fn possible_rule_mention_is_clean_cost_demonstration(
+    prose: &str,
+    hit: &spindle_core::models::WorldRuleHit,
+    description: &str,
+) -> bool {
+    let description = description.to_ascii_lowercase();
+    if ![
+        "cost", "costs", "price", "drain", "takes", "requires", "must", "blood", "battery",
+    ]
+    .iter()
+    .any(|marker| description.contains(marker))
+    {
+        return false;
+    }
+    let mut start = hit.byte_range.start.saturating_sub(120);
+    while start > 0 && !prose.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (hit.byte_range.end + 120).min(prose.len());
+    while end < prose.len() && !prose.is_char_boundary(end) {
+        end += 1;
+    }
+    let window = &prose[start..end];
+    const COST_MARKERS: &[&str] = &[
+        "price",
+        "paid",
+        "pays",
+        "pay",
+        "cost",
+        "costs",
+        "drain",
+        "drains",
+        "drained",
+        "hemorrhage",
+        "frostbite",
+        "numb",
+        "numbing",
+        "blood",
+    ];
+    for marker in COST_MARKERS {
+        let mut from = 0;
+        while let Some(relative) = window.to_ascii_lowercase()[from..].find(marker) {
+            let at = from + relative;
+            let mut before_start = at.saturating_sub(48);
+            while before_start > 0 && !window.is_char_boundary(before_start) {
+                before_start -= 1;
+            }
+            let before = &window[before_start..at].to_ascii_lowercase();
+            let negated = [
+                "not", "never", "without", "no", "didn't", "doesn't", "isn't",
+            ]
+            .iter()
+            .any(|negation| contains_case_insensitive_word(before, negation));
+            if !negated {
+                return true;
+            }
+            from = at + marker.len();
+        }
+    }
+    false
 }
 
 pub struct VoiceDriftValidator;

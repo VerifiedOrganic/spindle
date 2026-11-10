@@ -7086,3 +7086,79 @@ mod secret_leak_narration {
         );
     }
 }
+
+#[tokio::test]
+async fn check_consistency_does_not_emit_info_for_clean_world_rule_cost_demo() {
+    use spindle_core::models::{
+        CheckConsistencyInput, ConsistencyScopeInput, ContentRating, CreateWorldRuleInput,
+        EstablishedIn, SaveSceneDraftInput,
+    };
+
+    let (_tmp, svc) = fresh_service().await;
+    let proj = svc
+        .create_project(CreateProjectInput {
+            name: "ph4-world-neutral".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "p".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    svc.create_world_rule(CreateWorldRuleInput {
+        project_id: proj.project_id.clone(),
+        rule_name: "Salt ward blood price".into(),
+        rule_type: "magic".into(),
+        description: "A salt ward costs one drop of blood to hold.".into(),
+        scan_pattern: Some("salt ward".into()),
+        relevance_tags: Vec::new(),
+        established_in: Some(EstablishedIn {
+            book_number: 1,
+            chapter_number: 1,
+            note: None,
+        }),
+    })
+    .await
+    .unwrap();
+    svc.save_scene_draft(SaveSceneDraftInput {
+        project_id: proj.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        chapter_id: None,
+        scene_order: 1,
+        full_text: "Mara paid the blood price and the salt ward held.".into(),
+        summary: "ward check".into(),
+        content_rating: ContentRating::General,
+        tone: Some("calm".into()),
+        generation_id: None,
+        source_path: None,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let out = svc
+        .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
+            project_id: proj.project_id.clone(),
+            scope: ConsistencyScopeInput::full(),
+            checks: Vec::new(),
+            severity_filter: Vec::new(),
+            deep_check: None,
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        !out.issues
+            .iter()
+            .any(|issue| issue.check_type == "world_rule_semantic_drift"),
+        "an on-page cost payment is a clean demonstration: {:?}",
+        out.issues
+    );
+}
