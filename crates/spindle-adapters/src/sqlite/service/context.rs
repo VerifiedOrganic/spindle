@@ -623,7 +623,7 @@ impl SqliteSpindleService {
         input: spindle_core::models::GetWriterStateInput,
     ) -> Result<spindle_core::models::WriterStateEnvelope> {
         use crate::format::DEFAULT_WRITER_STATE_BUDGET_TOKENS;
-        use spindle_core::context_bundle::estimate_json_tokens;
+        use spindle_core::context_bundle::{estimate_json_tokens, estimate_text_tokens};
         use spindle_core::models::WriterState;
 
         let format = input
@@ -642,14 +642,16 @@ impl SqliteSpindleService {
             // Reserve for the final estimated-token digits.
             probe.bundle_summary.estimated_tokens = usize::MAX;
             let envelope = writer_state_envelope_from_payload(format, probe);
-            // MCP returns the envelope as both `content` (JSON text) and
-            // `structured_content`, so the serialized tool result is roughly
-            // twice the envelope size plus wrappers.
-            estimate_json_tokens(
-                &serde_json::to_value(&envelope).expect("writer state envelope to json"),
-            )
-            .saturating_mul(2)
-            .saturating_add(64)
+            // MCP returns the envelope as both `content` (the JSON text) and
+            // `structured_content`. The text copy is itself JSON-escaped, so
+            // measure that escaped string rather than assuming 2x.
+            let structured =
+                serde_json::to_value(&envelope).expect("writer state envelope to json");
+            let text = serde_json::to_string(&structured).expect("writer state text copy");
+            let escaped_text = serde_json::to_string(&text).expect("escaped writer state text");
+            estimate_json_tokens(&structured)
+                .saturating_add(estimate_text_tokens(&escaped_text))
+                .saturating_add(64)
         };
         crate::format::fit_writer_state_to_budget(token_budget, &mut payload, &mut measure)?;
         Ok(writer_state_envelope_from_payload(format, payload))

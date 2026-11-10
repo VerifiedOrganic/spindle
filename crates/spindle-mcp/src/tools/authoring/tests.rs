@@ -177,9 +177,7 @@ async fn set_active_project_does_not_depend_on_writer_state_budget() {
     ))
     .expect("decode project");
 
-    let long_rule_body = "Magic rewrites cause cascading constraint debt across every \
-            revision boundary and must be treated as binding law in all future scenes. "
-        .repeat(40);
+    let long_rule_body = r#"Magic "rewrites" cause a \ cascade of constraint debt across every revision boundary and must be treated as binding law in all future scenes. "#.repeat(40);
     for index in 0..12 {
         router
             .service

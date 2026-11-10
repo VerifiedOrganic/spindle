@@ -106,7 +106,11 @@ pub fn ensure_workspace_gitignore(spindle_dir: &Path) -> std::io::Result<()> {
 
     std::fs::create_dir_all(spindle_dir)?;
     let path = spindle_dir.join(".gitignore");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error),
+    };
     let present: BTreeSet<&str> = existing.lines().map(str::trim).collect();
     let missing: Vec<&str> = SPINDLE_WORKSPACE_GITIGNORE_ENTRIES
         .iter()
@@ -239,6 +243,19 @@ mod tests {
         let temp = tempdir().unwrap();
         assert_eq!(runtime_dir(temp.path()), temp.path().join("runtime"));
     }
+    #[test]
+    fn workspace_gitignore_preserves_unreadable_file_on_error() {
+        let temp = tempdir().unwrap();
+        let spindle_dir = temp.path().join(".spindle");
+        std::fs::create_dir_all(&spindle_dir).unwrap();
+        let path = spindle_dir.join(".gitignore");
+        let original = [0xff, 0xfe, b'\n'];
+        std::fs::write(&path, original).unwrap();
+
+        assert!(ensure_workspace_gitignore(&spindle_dir).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
     #[test]
     fn workspace_gitignore_is_idempotent_and_preserves_author_lines() {
         let temp = tempdir().unwrap();
