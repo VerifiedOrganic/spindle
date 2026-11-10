@@ -1,6 +1,50 @@
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn tool_descriptions_and_schemas_are_provider_neutral() {
+    let router = router().await;
+    let providers = [
+        "gemini",
+        "openai",
+        "anthropic",
+        "claude",
+        "grok",
+        "ollama",
+        "deepseek",
+        "mistral",
+        "cohere",
+    ];
+    let patterns: Vec<regex::Regex> = providers
+        .iter()
+        .map(|provider| regex::Regex::new(&format!(r"(?i)\b{provider}\b")).expect("provider regex"))
+        .collect();
+    for tool in router.list_tools() {
+        // The operator-only Grok skill installer is intentionally host-specific.
+        if tool.name == "init_grok_skills" {
+            continue;
+        }
+        let mut haystacks = vec![
+            tool.description.as_deref().unwrap_or_default().to_string(),
+            serde_json::to_string(&tool.input_schema).expect("serialize input schema"),
+        ];
+        if let Some(output) = &tool.output_schema {
+            haystacks.push(serde_json::to_string(output).expect("serialize output schema"));
+        }
+        for text in haystacks {
+            for (provider, pattern) in providers.iter().zip(&patterns) {
+                assert!(
+                    !pattern.is_match(&text),
+                    "tool '{}' exposes stale provider name '{}': {}",
+                    tool.name,
+                    provider,
+                    text
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn tool_schemas_contain_no_gemini_incompatible_keywords() {
     let router = router().await;
     let tools = router.list_tools();

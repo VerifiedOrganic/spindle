@@ -3,8 +3,8 @@
   "compatibility": {
     "default": {
       "tools": 181,
-      "input_bytes": 171173,
-      "full_bytes": 740000
+      "input_bytes": 171168,
+      "full_bytes": 739800
     },
     "new-book": {
       "tools": 14,
@@ -14,12 +14,12 @@
     "minimal": {
       "tools": 22,
       "input_bytes": 30835,
-      "full_bytes": 207000
+      "full_bytes": 207038
     },
     "write": {
       "tools": 122,
-      "input_bytes": 115290,
-      "full_bytes": 468000
+      "input_bytes": 115308,
+      "full_bytes": 468510
     },
     "import": {
       "tools": 40,
@@ -29,7 +29,7 @@
     "authoring": {
       "tools": 78,
       "input_bytes": 88059,
-      "full_bytes": 336000
+      "full_bytes": 336012
     },
     "planning": {
       "tools": 38,
@@ -38,13 +38,13 @@
     },
     "release": {
       "tools": 62,
-      "input_bytes": 45475,
-      "full_bytes": 90729
+      "input_bytes": 45493,
+      "full_bytes": 90747
     },
     "research": {
       "tools": 15,
-      "input_bytes": 7584,
-      "full_bytes": 20051
+      "input_bytes": 7602,
+      "full_bytes": 20069
     },
     "revision": {
       "tools": 34,
@@ -58,13 +58,13 @@
     },
     "style": {
       "tools": 43,
-      "input_bytes": 34159,
-      "full_bytes": 94206
+      "input_bytes": 34177,
+      "full_bytes": 94224
     },
     "workflow-authoring": {
       "tools": 74,
-      "input_bytes": 85869,
-      "full_bytes": 181002
+      "input_bytes": 85846,
+      "full_bytes": 180979
     },
     "workflow-import": {
       "tools": 20,
@@ -83,8 +83,8 @@
     },
     "legacy-all": {
       "tools": 181,
-      "input_bytes": 171173,
-      "full_bytes": 740000
+      "input_bytes": 171168,
+      "full_bytes": 739800
     }
   },
   "canonical": {

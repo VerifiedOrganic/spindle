@@ -2832,6 +2832,8 @@ pub struct WriterStateEnvelope {
     #[serde(default)]
     pub book_outline: Option<BookOutline>,
     pub bundle_summary: ContextBundleSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omissions: Vec<WriterStateOmission>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writer_state_markdown: Option<String>,
 }
@@ -2933,6 +2935,8 @@ pub struct WriterState {
     #[serde(default)]
     pub book_outline: Option<BookOutline>,
     pub bundle_summary: ContextBundleSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omissions: Vec<WriterStateOmission>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -3099,6 +3103,21 @@ pub struct SessionActivitySummary {
     pub subject_id: Option<String>,
     pub summary: String,
     pub created_at: String,
+}
+
+/// A writer-state section or field that was reduced to fit `budget_tokens`.
+/// `omitted` counts whole records for dropped/capped sections and truncated
+/// records for text caps. Callers can re-run with a larger budget or use
+/// `fetch_with` for a focused read.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct WriterStateOmission {
+    pub section: String,
+    /// `budget` (optional section dropped), `section_cap` (required list
+    /// capped), or `text_cap` (required text truncated).
+    pub reason: String,
+    pub omitted: usize,
+    pub fetch_with: String,
+    pub hint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -7362,9 +7381,9 @@ pub struct ContinueGenerationInput {
     #[serde(default)]
     pub rating: Option<String>,
     /// Project id this generation belongs to. Required for adapters that
-    /// run the drafting model in their own MCP session (currently `grok-cli`)
-    /// so the spawned agent can call `set_active_project` before pulling
-    /// canon — its session does not inherit the caller's active project.
+    /// run the drafting model in their own MCP session so the spawned agent
+    /// can call `set_active_project` before pulling canon — its session does
+    /// not inherit the caller's active project.
     /// When omitted, the MCP layer falls back to the session's
     /// `active_project_id` if one has been set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
