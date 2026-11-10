@@ -25,6 +25,7 @@
 
 ### Fixed
 
+- Character-state selection now uses SQLite rowid as the explicit recency tie-break at equal story positions, with created-at/id fallbacks; the recency key is retained in internal canon snapshots, and the retcon validator, subject snapshot and export paths share the newest-state rule instead of depending on load order.
 - `get_writer_state` now succeeds at its default budget and keeps the response
   within any requested budget, compacts required sections, and reports typed
   `omissions` with fetch hints.

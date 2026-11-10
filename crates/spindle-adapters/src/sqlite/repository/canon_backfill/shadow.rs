@@ -102,7 +102,15 @@ pub fn project_character_state_at_from_canon(
                 && (s.book_number, s.chapter_number, s.scene_order)
                     <= (book_number, chapter_number, scene_order)
         })
-        .max_by_key(|s| (s.book_number, s.chapter_number, s.scene_order, s.created_at)))
+        .max_by_key(|s| {
+            (
+                s.book_number,
+                s.chapter_number,
+                s.scene_order,
+                s.created_at,
+                s.id.clone(),
+            )
+        }))
 }
 
 /// Reconstructs `WorldState` rows on a branch from `CanonStateViewV1`,
