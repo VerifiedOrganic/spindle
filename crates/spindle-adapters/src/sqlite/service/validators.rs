@@ -2360,12 +2360,16 @@ const NARRATIVE_ACTIONS: &[&str] = &[
 /// late Bran", "remembering Bran") are not present-tense action evidence.
 fn is_death_reference_mention(lower: &str, start: usize, matched_len: usize) -> bool {
     let before = lower[..start].rsplit(';').next().unwrap_or_default();
+    let before = before.rsplit(',').next().unwrap_or_default();
     let before = before.rsplit(" but ").next().unwrap_or_default();
     let before = before.rsplit(" yet ").next().unwrap_or_default();
     let before = before.trim_end_matches(|ch: char| ch.is_whitespace() || ch == ',');
     if before.ends_with("the late") || before.ends_with("late") {
         return true;
     }
+    // Only a memory/mourning verb attached to this candidate suppresses the
+    // action. A death in another clause ("After Tomas died, Veyra opened...")
+    // or a place ("Beside the grave, Veyra opened...") belongs to someone else.
     if [
         "remembered",
         "remembering",
@@ -2373,13 +2377,8 @@ fn is_death_reference_mention(lower: &str, start: usize, matched_len: usize) -> 
         "memory",
         "mourned",
         "mourning",
+        "grieving",
         "grief",
-        "funeral",
-        "grave",
-        "buried",
-        "burial",
-        "death",
-        "died",
     ]
     .iter()
     .any(|word| contains_case_insensitive_word_boundary(before, word))
@@ -2738,6 +2737,15 @@ mod dead_action_tests {
             "Maren opened the door.",
             &["Maren".to_string()]
         ));
+        for text in [
+            "After Tomas died, Veyra opened the door.",
+            "Beside the grave, Veyra opened the door.",
+        ] {
+            assert!(
+                has_named_character_action(text, &["Veyra".to_string()]),
+                "unrelated death reference must not hide action: {text}"
+            );
+        }
     }
 
     #[test]

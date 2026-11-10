@@ -1059,15 +1059,22 @@ fn family_contradiction(
             if canonical_side.is_some() && prose_side.is_some() && canonical_side != prose_side {
                 return None;
             }
-            let prose_lost = ["lost", "missing", "amputated"]
-                .iter()
-                .any(|word| contains_inflected_word(prose, word));
-            let prose_total = finger_total(prose);
-            if prose_lost || prose_total.is_some_and(|total| total > 5 - canonical_count) {
-                Some((canonical_count.to_string(), "lost".to_string()))
-            } else {
-                None
+            // A hand has five digits; an explicit ten-finger/whole-character
+            // fact uses ten. Never subtract an unbounded parsed count.
+            let capacity: usize = if canonical_count >= 10 { 10 } else { 5 };
+            let remaining = capacity.saturating_sub(canonical_count.min(capacity));
+            if let Some(prose_loss) = lost_finger_count(prose) {
+                if prose_loss == canonical_count {
+                    return None;
+                }
+                return Some((canonical_count.to_string(), prose_loss.to_string()));
             }
+            if let Some(prose_total) = finger_total(prose)
+                && prose_total > remaining
+            {
+                return Some((canonical_count.to_string(), prose_total.to_string()));
+            }
+            None
         }
         AttributeFamily::Credential => {
             let canonical_tokens = hyphenated_tokens(canonical);

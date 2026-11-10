@@ -782,4 +782,34 @@ fn scar_absence_sight_clearance_and_side_swap_are_contradictions() {
         )
         .is_none()
     );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Kestrel still had two fingers missing from his left hand."),
+            &fingers,
+        )
+        .is_none(),
+        "a matching missing-finger count is consistent"
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Kestrel still had three fingers on his left hand."),
+            &fingers,
+        )
+        .is_none(),
+        "the matching remaining count is consistent"
+    );
+
+    let whole_hand = attribute_fact(
+        "fingers",
+        "ten fingers missing",
+        &["Kestrel", "Kestrel Vane"],
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Kestrel showed all ten fingers to the guard."),
+            &whole_hand,
+        )
+        .is_some(),
+        "a ten-finger whole-character loss must not wrap or miss"
+    );
 }
