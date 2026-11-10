@@ -491,9 +491,9 @@ async fn commit_scene_changes_populates_phase_four_findings_summary() {
             value: None,
             subject_table: Some("character".into()),
             subject_id: Some(mara.character_id.clone()),
-            predicate: Some("oath".into()),
+            predicate: Some("eye color".into()),
             value_kind: Some("string".into()),
-            value_text: Some("ash gate warden".into()),
+            value_text: Some("amber".into()),
             value_number: None,
             value_unit: None,
             value_json: None,
@@ -512,9 +512,9 @@ async fn commit_scene_changes_populates_phase_four_findings_summary() {
     .await
     .unwrap();
 
-    // Scene 2: prose mentions the canonical key ("oath") but not the
-    // canonical value ("ash gate warden"). The Phase-4 canonical-fact
-    // validator should fire on commit.
+    // Scene 2: prose gives a conflicting eye colour for the same character.
+    // The Phase-4 canonical-fact validator should fire on positive
+    // contradiction evidence, not merely on a key mention.
     let scene2 = svc
         .save_scene_draft(SaveSceneDraftInput {
             project_id: proj.project_id.clone(),
@@ -522,7 +522,7 @@ async fn commit_scene_changes_populates_phase_four_findings_summary() {
             chapter_number: 2,
             chapter_id: None,
             scene_order: 1,
-            full_text: "Mara's oath weighed heavy, but she said nothing of its terms.".into(),
+            full_text: "Mara's eyes were a flat brown in the lantern light.".into(),
             summary: "drift beat".into(),
             content_rating: ContentRating::General,
             tone: Some("grim".into()),

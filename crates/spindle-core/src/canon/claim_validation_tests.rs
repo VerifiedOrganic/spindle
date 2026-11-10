@@ -671,3 +671,115 @@ fn named_secret_narration_accepts_paraphrased_content() {
             .is_none()
     );
 }
+
+#[test]
+fn keyed_composite_eye_color_still_detects_conflicting_color() {
+    let fact = attribute_fact("Mira eye color", "amber", &["Mira Vale", "Mira"]);
+    let finding = detect_attribute_prose_contradiction(
+        &scene("In the mirror, Mira eye color gleamed a vivid cerulean blue."),
+        &fact,
+    )
+    .expect("keyed composite eye colour conflict");
+    assert!(finding.message.contains("eye color"));
+}
+
+#[test]
+fn credential_value_swap_is_a_contradiction() {
+    let fact = attribute_fact(
+        "Elena badge clearance",
+        "silver-inspector",
+        &["Elena Rostova", "Elena"],
+    );
+    let finding = detect_attribute_prose_contradiction(
+        &scene("Under the console lamp, Elena badge clearance read bronze-provisional instead of its registered tier."),
+        &fact,
+    )
+    .expect("credential conflict");
+    assert!(finding.message.contains("badge") || finding.message.contains("clearance"));
+}
+
+#[test]
+fn scar_absence_sight_clearance_and_side_swap_are_contradictions() {
+    let scar = attribute_fact(
+        "burn scar",
+        "on her left forearm",
+        &["Iris Calloway", "Iris"],
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Iris's burn scar on her right forearm is gone."),
+            &scar,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Iris's burn scar on her left forearm shows pale in the lamplight."),
+            &scar,
+        )
+        .is_none()
+    );
+
+    let eye = attribute_fact("left eye", "blind and milky", &["Tobin Sarrow", "Tobin"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Tobin's blind left eye was clear and brown."),
+            &eye,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Tobin's blind left eye was milky and pale."),
+            &eye,
+        )
+        .is_none()
+    );
+
+    let colors = attribute_fact("Mara eye color", "amber", &["Mara Vance", "Mara"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara eye color appeared in the ledger with no value stated."),
+            &colors,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara's eyes were amber in the lantern light."),
+            &colors,
+        )
+        .is_none()
+    );
+
+    let glass = attribute_fact("glass eye", "his left eye", &["Vey", "Magistrate Vey"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Vey stood there with his right eye gleaming."),
+            &glass,
+        )
+        .is_some()
+    );
+
+    let fingers = attribute_fact(
+        "left hand",
+        "two fingers missing",
+        &["Kestrel", "Kestrel Vane"],
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Kestrel counted the crates on the fingers of his left hand, all five of them."),
+            &fingers,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene(
+                "Kestrel counted the crates on the fingers of his right hand, all five of them."
+            ),
+            &fingers,
+        )
+        .is_none()
+    );
+}

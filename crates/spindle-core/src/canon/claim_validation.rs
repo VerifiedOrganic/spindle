@@ -620,6 +620,9 @@ enum AttributeFamily {
     Scar,
     Build,
     Sight,
+    BodyPartLoss,
+    Credential,
+    BodySide,
 }
 
 fn attribute_families(key: &str) -> Vec<AttributeFamily> {
@@ -657,8 +660,38 @@ fn attribute_families(key: &str) -> Vec<AttributeFamily> {
     if has("build") || has("physique") || has("frame") || (has("body") && has("type")) {
         families.push(AttributeFamily::Build);
     }
-    if has("sight") || has("vision") || has("eyesight") || has("blind") {
+    if has("sight")
+        || has("vision")
+        || has("eyesight")
+        || has("blind")
+        || has("eye")
+        || has("eyes")
+        || has("gaze")
+    {
         families.push(AttributeFamily::Sight);
+    }
+    if has("finger") || has("fingers") || has("amputat") {
+        families.push(AttributeFamily::BodyPartLoss);
+    }
+    if has("badge")
+        || has("clearance")
+        || has("rank")
+        || has("status")
+        || has("tier")
+        || has("grade")
+    {
+        families.push(AttributeFamily::Credential);
+    }
+    if has("eye")
+        || has("eyebrow")
+        || has("forearm")
+        || has("arm")
+        || has("leg")
+        || has("hand")
+        || has("shoulder")
+        || has("face")
+    {
+        families.push(AttributeFamily::BodySide);
     }
     families
 }
@@ -702,7 +735,12 @@ fn family_heads(family: AttributeFamily) -> &'static [&'static str] {
         ],
         AttributeFamily::Sight => &[
             "sight", "vision", "eyesight", "eye", "eyes", "blind", "sighted", "see", "sees", "saw",
-            "look", "looks",
+            "look", "looks", "clear", "bright",
+        ],
+        AttributeFamily::BodyPartLoss => &["finger", "fingers", "hand", "hands", "lost", "missing"],
+        AttributeFamily::Credential => &["badge", "clearance", "rank", "status", "tier", "grade"],
+        AttributeFamily::BodySide => &[
+            "eye", "eyes", "eyebrow", "forearm", "arm", "leg", "hand", "shoulder", "face",
         ],
     }
 }
@@ -731,7 +769,31 @@ pub fn detect_attribute_prose_contradiction(
         return None;
     }
     let canonical = fact.value.to_ascii_lowercase();
-    let families = attribute_families(&fact.key);
+    let mut families = attribute_families(&fact.key);
+    if !families.contains(&AttributeFamily::Sight)
+        && ["blind", "sighted", "partially sighted"]
+            .iter()
+            .any(|word| contains_phrase(&canonical, word))
+    {
+        families.push(AttributeFamily::Sight);
+    }
+    if !families.contains(&AttributeFamily::BodyPartLoss)
+        && ["finger", "fingers", "missing", "amputat"]
+            .iter()
+            .any(|word| contains_inflected_word(&canonical, word))
+    {
+        families.push(AttributeFamily::BodyPartLoss);
+    }
+    if !families.contains(&AttributeFamily::BodySide)
+        && (contains_word(&canonical, "left") || contains_word(&canonical, "right"))
+        && [
+            "eye", "eyebrow", "forearm", "arm", "leg", "hand", "shoulder", "face",
+        ]
+        .iter()
+        .any(|word| contains_inflected_word(&canonical, word))
+    {
+        families.push(AttributeFamily::BodySide);
+    }
     let canonical_prosthetic = visible_terms(&canonical, PROSTHETIC_TERMS);
     let canonical_organic = visible_terms(&canonical, ORGANIC_TERMS);
     let canonical_colors = visible_terms(&canonical, COLOR_TERMS);
@@ -779,7 +841,10 @@ pub fn detect_attribute_prose_contradiction(
         if contains_any(&lower, IRREALIS_MARKERS).is_some() {
             continue;
         }
-        let negated = contains_any(&lower, NEGATION_MARKERS).is_some();
+        let negated = NEGATION_MARKERS
+            .iter()
+            .filter(|marker| **marker != "instead of " && **marker != "rather than ")
+            .any(|marker| contains_phrase(&lower, marker));
         if negated
             && !families
                 .iter()
@@ -810,7 +875,8 @@ pub fn detect_attribute_prose_contradiction(
             canonical_terms.extend(canonical_organic.clone());
             prose_terms.push(term);
         }
-        if canonical_terms.is_empty()
+        if families.is_empty()
+            && canonical_terms.is_empty()
             && !canonical_colors.is_empty()
             && let Some(term) = contains_any(&lower, COLOR_TERMS)
             && !canonical_colors.contains(&term)
@@ -822,9 +888,19 @@ pub fn detect_attribute_prose_contradiction(
             if !canonical_terms.is_empty() {
                 break;
             }
-            if let Some((expected, found)) =
-                family_contradiction(*family, &canonical, &lower, numeric_height_verified)
+            if !family_heads(*family)
+                .iter()
+                .any(|head| contains_inflected_word(&lower_sentence, head))
             {
+                continue;
+            }
+            if let Some((expected, found)) = family_contradiction(
+                *family,
+                &fact.key,
+                &canonical,
+                &lower,
+                numeric_height_verified,
+            ) {
                 canonical_terms.push(expected);
                 prose_terms.push(found);
             }
@@ -901,6 +977,7 @@ fn contains_inflected_word(haystack: &str, head: &str) -> bool {
 
 fn family_contradiction(
     family: AttributeFamily,
+    key: &str,
     canonical: &str,
     prose: &str,
     numeric_height_verified: bool,
@@ -974,6 +1051,47 @@ fn family_contradiction(
             let prose_sight = sight_state(prose)?;
             (canonical_sight != prose_sight)
                 .then(|| (canonical_sight.to_string(), prose_sight.to_string()))
+        }
+        AttributeFamily::BodyPartLoss => {
+            let canonical_count = lost_finger_count(canonical)?;
+            let canonical_side = body_side(canonical).or_else(|| body_side(key));
+            let prose_side = body_side(prose);
+            if canonical_side.is_some() && prose_side.is_some() && canonical_side != prose_side {
+                return None;
+            }
+            let prose_lost = ["lost", "missing", "amputated"]
+                .iter()
+                .any(|word| contains_inflected_word(prose, word));
+            let prose_total = finger_total(prose);
+            if prose_lost || prose_total.is_some_and(|total| total > 5 - canonical_count) {
+                Some((canonical_count.to_string(), "lost".to_string()))
+            } else {
+                None
+            }
+        }
+        AttributeFamily::Credential => {
+            let canonical_tokens = hyphenated_tokens(canonical);
+            let prose_tokens = hyphenated_tokens(prose);
+            if canonical_tokens.is_empty()
+                || prose_tokens.is_empty()
+                || prose_tokens
+                    .iter()
+                    .any(|token| canonical_tokens.contains(token))
+            {
+                return None;
+            }
+            Some((canonical_tokens.join(","), prose_tokens.join(",")))
+        }
+        AttributeFamily::BodySide => {
+            let canonical_side = body_side(canonical)?;
+            let prose_first_eye_side = first_eye_side(prose);
+            if let Some(prose_side) = prose_first_eye_side {
+                return (canonical_side != prose_side)
+                    .then(|| (canonical_side.to_string(), prose_side.to_string()));
+            }
+            let prose_side = body_side(prose)?;
+            (canonical_side != prose_side)
+                .then(|| (canonical_side.to_string(), prose_side.to_string()))
         }
     }
 }
@@ -1118,6 +1236,21 @@ fn body_side(text: &str) -> Option<&'static str> {
 }
 
 fn scar_state(text: &str) -> Option<&'static str> {
+    if [
+        "never existed",
+        "was gone",
+        "is gone",
+        "had gone",
+        "vanished",
+        "healed",
+        "faded",
+        "no longer",
+    ]
+    .iter()
+    .any(|phrase| contains_phrase(text, phrase))
+    {
+        return Some("unscarred");
+    }
     let scarred = [
         "scar", "scars", "scarred", "scarring", "mark", "seam", "blemish", "pucker", "notch",
     ]
@@ -1360,6 +1493,25 @@ fn sight_state(text: &str) -> Option<&'static str> {
     {
         return Some("partially sighted");
     }
+    // Clear/bright/seeing descriptors assert usable sight even when the prose
+    // also repeats the word "blind" ("his blind eye was clear and brown").
+    if [
+        "clear",
+        "bright",
+        "seeing",
+        "open",
+        "sighted",
+        "can see",
+        "could see",
+        "saw",
+        "sees",
+        "see",
+    ]
+    .iter()
+    .any(|phrase| contains_phrase(text, phrase))
+    {
+        return Some("sighted");
+    }
     if [
         "blind",
         "no sight",
@@ -1373,13 +1525,74 @@ fn sight_state(text: &str) -> Option<&'static str> {
     {
         return Some("blind");
     }
-    if ["sighted", "can see", "could see", "saw", "sees", "see"]
+    None
+}
+
+fn lost_finger_count(text: &str) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    if !["lost", "missing", "amputat"]
         .iter()
-        .any(|phrase| contains_phrase(text, phrase))
+        .any(|word| contains_inflected_word(&lower, word))
+        || !contains_inflected_word(&lower, "finger")
     {
-        return Some("sighted");
+        return None;
+    }
+    for (word, count) in [
+        ("one", 1),
+        ("two", 2),
+        ("three", 3),
+        ("four", 4),
+        ("five", 5),
+        ("all", 5),
+        ("ten", 10),
+    ] {
+        if contains_word(&lower, word) {
+            return Some(count);
+        }
+    }
+    Some(5)
+}
+
+fn finger_total(text: &str) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    if !contains_inflected_word(&lower, "finger") {
+        return None;
+    }
+    for (word, count) in [
+        ("one", 1),
+        ("two", 2),
+        ("three", 3),
+        ("four", 4),
+        ("five", 5),
+        ("ten", 10),
+        ("all", 5),
+    ] {
+        if contains_word(&lower, word) {
+            return Some(count);
+        }
     }
     None
+}
+
+fn hyphenated_tokens(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|token| token.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '-'))
+        .filter(|token| token.contains('-') && token.len() >= 4)
+        .map(|token| token.to_ascii_lowercase())
+        .collect()
+}
+
+fn first_eye_side(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    let left = lower.find("left eye");
+    let right = lower.find("right eye");
+    match (left, right) {
+        (Some(l), Some(r)) if l < r => Some("left"),
+        (Some(_), Some(_)) => Some("right"),
+        (Some(_), None) => Some("left"),
+        (None, Some(_)) => Some("right"),
+        _ => None,
+    }
 }
 
 fn visible_terms(haystack: &str, terms: &[&str]) -> Vec<String> {

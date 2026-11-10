@@ -2356,6 +2356,92 @@ const NARRATIVE_ACTIONS: &[&str] = &[
     "touches",
 ];
 
+/// Passing death references ("since Maren drowned", "Bran's funeral", "the
+/// late Bran", "remembering Bran") are not present-tense action evidence.
+fn is_death_reference_mention(lower: &str, start: usize, matched_len: usize) -> bool {
+    let before = lower[..start].rsplit(';').next().unwrap_or_default();
+    let before = before.rsplit(" but ").next().unwrap_or_default();
+    let before = before.rsplit(" yet ").next().unwrap_or_default();
+    let before = before.trim_end_matches(|ch: char| ch.is_whitespace() || ch == ',');
+    if before.ends_with("the late") || before.ends_with("late") {
+        return true;
+    }
+    if [
+        "remembered",
+        "remembering",
+        "remember",
+        "memory",
+        "mourned",
+        "mourning",
+        "grief",
+        "funeral",
+        "grave",
+        "buried",
+        "burial",
+        "death",
+        "died",
+    ]
+    .iter()
+    .any(|word| contains_case_insensitive_word_boundary(before, word))
+    {
+        return true;
+    }
+    let after = lower[start + matched_len..]
+        .trim_start_matches(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | ':'));
+    if after.starts_with("'s") || after.starts_with("’s") {
+        let rest = after
+            .trim_start_matches("'s")
+            .trim_start_matches("’s")
+            .trim_start_matches(|ch: char| ch.is_whitespace());
+        if [
+            "death", "funeral", "grave", "burial", "wake", "memory", "ghost", "corpse",
+        ]
+        .iter()
+        .any(|word| rest.starts_with(word))
+        {
+            return true;
+        }
+    }
+    [
+        "died",
+        "dies",
+        "dying",
+        "drowned",
+        "drowns",
+        "drowning",
+        "was killed",
+        "were killed",
+        "had been killed",
+        "has been killed",
+        "was dead",
+        "is dead",
+        "death",
+        "funeral",
+        "grave",
+        "buried",
+        "burial",
+        "lost at sea",
+    ]
+    .iter()
+    .any(|phrase| after.starts_with(phrase))
+}
+
+/// A relative/object reference such as "the same kind Bran brought up" is not
+/// a character-subject action after death.
+fn is_relative_reference_before(before: &str) -> bool {
+    let trimmed = before.trim_end_matches(|ch: char| ch.is_whitespace() || ch == ',');
+    [
+        "the same kind",
+        "the kind",
+        "the sort",
+        "the one",
+        "a kind of",
+        "the same",
+    ]
+    .iter()
+    .any(|marker| trimmed.ends_with(marker))
+}
+
 fn has_named_character_action(text: &str, aliases: &[String]) -> bool {
     if aliases.is_empty() {
         return false;
@@ -2443,14 +2529,19 @@ fn has_named_character_action(text: &str, aliases: &[String]) -> bool {
                 {
                     return false;
                 }
+                if is_death_reference_mention(&lower, start, matched.len())
+                    || is_relative_reference_before(&lower[..start])
+                {
+                    return false;
+                }
                 let tail = &lower[start + matched.len()..];
                 if !tail.starts_with(char::is_whitespace) {
                     return false;
                 }
                 let mut words = tail.split_whitespace();
                 let first = words.next().unwrap_or_default();
-                let verb = if ["quietly", "quickly", "slowly", "suddenly", "also", "then"]
-                    .contains(&first)
+                let verb = if ["was", "is", "were", "are"].contains(&first)
+                    || ["quietly", "quickly", "slowly", "suddenly", "also", "then"].contains(&first)
                 {
                     words.next().unwrap_or_default()
                 } else {
@@ -2626,6 +2717,27 @@ mod dead_action_tests {
         ] {
             let _ = has_named_character_action(text, &aliases);
         }
+    }
+
+    #[test]
+    fn death_references_and_relative_clauses_are_not_actions() {
+        for (text, name) in [
+            ("Three weeks had passed since Maren drowned.", "Maren"),
+            ("Maren's funeral was held on the hill.", "Maren"),
+            ("The late Maren left a key in the tin.", "Maren"),
+            ("When Maren died, the bell rang.", "Maren"),
+            ("Iris remembered Maren and looked away.", "Maren"),
+            ("The same kind Bran brought up from the wreck.", "Bran"),
+        ] {
+            assert!(
+                !has_named_character_action(text, &[name.to_string()]),
+                "death reference must not be action: {text}"
+            );
+        }
+        assert!(has_named_character_action(
+            "Maren opened the door.",
+            &["Maren".to_string()]
+        ));
     }
 
     #[test]
