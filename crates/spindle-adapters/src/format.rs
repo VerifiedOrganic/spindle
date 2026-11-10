@@ -22,7 +22,7 @@ use spindle_core::models::{
     ReaderContract, RecentSceneSummary, RelationshipSummary, SceneContextNovelLayer,
     SceneContextOutput, SceneContextSceneLayer, SceneDeleteImpactGroup, SceneMoveImpactGroup,
     SearchBibleResultItem, SystemOverlaySummary, TimelineEventSummary, WorldStateSummary,
-    WriterIntent, WriterState,
+    WriterIntent, WriterState, WriterStateOmission,
 };
 use spindle_core::subject_snapshot::{RenderDepth, SubjectSnapshot as SnapshotSubject};
 
@@ -226,6 +226,20 @@ pub fn format_writer_state_markdown(state: &WriterState) -> String {
         && let Some(book_outline) = state.book_outline.as_ref()
     {
         lines.push(format_book_outline_markdown(book_outline));
+    }
+
+    if !state.omissions.is_empty() {
+        lines.push("\n## Omitted for budget".to_string());
+        for omission in &state.omissions {
+            lines.push(format!(
+                "- {} ({} omitted, {}). {}: {}",
+                omission.section,
+                omission.omitted,
+                omission.reason,
+                omission.fetch_with,
+                omission.hint
+            ));
+        }
     }
 
     lines.join("\n")
@@ -1803,59 +1817,204 @@ pub fn estimate_writer_state_tokens(format: ContextFormat, state: &WriterState) 
     }
 }
 
-/// Lower bound on the writer-state token count once every optional section
-/// has been trimmed. Used to detect budgets so tight that even mandatory
-/// sections wouldn't fit, so we can return an actionable error.
-pub fn minimum_writer_state_tokens(format: ContextFormat, state: &WriterState) -> usize {
-    let mut minimum_state = state.clone();
-    for section_id in WRITER_STATE_TRIMMING_ORDER {
-        trim_writer_state_section(&mut minimum_state, section_id);
+const WRITER_STATE_REQUIRED_TEXT_CAP: usize = 600;
+const WRITER_STATE_HARD_CONSTRAINT_TEXT_CAP: usize = 240;
+
+fn writer_state_section_item_count(state: &WriterState, section_id: &str) -> usize {
+    match section_id {
+        "subjects" => state.subjects.len(),
+        "recent_scenes" => state.recent_scenes.len(),
+        "open_promises_due_now" => state.open_promises_due_now.len(),
+        "active_overlays" => state.active_overlays.len(),
+        "drift_warnings" => state.drift_warnings.len(),
+        "unsynced_local_files" => state.unsynced_local_files.len(),
+        "recent_session_activity" => state.recent_session_activity.len(),
+        "chapter_outline" => usize::from(state.chapter_outline.is_some()),
+        "book_outline" => usize::from(state.book_outline.is_some()),
+        _ => 0,
     }
-    estimate_writer_state_tokens(format, &minimum_state)
 }
 
-/// Trim optional writer-state sections until the rendered payload fits inside
-/// `token_budget`. Marks `bundle_summary.truncated` if anything was dropped
-/// (or if the initial render was over budget even when nothing trimmable was
-/// available). Errors with `anyhow::bail!` when even the minimum payload
-/// exceeds the supplied budget — the original SurrealDB service raised
-/// `DomainError::InvalidRequest`; the SQLite stack uses plain `anyhow` so the
-/// error message is the user-facing contract here.
+fn writer_state_omission_hint(section_id: &str) -> (&'static str, &'static str) {
+    match section_id {
+        "recent_scenes" => (
+            "get_scene_context",
+            "read one scene directly, or re-run get_writer_state with a larger budget_tokens",
+        ),
+        "subjects" => (
+            "get_character_snapshot",
+            "read one character directly, or re-run get_writer_state with a larger budget_tokens",
+        ),
+        "chapter_outline" | "book_outline" => (
+            "get_chapter_briefing",
+            "request the target chapter briefing, or re-run get_writer_state with a larger budget_tokens",
+        ),
+        "recent_session_activity" => (
+            "list_changes",
+            "page recent operations, or re-run get_writer_state with a larger budget_tokens",
+        ),
+        _ => (
+            "get_writer_state",
+            "re-run with a larger budget_tokens to include the full section",
+        ),
+    }
+}
+
+fn record_writer_state_omission(
+    state: &mut WriterState,
+    section: &str,
+    reason: &str,
+    omitted: usize,
+) {
+    if omitted == 0 {
+        return;
+    }
+    if let Some(existing) = state
+        .omissions
+        .iter_mut()
+        .find(|entry| entry.section == section && entry.reason == reason)
+    {
+        existing.omitted = existing.omitted.saturating_add(omitted);
+        return;
+    }
+    let (fetch_with, hint) = writer_state_omission_hint(section);
+    state.omissions.push(WriterStateOmission {
+        section: section.to_string(),
+        reason: reason.to_string(),
+        omitted,
+        fetch_with: fetch_with.to_string(),
+        hint: hint.to_string(),
+    });
+}
+
+fn truncate_writer_state_text(value: &mut String, max_chars: usize) -> bool {
+    if value.chars().count() <= max_chars {
+        return false;
+    }
+    *value = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    value.push('…');
+    true
+}
+
+/// Apply one required-section compaction step. Returns false when no
+/// further safe compaction is available.
+fn compact_writer_state_required_once(state: &mut WriterState) -> bool {
+    let mut truncated_constraints = 0;
+    for constraint in &mut state.hard_constraints {
+        if truncate_writer_state_text(
+            &mut constraint.statement,
+            WRITER_STATE_HARD_CONSTRAINT_TEXT_CAP,
+        ) {
+            truncated_constraints += 1;
+        }
+    }
+    if truncated_constraints > 0 {
+        record_writer_state_omission(state, "hard_constraints", "text_cap", truncated_constraints);
+        return true;
+    }
+
+    for limit in [8, 4, 2, 1] {
+        if state.hard_constraints.len() > limit {
+            let omitted = state.hard_constraints.len() - limit;
+            state.hard_constraints.truncate(limit);
+            record_writer_state_omission(state, "hard_constraints", "section_cap", omitted);
+            return true;
+        }
+    }
+
+    if let Some(summary) = state.current.last_completed_scene_summary.as_mut()
+        && truncate_writer_state_text(summary, WRITER_STATE_REQUIRED_TEXT_CAP)
+    {
+        record_writer_state_omission(state, "current.last_completed_scene_summary", "text_cap", 1);
+        return true;
+    }
+    if let Some(scene) = state.current.scene.as_mut()
+        && truncate_writer_state_text(&mut scene.summary, WRITER_STATE_REQUIRED_TEXT_CAP)
+    {
+        record_writer_state_omission(state, "current.scene.summary", "text_cap", 1);
+        return true;
+    }
+    if let Some(focus) = state.next.intended_focus.as_mut()
+        && truncate_writer_state_text(focus, WRITER_STATE_REQUIRED_TEXT_CAP)
+    {
+        record_writer_state_omission(state, "next.intended_focus", "text_cap", 1);
+        return true;
+    }
+    if state.next.suggested_subjects.len() > 2 {
+        let omitted = state.next.suggested_subjects.len() - 2;
+        state.next.suggested_subjects.truncate(2);
+        record_writer_state_omission(state, "next.suggested_subjects", "section_cap", omitted);
+        return true;
+    }
+    false
+}
+
+/// Shrink a writer-state payload until `measure` reports it fits
+/// `token_budget`. Optional sections are dropped first (in
+/// [`WRITER_STATE_TRIMMING_ORDER`]); required sections are then compacted and
+/// every reduction is recorded in `omissions`. `measure` is supplied by the
+/// caller so direct state reads and the public envelope (which also carries
+/// rendered markdown) enforce the budget against their actual output.
+pub fn fit_writer_state_to_budget<F>(
+    token_budget: usize,
+    state: &mut WriterState,
+    mut measure: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut(&WriterState) -> usize,
+{
+    state.bundle_summary.token_budget = Some(token_budget);
+    state.bundle_summary.estimated_tokens = 0;
+    let initial_tokens = measure(state);
+    if initial_tokens <= token_budget {
+        state.bundle_summary.estimated_tokens = initial_tokens;
+        return Ok(());
+    }
+
+    for section_id in WRITER_STATE_TRIMMING_ORDER {
+        if measure(state) <= token_budget {
+            break;
+        }
+        if !writer_state_includes_section(state, section_id) {
+            continue;
+        }
+        let omitted = writer_state_section_item_count(state, section_id);
+        record_writer_state_omission(state, section_id, "budget", omitted);
+        trim_writer_state_section(state, section_id);
+    }
+
+    while measure(state) > token_budget {
+        if !compact_writer_state_required_once(state) {
+            break;
+        }
+    }
+
+    let final_tokens = measure(state);
+    if final_tokens > token_budget {
+        anyhow::bail!(
+            "budget_tokens ({token_budget}) too small to fit mandatory writer-state sections \
+             after compaction (estimated {final_tokens} tokens). Increase budget_tokens."
+        );
+    }
+    state.bundle_summary.estimated_tokens = final_tokens;
+    state.bundle_summary.truncated = true;
+    Ok(())
+}
+
+/// Backwards-compatible wrapper that measures the state in its requested
+/// format. The public envelope uses [`fit_writer_state_to_budget`] directly so
+/// its rendered markdown is included in the measurement.
 pub fn enforce_writer_state_budget(
     format: ContextFormat,
     token_budget: usize,
     state: &mut WriterState,
 ) -> anyhow::Result<()> {
-    let minimum_tokens = minimum_writer_state_tokens(format, state);
-    if minimum_tokens > token_budget {
-        anyhow::bail!(
-            "budget_tokens ({token_budget}) too small to fit mandatory writer-state sections \
-             (estimated {minimum_tokens} tokens). Increase budget_tokens or request fewer \
-             optional sections."
-        );
-    }
-
-    let initial_tokens = estimate_writer_state_tokens(format, state);
-    let mut estimated_tokens = initial_tokens;
-    let mut truncated = false;
-
-    if estimated_tokens > token_budget {
-        for section_id in WRITER_STATE_TRIMMING_ORDER {
-            if estimated_tokens <= token_budget {
-                break;
-            }
-            if !writer_state_includes_section(state, section_id) {
-                continue;
-            }
-            trim_writer_state_section(state, section_id);
-            estimated_tokens = estimate_writer_state_tokens(format, state);
-            truncated = true;
-        }
-    }
-
-    state.bundle_summary.estimated_tokens = estimated_tokens;
-    state.bundle_summary.truncated = truncated || initial_tokens > token_budget;
-    Ok(())
+    fit_writer_state_to_budget(token_budget, state, |state| {
+        estimate_writer_state_tokens(format, state)
+    })
 }
 
 // =============================================================================

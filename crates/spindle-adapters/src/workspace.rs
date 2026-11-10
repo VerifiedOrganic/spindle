@@ -87,6 +87,54 @@ pub fn runtime_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("runtime")
 }
 
+/// Runtime-only files in a project-local `.spindle/` workspace. The database
+/// sidecars and migration lock are recreated on demand; `runtime/` holds the
+/// primary address/lock files.
+pub const SPINDLE_WORKSPACE_GITIGNORE_ENTRIES: &[&str] = &[
+    "spindle.db",
+    "spindle.db-journal",
+    "spindle.db-shm",
+    "spindle.db-wal",
+    "spindle.db.migration.lock",
+    "runtime/",
+];
+
+/// Ensure `.spindle/.gitignore` covers runtime-only files without replacing an
+/// author's existing patterns. Safe to call on every init/startup.
+pub fn ensure_workspace_gitignore(spindle_dir: &Path) -> std::io::Result<()> {
+    use std::collections::BTreeSet;
+
+    std::fs::create_dir_all(spindle_dir)?;
+    let path = spindle_dir.join(".gitignore");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error),
+    };
+    let present: BTreeSet<&str> = existing.lines().map(str::trim).collect();
+    let missing: Vec<&str> = SPINDLE_WORKSPACE_GITIGNORE_ENTRIES
+        .iter()
+        .copied()
+        .filter(|entry| !present.contains(entry))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let mut output = existing;
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    if !output.contains("# Spindle local database and runtime files") {
+        output.push_str("# Spindle local database and runtime files\n");
+    }
+    for entry in missing {
+        output.push_str(entry);
+        output.push('\n');
+    }
+    std::fs::write(path, output)
+}
+
 pub fn resolve_workspace(
     cwd: &Path,
     env_data_dir: Option<PathBuf>,
@@ -194,5 +242,36 @@ mod tests {
     fn test_runtime_dir_stays_inside_data_dir() {
         let temp = tempdir().unwrap();
         assert_eq!(runtime_dir(temp.path()), temp.path().join("runtime"));
+    }
+    #[test]
+    fn workspace_gitignore_preserves_unreadable_file_on_error() {
+        let temp = tempdir().unwrap();
+        let spindle_dir = temp.path().join(".spindle");
+        std::fs::create_dir_all(&spindle_dir).unwrap();
+        let path = spindle_dir.join(".gitignore");
+        let original = [0xff, 0xfe, b'\n'];
+        std::fs::write(&path, original).unwrap();
+
+        assert!(ensure_workspace_gitignore(&spindle_dir).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn workspace_gitignore_is_idempotent_and_preserves_author_lines() {
+        let temp = tempdir().unwrap();
+        let spindle_dir = temp.path().join(".spindle");
+        std::fs::create_dir_all(&spindle_dir).unwrap();
+        let path = spindle_dir.join(".gitignore");
+        std::fs::write(&path, "# author's rules\n*.tmp\nspindle.db\n").unwrap();
+
+        ensure_workspace_gitignore(&spindle_dir).unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        assert!(first.contains("# author's rules"));
+        assert!(first.contains("*.tmp"));
+        assert!(first.contains("spindle.db.migration.lock"));
+        assert!(first.contains("runtime/"));
+
+        ensure_workspace_gitignore(&spindle_dir).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
     }
 }

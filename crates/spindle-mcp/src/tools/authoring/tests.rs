@@ -177,9 +177,7 @@ async fn set_active_project_does_not_depend_on_writer_state_budget() {
     ))
     .expect("decode project");
 
-    let long_rule_body = "Magic rewrites cause cascading constraint debt across every \
-            revision boundary and must be treated as binding law in all future scenes. "
-        .repeat(40);
+    let long_rule_body = r#"Magic "rewrites" cause a \ cascade of constraint debt across every revision boundary and must be treated as binding law in all future scenes. "#.repeat(40);
     for index in 0..12 {
         router
             .service
@@ -199,7 +197,7 @@ async fn set_active_project_does_not_depend_on_writer_state_budget() {
     let writer_state_args = serde_json::json!({
         "project_id": project.project_id.clone(),
         "format": "json",
-        "budget_tokens": 2000,
+        "budget_tokens": 1,
         "include_subjects": false,
         "include_recent_activity": false,
         "recent_activity_limit": 0
@@ -245,6 +243,111 @@ async fn set_active_project_does_not_depend_on_writer_state_budget() {
     // surfaced via `CreateProjectOutput.branch_id`. The session default
     // resolved through set_active_project must round-trip to that id.
     assert_eq!(active.branch_id, project.branch_id);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn writer_state_default_budget_degrades_and_stays_within_budget() {
+    let router = router().await;
+
+    let create_project_args = serde_json::to_value(CreateProjectInput {
+        name: "Writer State Budget Regression".to_string(),
+        project_type: "novel".to_string(),
+        genre: "fantasy".to_string(),
+        reader_contract: ReaderContract {
+            promise: "The writer state must fit its advertised budget.".to_string(),
+            style_notes: vec![],
+            boundaries: vec![],
+        },
+    })
+    .expect("create project args");
+    let create_project_args = create_project_args
+        .as_object()
+        .cloned()
+        .expect("create project object");
+    let project: CreateProjectOutput = serde_json::from_value(structured_json(
+        router
+            .call_tool("create_project", Some(&create_project_args))
+            .await
+            .expect("create project"),
+    ))
+    .expect("decode project");
+
+    let long_rule_body = "Magic rewrites cause cascading constraint debt across every \
+            revision boundary and must be treated as binding law in all future scenes. "
+        .repeat(40);
+    for index in 0..12 {
+        router
+            .service
+            .create_world_rule(CreateWorldRuleInput {
+                project_id: project.project_id.clone(),
+                rule_name: format!("Constraint {}", index + 1),
+                rule_type: "law".to_string(),
+                description: format!("{}{}", long_rule_body, index + 1),
+                scan_pattern: None,
+                relevance_tags: vec![],
+                established_in: None,
+            })
+            .await
+            .expect("create world rule");
+    }
+
+    // The user-reported default is 8,000 tokens. A default call must now
+    // succeed by compacting required constraints, not by returning an error.
+    for (budget, format) in [
+        (None, "markdown"),
+        (Some(8_000), "markdown"),
+        (Some(16_000), "markdown"),
+        (Some(24_000), "markdown"),
+        (Some(8_000), "json"),
+        (Some(24_000), "json"),
+    ] {
+        let mut args = serde_json::json!({
+            "project_id": project.project_id.clone(),
+            "format": format,
+        });
+        if let Some(budget) = budget {
+            args["budget_tokens"] = serde_json::json!(budget);
+        }
+        let args = args.as_object().cloned().expect("writer state object");
+        let result = router
+            .call_tool("get_writer_state", Some(&args))
+            .await
+            .expect("writer state");
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "writer state must degrade instead of failing at {format} budget {budget:?}: {:?}",
+            result.content
+        );
+        let payload = structured_json(result.clone());
+        assert_eq!(payload["bundle_summary"]["truncated"], true);
+        let omissions = payload["omissions"]
+            .as_array()
+            .expect("typed writer-state omissions");
+        assert!(!omissions.is_empty());
+        for omission in omissions {
+            assert!(omission["section"].is_string());
+            assert!(omission["reason"].is_string());
+            assert!(omission["omitted"].as_u64().is_some());
+            assert!(omission["fetch_with"].is_string());
+            assert!(omission["hint"].is_string());
+        }
+        if format == "markdown" {
+            assert!(
+                payload["writer_state_markdown"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("Omitted for budget")
+            );
+        }
+        let serialized = serde_json::to_string(&result).expect("serialize writer state result");
+        let effective_budget = budget.unwrap_or(8_000);
+        assert!(
+            serialized.chars().count() / 4 <= effective_budget,
+            "writer state output for {format} budget {effective_budget} was {} tokens",
+            serialized.chars().count() / 4
+        );
+    }
 }
 
 /// A plan scene with no location and no rating must be a descriptive

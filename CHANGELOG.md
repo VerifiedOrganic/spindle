@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- `get_writer_state` now fits the requested token budget instead of failing at
+  its 8,000-token default or returning a payload several times over budget.
+  Required sections are compacted, optional sections are dropped, and typed
+  `omissions` report what was left out and which tool/budget can fetch it.
+- Research and adapter guidance is provider-neutral. The stale Gemini/Claude/
+  Grok wording was removed from tool descriptions, schemas, and server
+  instructions, and a regression test now rejects model-provider names in the
+  served tool surface.
+- `spindle-mcp init` writes a `.spindle/.gitignore` covering the SQLite
+  database sidecars, the migration lock, and runtime files. Startup appends
+  missing entries for existing workspaces without replacing author rules, so
+  the migration lock no longer appears as an untracked book file.
 - Project calendars now support optional leap years: proleptic Gregorian rules
   (every 4 years, except every 100, except every 400) or a custom rule naming
   the month that gains days and its cadence. Existing calendars default to

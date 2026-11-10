@@ -479,7 +479,7 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         ),
         tool::<ResearchQueryInput, ResearchQueryOutput>(
             "research_query",
-            "Research a factual question through the configured research route, grounded in project context from the Bible",
+            "Research a factual question through the configured, provider-neutral research route, grounded in project context from the Bible",
         ),
         tool::<ResearchAddSourceInput, ResearchAddSourceOutput>(
             "research_add_source",
