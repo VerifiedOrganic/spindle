@@ -400,9 +400,10 @@ pub struct CharacterState {
     pub notes: Vec<String>,
     pub source_summary: Option<String>,
     pub created_at: Timestamp,
-    /// SQLite's monotonically increasing row identity. Used as the final
-    /// tie-break so newest-at-position does not depend on load order.
-    #[serde(skip)]
+    /// SQLite's monotonically increasing row identity. Persisted in internal
+    /// canon compatibility snapshots (not a public MCP DTO) so canon-read
+    /// projection preserves the same recency ordering as the live table.
+    #[serde(default)]
     pub rowid: i64,
 }
 

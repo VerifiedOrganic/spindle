@@ -2842,6 +2842,29 @@ mod state_selection_tests {
     }
 
     #[test]
+    fn serialized_canon_state_preserves_rowid_recency() {
+        let mut older = state(1, "alive");
+        older.id = "character_state:zzzzzzzzzzzzzzzzzzzzzzzzzz".into();
+        older.created_at = Utc::now();
+        let mut newer = state(2, "life_status:dead");
+        newer.id = "character_state:aaaaaaaaaaaaaaaaaaaaaaaaaa".into();
+        newer.created_at = older.created_at;
+        let json = serde_json::to_string(&[older, newer]).unwrap();
+        let round_tripped: Vec<CharacterState> = serde_json::from_str(&json).unwrap();
+        let selected = crate::sqlite::repository::select_latest_character_state(
+            round_tripped.iter(),
+            "character:test",
+            (1, 1, 0),
+        )
+        .expect("a state");
+        assert_eq!(
+            selected.rowid, 2,
+            "rowid must survive canon serialization even when created_at and id ordering disagree"
+        );
+        assert_eq!(selected.status, vec!["life_status:dead".to_string()]);
+    }
+
+    #[test]
     fn dead_state_severity_is_error_for_explicit_marker() {
         let finding = spindle_core::models::RetconFinding::DeadCharacterAct {
             character_id: "character:test".into(),
