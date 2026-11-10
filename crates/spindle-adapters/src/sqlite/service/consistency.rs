@@ -3028,7 +3028,10 @@ fn elapsed_days_after_death(text: &str, aliases: &[String]) -> Option<(String, f
                     }
                 }
             }
-            let before_start = position.saturating_sub(80);
+            let mut before_start = position.saturating_sub(80);
+            while before_start > 0 && !lower.is_char_boundary(before_start) {
+                before_start -= 1;
+            }
             let before = &lower[before_start..position];
             if let Some(marker_at) = before.rfind("had passed since")
                 && death_predicate_in(after)
@@ -3238,6 +3241,19 @@ mod elapsed_phrase_tests {
                 &aliases
             ),
             None
+        );
+    }
+
+    #[test]
+    fn multibyte_prefix_does_not_break_elapsed_binding() {
+        let aliases = vec!["Mira".to_string()];
+        let prose = format!(
+            "{}. Three weeks had passed since Mira drowned.",
+            "é".repeat(60)
+        );
+        assert_eq!(
+            elapsed_days_after_death(&prose, &aliases),
+            Some(("three weeks".to_string(), 21.0))
         );
     }
 }
