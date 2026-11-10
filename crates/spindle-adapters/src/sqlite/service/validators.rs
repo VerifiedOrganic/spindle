@@ -1072,6 +1072,7 @@ impl SqliteSpindleService {
                     suggested_action: Some(
                         "revise scene prose or supporting canon records".to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }
@@ -1222,6 +1223,7 @@ impl SqliteSpindleService {
                         "revise the scene, explain the exception on page, or update the rule if canon changed"
                             .to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }
@@ -1457,6 +1459,7 @@ impl SqliteSpindleService {
                          clocked scenes, or mark an intended rewind with temporal_mode \"flashback\""
                             .to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }
@@ -1500,6 +1503,7 @@ impl SqliteSpindleService {
                 suggested_action: Some(
                     "narrow the scope or resolve higher-urgency promises, then re-run".to_string(),
                 ),
+                evidence: None,
             });
         }
 
@@ -1583,6 +1587,7 @@ impl SqliteSpindleService {
                          reinforce the thread if it is not actually landed"
                             .to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }
@@ -1630,6 +1635,7 @@ impl SqliteSpindleService {
                 suggested_action: Some(
                     "narrow the scope to the scenes you want audited, then re-run".to_string(),
                 ),
+                evidence: None,
             });
         }
 
@@ -1686,6 +1692,7 @@ impl SqliteSpindleService {
                      divergence improves the story, update the plan's purpose to match"
                         .to_string(),
                 ),
+                evidence: None,
             });
         }
 
@@ -1730,6 +1737,7 @@ impl SqliteSpindleService {
                 suggested_action: Some(
                     "narrow the scope to the scenes you want audited, then re-run".to_string(),
                 ),
+                evidence: None,
             });
         }
 
@@ -1796,6 +1804,7 @@ impl SqliteSpindleService {
                          or revise the scene so the out-of-circle character does not act on the secret"
                             .to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }

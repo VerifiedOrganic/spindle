@@ -6332,6 +6332,10 @@ pub struct ConsistencyIssue {
     #[serde(default)]
     pub entity_ids: Vec<String>,
     pub suggested_action: Option<String>,
+    /// Exact scene evidence when a finding was produced by the semantic lane
+    /// or another evidence-anchored detector. Omitted for legacy findings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<crate::semantic_continuity::SemanticEvidenceSpanV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

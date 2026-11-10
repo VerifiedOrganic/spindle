@@ -2,6 +2,14 @@
 
 ## Unreleased (0.4.0)
 
+### Added
+
+- Added the core P1 contracts for the 0.4 semantic continuity lane: candidate,
+  judgment, evidence, host, and error DTOs; strict scene/canon/evidence
+  validation; the server-side severity policy; and stable dedupe keys. This is
+  additive and does not change deterministic consistency behavior. `ConsistencyIssue`
+  now has an optional evidence span that is omitted for legacy findings.
+
 ### Changed
 
 - R+1 profile and alias cleanup: unset now starts the generated `workflow-write`
