@@ -162,8 +162,8 @@ No model calls or populated manuscript are necessary to measure discovery size.
   “evolution §”, “ADR”, and “(I1)”
   ([`models.rs:6733`](../crates/spindle-core/src/models.rs#L6733),
   [`models.rs:7142`](../crates/spindle-core/src/models.rs#L7142)).
-  `research_query` says Gemini in discovery, though implementation uses configured
-  route machinery ([`tools.rs:1078`](../crates/spindle-mcp/src/tools.rs#L1078),
+  `research_query` uses provider-neutral discovery language backed by the
+  configured route machinery ([`tools.rs:1078`](../crates/spindle-mcp/src/tools.rs#L1078),
   [`service.rs:15186`](../crates/spindle-adapters/src/sqlite/service.rs#L15186)).
 - **Skill load is large and disconnected from discovery.** Thirteen `SKILL.md`
   files total 278,318 UTF-8 bytes (~69,580 proxy tokens); scene-writer is 58,487

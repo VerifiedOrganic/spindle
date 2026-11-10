@@ -2505,7 +2505,7 @@ dependencies = [
 
 [[package]]
 name = "spindle-adapters"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "spindle-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "regex",
@@ -2549,7 +2549,7 @@ dependencies = [
 
 [[package]]
 name = "spindle-harness"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2565,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "spindle-mcp"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2598,7 +2598,7 @@ dependencies = [
 
 [[package]]
 name = "spindle-skills"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "tempfile",

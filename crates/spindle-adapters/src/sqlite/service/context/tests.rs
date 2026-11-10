@@ -1209,6 +1209,7 @@ async fn scene_context_surfaces_in_world_time_hard_constraint() {
         months: Vec::new(),
         days_per_year: 365,
         epoch_label: Some("Founding".into()),
+        leap_rule: Default::default(),
     };
     repo.upsert_project_calendar(&proj.project_id, &calendar)
         .await
@@ -1316,6 +1317,7 @@ async fn scene_context_surfaces_prior_scene_temporal_anchor() {
         months: Vec::new(),
         days_per_year: 365,
         epoch_label: None,
+        leap_rule: Default::default(),
     };
     repo.upsert_project_calendar(&proj.project_id, &calendar)
         .await

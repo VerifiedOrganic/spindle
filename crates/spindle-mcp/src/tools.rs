@@ -365,10 +365,10 @@ The authoritative, always-up-to-date instructions live at:
 
 **Always prefer reading the live `bible://` version** for the current detailed procedure rather than relying on stale embedded text.
 
-## Grok-Specific Guidance
+## Host-Neutral Drafting Guidance
 
 - Spindle already gives excellent structural guardrails (Bible, continuity sheets, hard constraints, voice profiles, explicit routing).
-- Your advantage in this environment is producing **natural, voicey, webnovel-style prose** (especially first-person, wry, comedic, internally-monologuing, or raw/explicit when the book calls for it).
+- A useful advantage is producing **natural, voicey, webnovel-style prose** (especially first-person, wry, comedic, internally-monologuing, or raw/explicit when the book calls for it).
 - Do **not** over-polish into high-literary fiction unless the project explicitly wants that tone.
 - For explicit scenes: respect the rating-aware routing. Never generate `Explicit` sexual prose client-side; use `continue_generation` with `rating: "explicit"`.
 
@@ -379,7 +379,7 @@ The authoritative, always-up-to-date instructions live at:
 3. Call the appropriate high-level briefing (`get_chapter_briefing`, `get_scene_context`, etc.).
 4. Follow the detailed steps from the matching `bible://skills/*` resource.
 
-This adapter ensures Spindle workflows feel as well-guided in Grok as they do in Claude.
+This guidance is intentionally host-neutral and applies to any MCP host.
 "#;
 
 /// The result of the in-process auto-checkpoint automation (evolution §3.3).

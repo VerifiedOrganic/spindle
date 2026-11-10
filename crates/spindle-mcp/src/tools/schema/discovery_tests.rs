@@ -217,7 +217,7 @@ fn projection_is_idempotent_and_preserves_all_validation_keywords() {
                     .description
                     .as_deref()
                     .unwrap()
-                    .contains("configured research route")
+                    .contains("provider-neutral research route")
             );
             assert!(!projected.description.as_deref().unwrap().contains("Gemini"));
             normalized.description = original.description.clone();

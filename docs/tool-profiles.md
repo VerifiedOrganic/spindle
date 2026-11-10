@@ -22,16 +22,16 @@ fail closed. Select a generated workflow or specialist profile with
 
 | Profile | Enabled work | Tools | Input bytes | Full bytes |
 | --- | --- | ---: | ---: | ---: |
-| workflow-write | Scene-writer core + craft/packet/research refs + setup | 44 | 57,268 | 112,186 |
-| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 76 | 89,355 | 185,209 |
+| workflow-write | Scene-writer core + craft/packet/research refs + setup | 44 | 57,633 | 112,551 |
+| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 76 | 90,075 | 185,929 |
 | workflow-import | Manuscript importer and source sync | 20 | 12,306 | 30,747 |
 | revision | Branch/revision/history workflow | 33 | 22,015 | 57,073 |
-| worldbuilding | Worldbuilder + character creator | 50 | 48,325 | 83,814 |
+| worldbuilding | Worldbuilder + character creator | 50 | 49,068 | 84,557 |
 | planning | Plot architect | 38 | 32,352 | 63,550 |
 | new-book | New-book entry: planning sessions, human gates and handoff | 14 | 20,204 | 26,534 |
-| research | Researcher | 15 | 7,584 | 20,051 |
-| style | Editor core + style reference | 40 | 31,991 | 83,070 |
-| release | Editor + bible librarian + canon steward | 62 | 45,475 | 90,729 |
+| research | Researcher | 15 | 7,602 | 20,069 |
+| style | Editor core + style reference | 40 | 32,009 | 83,088 |
+| release | Editor + bible librarian + canon steward | 62 | 45,493 | 90,747 |
 | setup | New-book setup reference | 9 | 4,180 | 9,074 |
 
 Every generated profile includes the shared entry core (`spindle`, 6 entry tools).

@@ -622,7 +622,18 @@ impl SqliteSpindleService {
                     }
                     let fact_position = (fact.book_number, fact.chapter_number);
                     let scene_chapter = (scene.book_number, scene.chapter_number);
-                    if fact_position >= scene_chapter {
+                    // Only an explicitly marked pre-story/backstory fact
+                    // applies to the opening scene. A scene-less chapter-1
+                    // fact with an ordinary chapter/scene position (or no
+                    // valid_from) still takes effect at that position, as it
+                    // did before story-start anchors were introduced.
+                    let story_start_fact = fact.scene_id.is_none()
+                        && fact.valid_from.as_ref().is_some_and(|placement| {
+                            placement.book_number == 1
+                                && placement.chapter_number == 1
+                                && placement.scene_order == Some(0)
+                        });
+                    if fact_position >= scene_chapter && !story_start_fact {
                         return None;
                     }
                     Some(((fact.book_number, fact.chapter_number, 0), value))

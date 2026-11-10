@@ -790,3 +790,193 @@ async fn get_scene_move_impact_flags_destination_conflict() {
         destination.scene_id
     );
 }
+
+mod find_entity_ranking {
+    use super::*;
+    use spindle_core::models::{
+        CharacterEmotionalProfileData, CharacterVoiceProfileData, CreateCharacterInput,
+        EntityResolutionConfidence, FindEntityInput,
+    };
+    use spindle_core::subject::SubjectTable;
+
+    async fn project() -> (tempfile::TempDir, SqliteSpindleService, String) {
+        let (tmp, svc) = fresh_service().await;
+        let proj = svc
+            .create_project(CreateProjectInput {
+                name: "lookup".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        (tmp, svc, proj.project_id)
+    }
+
+    async fn character(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        name: &str,
+        summary: &str,
+        aliases: Vec<String>,
+    ) -> String {
+        svc.create_character(CreateCharacterInput {
+            aliases,
+            project_id: project_id.to_string(),
+            name: name.to_string(),
+            summary: summary.to_string(),
+            role: "supporting".into(),
+            realm: None,
+            voice_profile: CharacterVoiceProfileData {
+                tone: None,
+                vocabulary: Vec::new(),
+                sentence_structure: Vec::new(),
+                tics: Vec::new(),
+                forbidden_words: Vec::new(),
+                example_lines: Vec::new(),
+                established_in_scene_id: None,
+                updated_at: None,
+            },
+            emotional_profile: CharacterEmotionalProfileData {
+                base_emotions: std::collections::BTreeMap::new(),
+                suppressed: Vec::new(),
+                triggers: Vec::new(),
+                defense_mechanisms: Vec::new(),
+                flex_range: None,
+            },
+            initial_state: None,
+        })
+        .await
+        .unwrap()
+        .character_id
+    }
+
+    async fn lookup_characters(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        query: &str,
+    ) -> Vec<spindle_core::models::FindEntityMatch> {
+        svc.find_entity(FindEntityInput {
+            project_id: project_id.to_string(),
+            query: query.to_string(),
+            branch_id: None,
+            table: Some(SubjectTable::Character),
+            limit: Some(5),
+        })
+        .await
+        .unwrap()
+        .matches
+    }
+
+    #[tokio::test]
+    async fn shared_forename_returns_both_owners_above_fuzzy_hits() {
+        let (_tmp, svc, project_id) = project().await;
+        let first = character(
+            &svc,
+            &project_id,
+            "Avery Voss",
+            "A cartographer.",
+            Vec::new(),
+        )
+        .await;
+        let second = character(&svc, &project_id, "Avery Reed", "A pilot.", Vec::new()).await;
+        let unrelated = character(
+            &svc,
+            &project_id,
+            "Dylan Bell",
+            "Mara's former teacher, now retired.",
+            Vec::new(),
+        )
+        .await;
+
+        let hits = lookup_characters(&svc, &project_id, "avéry").await;
+        let ids: Vec<&str> = hits.iter().map(|m| m.entity_id.as_str()).collect();
+        assert!(
+            ids.contains(&first.as_str()),
+            "first owner missing: {ids:?}"
+        );
+        assert!(
+            ids.contains(&second.as_str()),
+            "second owner missing: {ids:?}"
+        );
+        assert!(
+            ids.iter().take(2).all(|id| *id == first || *id == second),
+            "shared-name owners must rank first: {hits:?}"
+        );
+        for m in &hits {
+            if m.entity_id == unrelated {
+                assert_ne!(
+                    m.confidence,
+                    EntityResolutionConfidence::ExactName,
+                    "an FTS/description hit must never be labelled exact"
+                );
+            }
+        }
+        assert_eq!(
+            hits.iter()
+                .find(|m| m.entity_id == first)
+                .unwrap()
+                .confidence,
+            EntityResolutionConfidence::SemanticMatch,
+            "a forename token is not an exact full-name match"
+        );
+    }
+
+    #[tokio::test]
+    async fn colliding_alias_returns_every_alias_owner_as_exact() {
+        let (_tmp, svc, project_id) = project().await;
+        let first = character(
+            &svc,
+            &project_id,
+            "Cora Bell",
+            "A warden.",
+            vec!["The Grey Wolf".into()],
+        )
+        .await;
+        let second = character(
+            &svc,
+            &project_id,
+            "Dain Rook",
+            "A scout.",
+            vec!["The Grey Wolf".into()],
+        )
+        .await;
+
+        let hits = lookup_characters(&svc, &project_id, "the grey wolf").await;
+        for id in [&first, &second] {
+            let hit = hits
+                .iter()
+                .find(|m| &m.entity_id == id)
+                .unwrap_or_else(|| panic!("alias owner {id} missing: {hits:?}"));
+            assert_eq!(hit.confidence, EntityResolutionConfidence::ExactName);
+            assert_eq!(hit.score, 1.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn no_alias_full_name_and_diacritics_are_exact() {
+        let (_tmp, svc, project_id) = project().await;
+        let plain = character(&svc, &project_id, "Cora Bell", "A warden.", Vec::new()).await;
+        let accented = character(&svc, &project_id, "Élodie March", "A scribe.", Vec::new()).await;
+
+        let plain_hits = lookup_characters(&svc, &project_id, "CORA BELL").await;
+        assert!(
+            plain_hits
+                .iter()
+                .any(|m| m.entity_id == plain
+                    && m.confidence == EntityResolutionConfidence::ExactName),
+            "no-alias full name must resolve exactly: {plain_hits:?}"
+        );
+
+        let accented_hits = lookup_characters(&svc, &project_id, "elodie march").await;
+        assert!(
+            accented_hits.iter().any(|m| m.entity_id == accented
+                && m.confidence == EntityResolutionConfidence::ExactName),
+            "diacritic-insensitive full name must resolve exactly: {accented_hits:?}"
+        );
+    }
+}

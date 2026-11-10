@@ -1,5 +1,30 @@
 use super::*;
 
+fn writer_state_envelope_from_payload(
+    format: spindle_core::models::ContextFormat,
+    payload: spindle_core::models::WriterState,
+) -> spindle_core::models::WriterStateEnvelope {
+    let writer_state_markdown = (format == spindle_core::models::ContextFormat::Markdown)
+        .then(|| crate::format::format_writer_state_markdown(&payload));
+    spindle_core::models::WriterStateEnvelope {
+        current: payload.current,
+        next: payload.next,
+        hard_constraints: payload.hard_constraints,
+        subjects: payload.subjects,
+        recent_scenes: payload.recent_scenes,
+        open_promises_due_now: payload.open_promises_due_now,
+        active_overlays: payload.active_overlays,
+        drift_warnings: payload.drift_warnings,
+        unsynced_local_files: payload.unsynced_local_files,
+        recent_session_activity: payload.recent_session_activity,
+        chapter_outline: payload.chapter_outline,
+        book_outline: payload.book_outline,
+        bundle_summary: payload.bundle_summary,
+        omissions: payload.omissions,
+        writer_state_markdown,
+    }
+}
+
 impl SqliteSpindleService {
     /// Aggregate the writer's current state on a project/branch: cursor scene,
     /// hard constraints, subject snapshots, recent scenes, due promises,
@@ -582,6 +607,7 @@ impl SqliteSpindleService {
                     has_book_outline,
                 ),
             },
+            omissions: Vec::new(),
         };
 
         format::enforce_writer_state_budget(format_fmt, token_budget, &mut state)?;
@@ -596,29 +622,39 @@ impl SqliteSpindleService {
         &self,
         input: spindle_core::models::GetWriterStateInput,
     ) -> Result<spindle_core::models::WriterStateEnvelope> {
+        use crate::format::DEFAULT_WRITER_STATE_BUDGET_TOKENS;
+        use spindle_core::context_bundle::{estimate_json_tokens, estimate_text_tokens};
+        use spindle_core::models::WriterState;
+
         let format = input
             .format
             .unwrap_or(spindle_core::models::ContextFormat::Markdown);
-        let payload = self.get_writer_state(input).await?;
-        let writer_state_markdown = (format == spindle_core::models::ContextFormat::Markdown)
-            .then(|| crate::format::format_writer_state_markdown(&payload));
-
-        Ok(spindle_core::models::WriterStateEnvelope {
-            current: payload.current,
-            next: payload.next,
-            hard_constraints: payload.hard_constraints,
-            subjects: payload.subjects,
-            recent_scenes: payload.recent_scenes,
-            open_promises_due_now: payload.open_promises_due_now,
-            active_overlays: payload.active_overlays,
-            drift_warnings: payload.drift_warnings,
-            unsynced_local_files: payload.unsynced_local_files,
-            recent_session_activity: payload.recent_session_activity,
-            chapter_outline: payload.chapter_outline,
-            book_outline: payload.book_outline,
-            bundle_summary: payload.bundle_summary,
-            writer_state_markdown,
-        })
+        let token_budget = input
+            .budget_tokens
+            .unwrap_or(DEFAULT_WRITER_STATE_BUDGET_TOKENS);
+        // Build the unbudgeted payload once, then fit the actual envelope
+        // (structured fields plus rendered markdown) to the caller's budget.
+        let mut input = input;
+        input.budget_tokens = Some(usize::MAX / 8);
+        let mut payload = self.get_writer_state(input).await?;
+        let mut measure = |state: &WriterState| {
+            let mut probe = state.clone();
+            // Reserve for the final estimated-token digits.
+            probe.bundle_summary.estimated_tokens = usize::MAX;
+            let envelope = writer_state_envelope_from_payload(format, probe);
+            // MCP returns the envelope as both `content` (the JSON text) and
+            // `structured_content`. The text copy is itself JSON-escaped, so
+            // measure that escaped string rather than assuming 2x.
+            let structured =
+                serde_json::to_value(&envelope).expect("writer state envelope to json");
+            let text = serde_json::to_string(&structured).expect("writer state text copy");
+            let escaped_text = serde_json::to_string(&text).expect("escaped writer state text");
+            estimate_json_tokens(&structured)
+                .saturating_add(estimate_text_tokens(&escaped_text))
+                .saturating_add(64)
+        };
+        crate::format::fit_writer_state_to_budget(token_budget, &mut payload, &mut measure)?;
+        Ok(writer_state_envelope_from_payload(format, payload))
     }
 
     /// Assemble a budget-aware chapter briefing for the requested chapter,

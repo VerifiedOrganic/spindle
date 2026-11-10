@@ -105,7 +105,7 @@ fn generated_tool(mut tool: Tool) -> Tool {
         tool.meta.get_or_insert_default().insert("spindle/responseContract".to_owned(), serde_json::json!({"version":1, "uri":uri, "reference":format!("contracts/tools/v1/{}",tool.name)}));
     }
     if tool.name == "research_query" {
-        tool.description = Some("Research a factual question through the configured research route, grounded in project context from the Bible".into());
+        tool.description = Some("Research a factual question through the configured, provider-neutral research route, grounded in project context from the Bible".into());
     }
     if tool.name == "get_reference" {
         let mut input = (*tool.input_schema).clone();

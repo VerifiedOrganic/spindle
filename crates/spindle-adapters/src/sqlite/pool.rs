@@ -167,6 +167,10 @@ struct MigrationLockGuard {
 
 impl Drop for MigrationLockGuard {
     fn drop(&mut self) {
+        // The lock file stays on disk intentionally: deleting it after unlock
+        // would let a concurrent opener create a new inode and bypass a waiter
+        // that still holds the old one. It is runtime-only and covered by the
+        // workspace .gitignore written by init/startup.
         let _ = self.file.unlock();
     }
 }

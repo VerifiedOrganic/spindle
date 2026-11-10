@@ -294,6 +294,13 @@ async fn main() -> anyhow::Result<()> {
         server_config.or_else(|| std::env::var_os("SPINDLE_CONFIG").map(PathBuf::from));
     let ws = spindle_adapters::workspace::resolve_workspace(&cwd, env_data_dir, env_config);
 
+    // Existing local workspaces should also pick up runtime ignore entries.
+    if ws.root.is_some()
+        && let Err(error) = spindle_adapters::workspace::ensure_workspace_gitignore(&ws.data_dir)
+    {
+        tracing::warn!("could not update workspace .gitignore: {error}");
+    }
+
     let data_dir = ws.data_dir;
     let db_path = ws.db_path;
     let config_path = ws.config_path.map(|p| p.display().to_string());
@@ -661,6 +668,8 @@ fn init_project_workspace(cwd: &Path) -> anyhow::Result<PathBuf> {
         .context("creating artifacts directory")?;
     std::fs::create_dir_all(spindle_adapters::workspace::runtime_dir(&spindle_dir))
         .context("creating runtime directory")?;
+    spindle_adapters::workspace::ensure_workspace_gitignore(&spindle_dir)
+        .context("writing workspace .gitignore")?;
 
     let config_path = spindle_dir.join("config.toml");
     if !config_path.exists() {
@@ -1233,9 +1242,50 @@ mod tests {
         assert!(workspace.join("artifacts").is_dir());
         assert!(workspace.join("runtime").is_dir());
         assert!(workspace.join("config.toml").is_file());
+        assert!(workspace.join(".gitignore").is_file());
+        let ignore = std::fs::read_to_string(workspace.join(".gitignore")).expect("read ignore");
+        for entry in [
+            "spindle.db",
+            "spindle.db-journal",
+            "spindle.db-shm",
+            "spindle.db-wal",
+            "spindle.db.migration.lock",
+            "runtime/",
+        ] {
+            assert!(ignore.lines().any(|line| line == entry), "missing {entry}");
+        }
 
         let config = std::fs::read_to_string(workspace.join("config.toml")).expect("read config");
         assert!(config.contains("Spindle local agent configuration"));
+    }
+
+    #[test]
+    fn init_workspace_ignores_migration_lock() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        init_project_workspace(temp.path()).expect("init workspace");
+        std::fs::write(
+            temp.path()
+                .join(".spindle")
+                .join("spindle.db.migration.lock"),
+            b"",
+        )
+        .expect("write lock");
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(temp.path())
+            .status()
+            .expect("git init");
+        assert!(status.success());
+        let output = std::process::Command::new("git")
+            .args(["status", "--porcelain", "--untracked-files=all"])
+            .current_dir(temp.path())
+            .output()
+            .expect("git status");
+        let status_text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !status_text.contains("spindle.db.migration.lock"),
+            "migration lock must be ignored, got: {status_text}"
+        );
     }
 
     #[test]

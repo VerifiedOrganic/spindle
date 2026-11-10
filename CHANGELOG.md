@@ -13,6 +13,30 @@
   `create_style_revision_patch`. Stored history, scene versions, save points,
   and record IDs remain readable.
 
+## 0.3.1 — 2026-11-10
+
+### Fixed
+
+- `get_writer_state` now succeeds at its default budget and keeps the response
+  within any requested budget, compacts required sections, and reports typed
+  `omissions` with fetch hints.
+- `find_entity` now ranks exact matches accurately for shared first names and
+  aliases, returning every owner of an ambiguous name instead of mislabeling
+  fuzzy hits as exact.
+- `commit_character_state` accepts a `story_start` anchor for backstory deaths
+  and other pre-opening character state, without requiring a scene.
+- Project calendars support optional leap years using proleptic Gregorian rules
+  or custom month/cadence rules (migration V0057). Existing calendars keep
+  fixed-length years until configured otherwise.
+- `research_query` now uses provider-neutral discovery language.
+- `.spindle/spindle.db.migration.lock` is covered by the workspace
+  `.spindle/.gitignore`, so it no longer appears as an untracked book file.
+
+### Upgrade notes
+
+- Back up `.spindle/` before the first 0.3.1 start: migration V0057 runs on the
+  project database.
+
 ## 0.3.0 — 2026-11-10
 
 Spindle 0.3.0 is the compatibility release for the consolidated tool surface.

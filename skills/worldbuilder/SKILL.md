@@ -62,7 +62,7 @@ You build settings, institutions, and systems that shape conflict and constrain 
 - **Quantity schemes (`set_project_quantity_scheme`, `derive_quantity_scheme_from_system_overlay`, `commit_quantity_state`)**:
   - Configure tracked resource/wealth counters and bands with `set_project_quantity_scheme` (or derive them from a LitRPG overlay via `derive_quantity_scheme_from_system_overlay`), and record scene ledger changes with `commit_quantity_state`.
 - **In-world time (`set_project_calendar`, `set_character_birth`, `set_timeline_event_clock`, `set_scene_clock`)**:
-  - Declare the project calendar once with `set_project_calendar` (`days_per_week`, `hours_per_day`, `days_per_year`, `months`, `epoch_label`) to enable `chronology` and `knowledge_timing` checks.
+  - Declare the project calendar once with `set_project_calendar` (`days_per_week`, `hours_per_day`, `days_per_year`, `months`, `epoch_label`, `leap_rule`) to enable `chronology` and `knowledge_timing` checks. Set `leap_rule: {"kind":"gregorian"}` for a Gregorian-style calendar, or a custom `{"kind":"custom","month":"...","every_years":4}` rule; omit it to keep fixed-length years.
   - Anchor character ages with `set_character_birth`, orient historical/backstory events with `set_timeline_event_clock`, and stamp scene clocks with `set_scene_clock`.
 
 ---

@@ -33,12 +33,16 @@ We recommend the following practices when using Spindle with Git:
 
 ### What to Ignore
 
-You should **not** commit the binary SQLite database to Git. It changes with every run, leads to binary merge conflicts, and is not human-readable. Add `.spindle/` (or at least `.spindle/spindle.db` and `.spindle/runtime/`) to your `.gitignore`:
+You should **not** commit the binary SQLite database to Git. It changes with every run, leads to binary merge conflicts, and is not human-readable. `spindle-mcp init` writes `.spindle/.gitignore` with these runtime-only entries, and startup appends any missing entries to existing workspaces:
 
 ```gitignore
-# Ignore local Spindle database and runtime lock/address files
-.spindle/spindle.db
-.spindle/runtime/
+# Spindle local database and runtime files
+spindle.db
+spindle.db-journal
+spindle.db-shm
+spindle.db-wal
+spindle.db.migration.lock
+runtime/
 ```
 
 ### What to Commit
