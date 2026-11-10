@@ -239,6 +239,7 @@ async fn merge_branch_snapshot_applies_source_slice_to_target_branch() {
         notes: Vec::new(),
         source_summary: Some("source-snapshot".into()),
         created_at: chrono::Utc::now(),
+        rowid: 0,
     };
 
     // Source relationship: same edge, but with different trust/tension.

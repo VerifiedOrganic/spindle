@@ -1437,7 +1437,10 @@ impl SqliteSpindleService {
                         <= cursor
                 })
                 .max_by_key(|state| {
-                    story_index(state.book_number, state.chapter_number, state.scene_order)
+                    (
+                        story_index(state.book_number, state.chapter_number, state.scene_order),
+                        state.rowid,
+                    )
                 });
             if let Some(state) = latest {
                 if !state.status.is_empty() {
