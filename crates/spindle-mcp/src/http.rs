@@ -50,8 +50,30 @@ const CONSOLE_HTML: &str = include_str!("console.html");
 /// existing read-only operational routes (`/health`, `/model-routes`, `/events`),
 /// and the operator console. Actions use the existing MCP transport.
 pub fn mcp_router(service: SpindleService, cancellation_token: CancellationToken) -> Router {
+    mcp_router_with_surface(service, cancellation_token, false)
+}
+
+/// Internal listener router. Tokenless clients get the startup profile, but a
+/// secondary proxy may select its own generated profile with `?profile=`, and a
+/// validated internal token still gets the full orchestration registry.
+pub(crate) fn internal_mcp_router(
+    service: SpindleService,
+    cancellation_token: CancellationToken,
+) -> Router {
+    mcp_router_with_surface(service, cancellation_token, true)
+}
+
+fn mcp_router_with_surface(
+    service: SpindleService,
+    cancellation_token: CancellationToken,
+    internal: bool,
+) -> Router {
     let state = HttpState::new(service.clone());
-    let mcp_service = SpindleMcpServer::streamable_http_service(service, cancellation_token);
+    let mcp_service = if internal {
+        SpindleMcpServer::streamable_http_service_internal(service, cancellation_token)
+    } else {
+        SpindleMcpServer::streamable_http_service(service, cancellation_token)
+    };
 
     Router::new()
         .route("/health", get(health))

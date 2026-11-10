@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased (0.4.0)
+
+### Changed
+
+- R+1 profile and alias cleanup: unset now starts the generated `workflow-write`
+  profile; the legacy `minimal`, `write`, `import`, `authoring`, and `legacy-all`
+  profiles are removed and unknown/removed names fail closed. The release-R
+  style preview twins (`preview_refresh_style_profile`,
+  `preview_apply_style_profile`, `preview_style_revision_patch`) are removed in
+  favor of `dry_run` on `refresh_style_profile` / `apply_style_profile` and
+  `create_style_revision_patch`. Stored history, scene versions, save points,
+  and record IDs remain readable.
+
 ## 0.3.1 — 2026-11-10
 
 ### Fixed

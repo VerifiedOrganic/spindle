@@ -89,6 +89,10 @@ class McpClient:
     ) -> dict[str, str]:
         env = (os.environ if base_env is None else base_env).copy()
         env["SPINDLE_DATA_DIR"] = str(data_dir)
+        # The benchmark seeds calendars, locations, quantities and canon through
+        # the canonical authoring surface; R+1's unset default is the narrower
+        # workflow-write profile.
+        env["SPINDLE_TOOL_PROFILE"] = "workflow-authoring"
         env.pop("SPINDLE_HTTP_ADDR", None)
         env.pop("SPINDLE_CONFIG", None)
         env.pop("SPINDLE_AGENT_CONFIG", None)

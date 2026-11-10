@@ -381,14 +381,17 @@ Primacy is claimed in two ways:
   reclaimed.
 
 **HTTP mode also claims primacy.** A server started with `SPINDLE_HTTP_ADDR`
-acquires the primary lock and claims the addr file pointing at its own
-`SPINDLE_HTTP_ADDR` listener (removed by its owner on shutdown). This is
-deliberate: the server's own run-phase dispatch reads the addr file, not
-`SPINDLE_HTTP_ADDR`, so without it an `authoring_execute_next` served over HTTP
-would fail its dispatch arm with `no primary server found`. Because the HTTP
-`/mcp` listener serves the identical MCP surface, the addr file simply points at
-that same address. (External harnesses still connect via `--server-url`; the
-addr file exists for the server's own dispatch-back.)
+acquires the primary lock, starts a loopback internal listener, and claims the
+addr file pointing at that internal listener (removed by its owner on
+shutdown). The public `SPINDLE_HTTP_ADDR` listener remains the model-facing
+surface with the startup profile; the addr file is for the server's own
+run-phase dispatch and for stdio secondaries. This split is deliberate: the
+server's run-phase dispatch reads the addr file, not `SPINDLE_HTTP_ADDR`, and a
+secondary forwards its own generated profile (`?profile=`) to the internal
+listener. A validated internal token still upgrades that request to the full
+registry; tokenless internal requests either use the startup profile or the
+secondary's declared profile. (External harnesses still connect via
+`--server-url`.)
 
 ### Console (read-only operator console v1)
 

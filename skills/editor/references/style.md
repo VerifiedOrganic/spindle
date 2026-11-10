@@ -7,11 +7,8 @@ Use `create_style_profile_from_markdown` for supplied style direction,
 Preflight with `refresh_style_profile` (`dry_run: true`) and `apply_style_profile`
 (`dry_run: true`): a dry run reports the proposed candidate or prose diff without
 inserting a version, consuming candidates, activating the profile, invalidating
-caches, or writing an audit record. The release-R `preview_refresh_style_profile`
-and `preview_apply_style_profile` twins remain available and return the full
-extended preview. `create_style_revision_patch` creates a non-mutating revision patch;
-`preview_style_revision_patch` is its release-R alias, and only
-`apply_style_revision_patch` writes prose.
+caches, or writing an audit record. `create_style_revision_patch` creates a
+non-mutating revision patch; only `apply_style_revision_patch` writes prose.
 These are the current preview contracts; live schemas define their arguments.
 
 Use `check_style_against_profile`, `plan_style_revision`, and
@@ -40,9 +37,6 @@ implicitly restores unrelated scene or branch history.
 <!-- tool: list_style_profiles -->
 <!-- tool: list_style_revision_patch_audits -->
 <!-- tool: plan_style_revision -->
-<!-- tool: preview_apply_style_profile -->
-<!-- tool: preview_refresh_style_profile -->
-<!-- tool: preview_style_revision_patch -->
 <!-- tool: refresh_style_profile -->
 <!-- tool: rollback_style_profile_application -->
 <!-- tool: rollback_style_revision_patch -->

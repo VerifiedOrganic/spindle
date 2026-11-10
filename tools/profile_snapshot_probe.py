@@ -139,10 +139,9 @@ def main():
     assert budgets['version'] == 1
     check_profile_cli(args.binary.resolve(), budgets)
     for profile in budgets['compatibility']:
-        expected = json.loads((SNAPSHOTS / f'{"default" if profile == "legacy-all" else profile}.json').read_text())
+        expected = json.loads((SNAPSHOTS / f'{profile}.json').read_text())
         actual = probe(args.binary.resolve(), profile)
-        budget_profile = 'default' if profile == 'legacy-all' else profile
-        check_budget(actual['tools'], budgets['compatibility'][budget_profile])
+        check_budget(actual['tools'], budgets['compatibility'][profile])
         count, inputs, full = measure(actual['tools'])
         print(f'{profile}: {count} tools; input {inputs} bytes ({(inputs + 3)//4} tokens); '
               f'full {full} bytes ({(full + 3)//4} tokens)')

@@ -5,8 +5,7 @@ use spindle_core::models::{
 };
 use spindle_core::style::{
     ApplyStyleProfileInput, CreateStyleProfileFromMarkdownInput, CreateStyleRevisionPatchInput,
-    ListStyleProfileApplicationsInput, ListStyleProfilesInput, PreviewApplyStyleProfileInput,
-    PreviewRefreshStyleProfileInput, PreviewStyleRevisionPatchInput, RefreshStyleProfileInput,
+    ListStyleProfileApplicationsInput, ListStyleProfilesInput, RefreshStyleProfileInput,
     StyleProfileApplyMode,
 };
 use tempfile::TempDir;
@@ -180,20 +179,6 @@ async fn apply_style_profile_dry_run_has_zero_side_effects() {
         .applications;
     assert_eq!(after_applications.len(), before_applications.len());
 
-    // The release-R preview twin returns the same diff and remains non-mutating.
-    let preview_twin = svc
-        .preview_apply_style_profile(PreviewApplyStyleProfileInput {
-            project_id: project_id.clone(),
-            profile_id: profile_id.clone(),
-            mode: StyleProfileApplyMode::Merge,
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::to_value(&preview_twin).unwrap(),
-        serde_json::to_value(&preview).unwrap()
-    );
-
     // The live call still writes.
     let live = svc
         .apply_style_profile(ApplyStyleProfileInput {
@@ -299,29 +284,10 @@ async fn refresh_style_profile_dry_run_has_zero_side_effects() {
         "dry run must not create a new profile version"
     );
 
-    let preview_twin = svc
-        .preview_refresh_style_profile(PreviewRefreshStyleProfileInput {
-            project_id: project_id.clone(),
-            profile_id: profile_id.clone(),
-            metrics_only: Some(true),
-        })
-        .await
-        .unwrap();
-    assert_eq!(preview_twin.old_profile_summary.profile_id, profile_id);
-    assert_eq!(
-        serde_json::to_value(&preview_twin.candidate_profile_summary.guidance).unwrap(),
-        serde_json::to_value(&dry.new_profile.guidance).unwrap()
-    );
-    assert_eq!(preview_twin.apply_safety, preview.apply_safety);
-    assert_eq!(preview_twin.material_change, preview.material_change);
-    assert_eq!(
-        serde_json::to_value(preview_twin.quality_report.classification).unwrap(),
-        serde_json::to_value(preview.candidate_quality.classification).unwrap()
-    );
     assert_eq!(preview.metric_deltas[0].metric, "average_sentence_words");
     assert_eq!(
-        preview.metric_deltas[0].delta,
-        preview_twin.metric_deltas.average_sentence_words_delta
+        preview.metric_deltas[0].before,
+        persisted_before.metrics.average_sentence_words
     );
 }
 
@@ -367,7 +333,7 @@ async fn refresh_style_profile_dry_run_rejects_mutating_options() {
 }
 
 #[tokio::test]
-async fn create_style_revision_patch_is_non_mutating_and_matches_preview() {
+async fn create_style_revision_patch_is_non_mutating() {
     let (tmp, svc) = fresh_service().await;
     let project_id = project(&svc, "Style Patch Dry Run").await;
     let profile_id = profile(&svc, &tmp, &project_id).await;
@@ -409,23 +375,6 @@ async fn create_style_revision_patch_is_non_mutating_and_matches_preview() {
     assert_eq!(created.scenes.len(), 1);
     assert_eq!(created.scenes[0].scene_id, scene.scene_id);
 
-    let preview = svc
-        .preview_style_revision_patch(PreviewStyleRevisionPatchInput {
-            project_id,
-            scene_id: Some(scene.scene_id.clone()),
-            chapter_id: None,
-            profile_id: Some(profile_id),
-            max_suggestions: None,
-            instructions: None,
-            run_evaluation: Some(false),
-            run_validator_preflight: Some(false),
-            minimum_improvement_score: None,
-        })
-        .await
-        .unwrap();
-    assert_eq!(preview.scenes.len(), 1);
-    assert_eq!(preview.scenes[0].scene_id, scene.scene_id);
-
     let after = svc.repository().get_scene(&scene.scene_id).await.unwrap();
     assert_eq!(
         after.full_text, before.full_text,
@@ -437,10 +386,6 @@ async fn create_style_revision_patch_is_non_mutating_and_matches_preview() {
         .await
         .unwrap();
     assert_eq!(after_versions.len(), before_versions.len());
-    assert_eq!(
-        serde_json::to_value(&created).unwrap(),
-        serde_json::to_value(&preview).unwrap()
-    );
 }
 
 #[tokio::test]

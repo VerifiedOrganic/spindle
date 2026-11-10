@@ -641,7 +641,7 @@ pattern as `promise_payoff_detection`:
 **Style learning from operator edits** (migration V0031, opt-in per project via
 `project.style_learning`) captures the before/after pair when an operator re-saves
 an agent-drafted scene with changed prose as a *style-edit candidate* feeding the
-existing `preview_refresh_style_profile` → `refresh_style_profile` review flow —
+existing `refresh_style_profile` dry-run → live review flow —
 no new tools, nothing enters a profile without an explicit refresh, and
 explicit-rated candidates are withheld unless the `style_analyze` route is
 explicit-cleared. Provenance across the domain is modeled by the

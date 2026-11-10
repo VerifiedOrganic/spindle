@@ -379,10 +379,19 @@ pub(crate) async fn run_http_mode_with_shutdown(
 
     let db = init_sqlite(db_path).await?;
     let service = build_service(db, data_dir, config_path);
-    let _addr_guard = match internal_listener::claim_addr_file(data_dir, bound_addr).await? {
+    // The public HTTP listener keeps the model-facing startup profile. Publish
+    // a loopback internal listener in the addr file instead so stdio
+    // secondaries can forward their own profile and in-process orchestration
+    // can use the token-gated full registry.
+    let internal_listener = internal_listener::spawn_internal_listener(service.clone()).await?;
+    let internal_addr = internal_listener.addr();
+    tracing::info!(
+        "http mode: public listener on {bound_addr}; internal listener on {internal_addr}"
+    );
+    let _addr_guard = match internal_listener::claim_addr_file(data_dir, internal_addr).await? {
         internal_listener::AddrClaim::Won => {
-            tracing::info!("http mode: claimed primacy; addr file points at {bound_addr}/mcp");
-            AddrFileGuard::new(data_dir.to_path_buf(), bound_addr)
+            tracing::info!("http mode: claimed primacy; addr file points at {internal_addr}/mcp");
+            AddrFileGuard::new(data_dir.to_path_buf(), internal_addr)
         }
         internal_listener::AddrClaim::LostTo(existing) => {
             anyhow::bail!(
@@ -392,6 +401,7 @@ pub(crate) async fn run_http_mode_with_shutdown(
     };
 
     let result = http::serve_with_listener(service, listener, shutdown).await;
+    internal_listener.shutdown();
     internal_listener::shutdown_lazy_listener(data_dir).await;
     result
 }
@@ -848,14 +858,28 @@ where
     T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
     E: std::error::Error + Send + Sync + 'static,
 {
+    run_secondary_with_io_profile(
+        data_dir,
+        server_io,
+        crate::server::resolved_startup_tool_profile(),
+    )
+    .await
+}
+
+/// Testable secondary entry point with an explicit profile.
+pub(crate) async fn run_secondary_with_io_profile<T, E, A>(
+    data_dir: &Path,
+    server_io: T,
+    tool_profile: Option<String>,
+) -> anyhow::Result<()>
+where
+    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
     let addr = proxy::wait_for_primary(data_dir).await?;
-    let client = proxy::connect_to_primary(addr).await?;
+    let client = proxy::connect_to_primary_with_profile(addr, tool_profile.as_deref()).await?;
     let failover_signal = tokio_util::sync::CancellationToken::new();
-    let handler = ProxyHandler::new(
-        client.peer().clone(),
-        failover_signal.clone(),
-        std::env::var("SPINDLE_TOOL_PROFILE").ok(),
-    );
+    let handler = ProxyHandler::new(client.peer().clone(), failover_signal.clone(), tool_profile);
 
     let running = handler
         .serve(server_io)
@@ -1392,7 +1416,12 @@ mod tests {
 
     #[test]
     fn operator_tools_are_denied_in_every_model_profile() {
-        for profile in [None, Some("legacy-all"), Some("write"), Some("authoring")] {
+        for profile in [
+            None,
+            Some("workflow-write"),
+            Some("workflow-authoring"),
+            Some("workflow-import"),
+        ] {
             for tool in crate::tools::OPERATOR_ONLY_TOOLS {
                 assert!(
                     !crate::tools::profile_has_tool(profile, tool),
@@ -1401,7 +1430,7 @@ mod tests {
             }
         }
         assert!(crate::tools::profile_has_tool(
-            Some("write"),
+            Some("workflow-write"),
             "save_scene_draft"
         ));
     }
@@ -1705,9 +1734,10 @@ mod tests {
         remove_addr_file(&data_dir);
         drop(stdio_lock);
 
-        // (2) Once the lock is free, HTTP mode claims primacy, writes its bound
-        // addr to `spindle.addr`, rejects a second concurrent HTTP server on the
-        // same workspace, and allows a stdio secondary to proxy through it.
+        // (2) Once the lock is free, HTTP mode claims primacy, publishes its
+        // internal listener addr in `spindle.addr`, rejects a second concurrent
+        // HTTP server on the same workspace, and allows stdio secondaries to
+        // proxy through it with their own profiles.
         let http_shutdown = tokio_util::sync::CancellationToken::new();
         let http_data_dir = data_dir.clone();
         let http_db_path = db_path.clone();
@@ -1783,6 +1813,60 @@ mod tests {
 
         let _ = secondary_client.cancel().await;
         let _ = secondary_task.await;
+
+        // A stdio secondary with a different generated profile must not be
+        // narrowed to the HTTP primary's default profile.
+        let (profile_server_io, profile_client_io) = tokio::io::duplex(64 * 1024);
+        let profile_data_dir = data_dir.clone();
+        let profile_task = tokio::spawn(async move {
+            run_secondary_with_io_profile(
+                &profile_data_dir,
+                profile_server_io,
+                Some("worldbuilding".to_owned()),
+            )
+            .await
+        });
+        let profile_client =
+            ().serve(profile_client_io)
+                .await
+                .expect("connect worldbuilding secondary to HTTP primary");
+        let profile_tools = profile_client
+            .list_all_tools()
+            .await
+            .expect("list tools through HTTP primary");
+        let profile_names: std::collections::BTreeSet<_> = profile_tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect();
+        let worldbuilding = spindle_adapters::guidance::list_profiles()
+            .iter()
+            .find(|profile| profile.name == "worldbuilding")
+            .unwrap();
+        assert_eq!(
+            profile_names,
+            worldbuilding.tools.iter().copied().collect(),
+            "HTTP primary must honor the secondary's selected profile"
+        );
+        assert!(profile_names.contains("create_faction"));
+        let faction = profile_client
+            .call_tool(
+                rmcp::model::CallToolRequestParams::new("create_faction").with_arguments(
+                    serde_json::json!({"project_id": "project:missing", "name": "Test Faction"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .expect("create_faction transport");
+        assert_eq!(faction.is_error, Some(true));
+        assert!(
+            !format!("{:?}", faction.content).contains("unknown tool"),
+            "HTTP primary must dispatch the secondary's profile tools: {faction:?}"
+        );
+        let _ = profile_client.cancel().await;
+        let _ = profile_task.await;
+
         http_shutdown.cancel();
         http_task
             .await

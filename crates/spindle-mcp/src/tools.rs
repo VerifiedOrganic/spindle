@@ -160,7 +160,6 @@ mod profiles;
 #[cfg(test)]
 pub(crate) use profiles::OPERATOR_ONLY_TOOLS;
 pub(crate) use profiles::is_operator_only;
-#[cfg(test)]
 pub(crate) use profiles::profile_names;
 use profiles::*;
 pub(crate) use profiles::{print_profiles, profile_has_tool, profile_help, validate_tool_profile};
@@ -276,13 +275,30 @@ impl ToolRouter {
         }
     }
 
+    /// A view of this router with a different tool profile. The session
+    /// context and serialization state are shared, so `set_active_project`
+    /// and branch selection survive per-request profile selection.
+    pub(crate) fn with_profile(&self, tool_profile: Option<String>) -> Self {
+        Self {
+            service: self.service.clone(),
+            session_context: self.session_context.clone(),
+            serialization_state: self.serialization_state.clone(),
+            tool_profile,
+            #[cfg(test)]
+            temp_dir: self.temp_dir.clone(),
+        }
+    }
+
+    pub(crate) fn tool_profile(&self) -> Option<&str> {
+        self.tool_profile.as_deref()
+    }
+
     #[cfg(test)]
     pub fn hold_temp_dir(&mut self, temp: tempfile::TempDir) {
         self.temp_dir = Some(Arc::new(temp));
     }
 
-    #[cfg(test)]
-    pub fn serialization_state(&self) -> &Arc<ToolSerializationState> {
+    pub(crate) fn serialization_state(&self) -> &Arc<ToolSerializationState> {
         &self.serialization_state
     }
 
@@ -305,33 +321,20 @@ impl ToolRouter {
         let Some(profile) = self.tool_profile.as_deref() else {
             return visible(all);
         };
-        if profile == "legacy-all" {
-            return visible(all);
-        }
         let Some(allowed) = profile_allowed_tool_names(profile) else {
             return Vec::new();
         };
-        let view = if spindle_adapters::guidance::list_profiles()
+        generated_tool_schemas()
             .iter()
-            .any(|p| p.name == profile)
-        {
-            generated_tool_schemas()
-        } else {
-            all
-        };
-        view.iter()
-            .filter(|t| allowed.contains(&t.name.as_ref()) && !is_operator_only(t.name.as_ref()))
+            .filter(|tool| {
+                allowed.contains(&tool.name.as_ref()) && !is_operator_only(tool.name.as_ref())
+            })
             .cloned()
             .collect()
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
         profile_has_tool(self.tool_profile.as_deref(), name)
-    }
-
-    #[cfg(test)]
-    fn all_tools(&self) -> Vec<Tool> {
-        all_tool_schemas().to_vec()
     }
 }
 

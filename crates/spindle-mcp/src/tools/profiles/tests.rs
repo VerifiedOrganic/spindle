@@ -35,7 +35,7 @@ async fn generated_profiles_filter_listing_and_calling() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn unknown_profiles_fail_closed_and_legacy_all_preserves_catalog() {
+async fn unknown_and_removed_profiles_fail_closed() {
     let mut router = router().await;
     router.tool_profile = Some("typo".to_owned());
     assert!(router.list_tools().is_empty());
@@ -48,16 +48,130 @@ async fn unknown_profiles_fail_closed_and_legacy_all_preserves_catalog() {
             .is_error,
         Some(true)
     );
-    router.tool_profile = Some("legacy-all".to_owned());
-    let expected: Vec<_> = router
-        .all_tools()
-        .into_iter()
-        .filter(|tool| !is_operator_only(tool.name.as_ref()))
-        .collect();
-    assert_eq!(router.list_tools(), expected);
-    for name in OPERATOR_ONLY_TOOLS {
-        assert!(!router.has_tool(name), "legacy-all must deny {name}");
+    for removed in ["legacy-all", "minimal", "write", "import", "authoring"] {
+        router.tool_profile = Some(removed.to_owned());
+        assert!(router.list_tools().is_empty(), "{removed} must fail closed");
+        assert!(
+            !router.has_tool("create_project"),
+            "{removed} must deny tool calls"
+        );
+        assert_eq!(
+            router
+                .call_tool("create_project", None)
+                .await
+                .unwrap()
+                .is_error,
+            Some(true)
+        );
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn internal_listener_honors_secondary_profile_override() {
+    use spindle_harness::mcp::{McpHarnessClient, TransportConfig};
+
+    let registry = router().await;
+    let listener = crate::internal_listener::spawn_internal_listener(registry.service().clone())
+        .await
+        .expect("internal listener");
+    let url = format!("http://{}/mcp?profile=worldbuilding", listener.addr());
+    let client = McpHarnessClient::connect(&TransportConfig::Http { url })
+        .await
+        .expect("connect secondary profile client");
+    let tools = client.list_all_tools().await.expect("list tools");
+    let names: std::collections::BTreeSet<_> = tools.iter().map(|t| t.name.as_ref()).collect();
+    let worldbuilding = spindle_adapters::guidance::list_profiles()
+        .iter()
+        .find(|profile| profile.name == "worldbuilding")
+        .unwrap();
+    assert_eq!(
+        names,
+        worldbuilding.tools.iter().copied().collect(),
+        "secondary profile override must not be narrowed to the primary's profile"
+    );
+    assert!(names.contains("create_faction"));
+
+    let result = client
+        .call_tool::<_, serde_json::Value>(
+            "create_faction",
+            &serde_json::json!({"project_id": "project:missing", "name": "Test Faction"}),
+        )
+        .await;
+    let error = result.expect_err("missing project must fail validation");
+    assert!(
+        !format!("{error:#}").contains("unknown tool"),
+        "create_faction must be dispatchable under the secondary profile: {error:#}"
+    );
+
+    drop(client);
+    listener.shutdown();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn secondary_proxy_defaults_to_generated_workflow_write() {
+    use rmcp::ServiceExt as _;
+    let registry = router().await;
+    let service = registry.service().clone();
+    let primary = crate::server::SpindleMcpServer::with_tool_profile(
+        service.clone(),
+        Some("workflow-write".to_owned()),
+    );
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let primary_task = tokio::spawn(primary.serve(server_io));
+    let primary_client = timeout(Duration::from_secs(20), ().serve(client_io))
+        .await
+        .unwrap()
+        .unwrap();
+    let primary_server = primary_task.await.unwrap().unwrap();
+    let proxy = crate::proxy::ProxyHandler::new(
+        primary_client.peer().clone(),
+        tokio_util::sync::CancellationToken::new(),
+        Some("workflow-write".to_owned()),
+    );
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let proxy_task = tokio::spawn(proxy.serve(server_io));
+    let client = timeout(Duration::from_secs(20), ().serve(client_io))
+        .await
+        .unwrap()
+        .unwrap();
+    let proxy_server = proxy_task.await.unwrap().unwrap();
+    let actual = timeout(Duration::from_secs(20), client.list_all_tools())
+        .await
+        .unwrap()
+        .unwrap();
+    let names: std::collections::BTreeSet<_> = actual.iter().map(|t| t.name.as_ref()).collect();
+    let workflow = spindle_adapters::guidance::list_profiles()
+        .iter()
+        .find(|p| p.name == "workflow-write")
+        .unwrap();
+    assert_eq!(names, workflow.tools.iter().copied().collect());
+    assert!(names.contains("save_scene_draft"));
+    assert!(!names.contains("create_branch"));
+
+    let result = timeout(
+        Duration::from_secs(20),
+        client.call_tool(
+            rmcp::model::CallToolRequestParams::new("create_branch").with_arguments(
+                serde_json::json!({"project_id":"project:test","name":"out-of-profile"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        format!("{:?}", result.content).contains("unknown tool"),
+        "secondary must deny an out-of-profile call: {result:?}"
+    );
+
+    client.cancel().await.unwrap();
+    proxy_server.cancel().await.unwrap();
+    primary_client.cancel().await.unwrap();
+    primary_server.cancel().await.unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]

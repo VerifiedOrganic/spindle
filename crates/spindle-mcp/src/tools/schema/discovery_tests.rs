@@ -181,14 +181,7 @@ fn projection_is_idempotent_and_preserves_all_validation_keywords() {
             project_tool_discovery(Some("workflow-write"), projected.clone()),
             projected
         );
-        for profile in [
-            None,
-            Some("legacy-all"),
-            Some("write"),
-            Some("minimal"),
-            Some("authoring"),
-            Some("import"),
-        ] {
+        for profile in [None, Some("unknown-profile")] {
             assert_eq!(project_tool_discovery(profile, original.clone()), *original);
         }
         let mut normalized = projected.clone();

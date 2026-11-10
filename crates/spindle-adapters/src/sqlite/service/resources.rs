@@ -655,15 +655,17 @@ impl SqliteSpindleService {
                 return Ok(serde_json::to_value(profile.corpus.source_refs)?);
             } else if let Some((profile_id, "refresh-preview")) = rest.split_once('/') {
                 let out = self
-                    .preview_refresh_style_profile(
-                        spindle_core::style::PreviewRefreshStyleProfileInput {
-                            project_id: project_id.clone(),
-                            profile_id: profile_id.to_string(),
-                            metrics_only: None,
-                        },
-                    )
+                    .refresh_style_profile(spindle_core::style::RefreshStyleProfileInput {
+                        project_id: project_id.clone(),
+                        profile_id: profile_id.to_string(),
+                        apply_after_refresh: None,
+                        force_apply: None,
+                        metrics_only: None,
+                        dismiss_candidate_ids: Vec::new(),
+                        dry_run: true,
+                    })
                     .await?;
-                return Ok(serde_json::to_value(out)?);
+                return Ok(serde_json::to_value(out.preview)?);
             } else {
                 let profile = self
                     .repository

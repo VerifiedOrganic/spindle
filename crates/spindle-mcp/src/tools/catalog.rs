@@ -136,10 +136,6 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "check_style_profile_sources",
             "Check the staleness of source files for a derived style profile compared to disk. Exposes metadata only.",
         ),
-        tool::<PreviewRefreshStyleProfileInput, PreviewRefreshStyleProfileOutput>(
-            "preview_refresh_style_profile",
-            "Preview rebuilding/refreshing a style profile from source files without persisting. Exposes metadata only.",
-        ),
         tool::<RefreshStyleProfileInput, RefreshStyleProfileOutput>(
             "refresh_style_profile",
             "Refresh/rebuild a style profile from current local sources, saving a new version linked to the parent.",
@@ -155,10 +151,6 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         tool::<ApplyStyleProfileInput, ApplyStyleProfileOutput>(
             "apply_style_profile",
             "Apply a derived style profile's guidance to a project's existing style contract surfaces (NarratorVoice, ReaderContract.style_notes, and style world rules), invalidating style-sensitive validator cache rows. Requires the profile to be ready and to carry application guidance; pass force=true to deliberately activate a NeedsReview or metrics-only profile — with no prose guidance, only the profile is activated and the project's narrator voice/style notes are left untouched.",
-        ),
-        tool::<PreviewApplyStyleProfileInput, PreviewApplyStyleProfileOutput>(
-            "preview_apply_style_profile",
-            "Preview applying a derived style profile's changes without mutating state.",
         ),
         tool::<ListStyleProfileApplicationsInput, ListStyleProfileApplicationsOutput>(
             "list_style_profile_applications",
@@ -187,10 +179,6 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         tool::<CreateStyleRevisionPatchInput, PreviewStyleRevisionPatchOutput>(
             "create_style_revision_patch",
             "Create a non-mutating style revision patch for a scene or chapter against a style profile, returning proposed revised text and unified diffs; evaluate and apply it with the revision-patch tools.",
-        ),
-        tool::<PreviewStyleRevisionPatchInput, PreviewStyleRevisionPatchOutput>(
-            "preview_style_revision_patch",
-            "Preview a style revision patch for a scene or chapter against a style profile, returning proposed revised text and unified diffs without persisting changes.",
         ),
         tool::<EvaluateStyleRevisionPatchInput, EvaluateStyleRevisionPatchOutput>(
             "evaluate_style_revision_patch",

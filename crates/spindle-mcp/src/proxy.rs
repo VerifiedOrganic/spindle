@@ -111,10 +111,17 @@ impl ServerHandler for ProxyHandler {
 }
 
 /// Connect to an existing primary as a secondary proxy.
-pub async fn connect_to_primary(
+/// Connect a secondary to the primary and declare the secondary's model profile
+/// so the internal listener returns that profile rather than the primary's.
+pub async fn connect_to_primary_with_profile(
     addr: SocketAddr,
+    tool_profile: Option<&str>,
 ) -> anyhow::Result<RunningService<RoleClient, ()>> {
-    let uri = format!("http://{addr}/mcp");
+    let mut uri = format!("http://{addr}/mcp");
+    if let Some(profile) = tool_profile {
+        uri.push_str("?profile=");
+        uri.push_str(profile);
+    }
     tracing::info!("secondary: connecting to primary at {uri}");
 
     let transport = StreamableHttpClientTransport::from_config(

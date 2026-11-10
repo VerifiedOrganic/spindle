@@ -148,7 +148,7 @@ Applying a profile supports two modes:
 
 ### Preview, Auditing, and Rollback
 
-- **Preview**: Users can run `preview_apply_style_profile` to view proposed changes (including narrator voice changes, added/removed style notes, world rule creation/updates, and validation cache invalidations) without mutating any project state.
+- **Preview**: Users can run `apply_style_profile` with `dry_run: true` to view proposed changes (including narrator voice changes, added/removed style notes, world rule creation/updates, and validation cache invalidations) without mutating any project state.
 - **Auditing & Active State**: Every successful application is logged in the `style_profile_application` table. In addition, the project's `active_style_profile_id` is set to the applied profile.
 - **Rollback**: Users can revert any application via the `rollback_style_profile_application` tool. The rollback restores the original narrator voice and style notes, conservatively reverts the style world rules, and appropriately clears or restores the project's `active_style_profile_id` to its previous state.
 
@@ -311,7 +311,7 @@ The refresh workflow consists of three main stages:
   - Compares the current local files (using canonical paths, sizes, modified timestamps, and content hashes) against the saved metadata-only fingerprints of the source files in the style profile.
   - Reports if the profile is stale (`stale: true`), what files were added, removed, or changed, and if a refresh is possible (`can_refresh`).
   - By default, rejects archived profiles unless `include_archived` is explicitly set to true.
-- **Refresh Preview (`preview_refresh_style_profile`)**:
+- **Refresh Preview (`refresh_style_profile` with `dry_run: true`)**:
   - Re-reads the current files matching the profile's original source policy in memory.
   - Recomputes metrics and regenerates guidance (via the `style_analyze` model route, unless `metrics_only` is true) to construct a candidate profile.
   - Compares the candidate profile against the current profile to report metric deltas, quality changes, and warnings without mutating any project state or persisting anything.
@@ -349,7 +349,7 @@ When you re-draft an agent-written scene by hand, that edit is signal: it shows 
 
 - **Opt-in per project (`style_learning`).** Disabled by default (the flag is `NULL`). Enable it by setting `style_learning` to `1` through `update_entity` on the project (e.g. `update_entity { entity_id: "project:…", changes: { "style_learning": 1 } }`). Set it back to `0` to stop capturing.
 - **Capture rule.** When style learning is enabled and you re-save a scene the agent drafted with **different** prose (byte compare after trim), Spindle stores the agent draft and your edit as a *pending style-edit candidate*. Only an operator edit over an agent draft is captured — agent-over-agent re-saves (the revise loop) and operator-over-operator edits are not. A second operator edit of the same scene **replaces** the pending candidate (one per scene; the latest edit is the signal). The captured signal is the scene's `draft_origin`: agent authorship is recognized from a `draft_origin` starting with `agent:` (recorded on the agent draft path). A scene larger than 60,000 characters is skipped (a degenerate case that would only bloat the corpus).
-- **The preview→refresh review gate (I4-consistent).** `preview_refresh_style_profile` gains a `style_edit_candidates` section listing the pending candidates by scene reference with a **bounded, prose-free diff summary** (character counts and delta — never the full prose). `refresh_style_profile` then feeds each included candidate's edited prose into the refresh corpus as a positive example alongside the profile's file sources, and marks the candidates `consumed`. Because refresh is an explicit operator action, nothing reaches a profile without your review — the preview→refresh pair *is* the review gate.
+- **The preview→refresh review gate (I4-consistent).** `refresh_style_profile` with `dry_run: true` gains a `style_edit_candidates` section listing the pending candidates by scene reference with a **bounded, prose-free diff summary** (character counts and delta — never the full prose). `refresh_style_profile` then feeds each included candidate's edited prose into the refresh corpus as a positive example alongside the profile's file sources, and marks the candidates `consumed`. Because refresh is an explicit operator action, nothing reaches a profile without your review — the dry-run→refresh pair *is* the review gate.
 - **Dismissal.** Pass `dismiss_candidate_ids: ["style_edit_candidate:…"]` to `refresh_style_profile` to drop candidates instead of consuming them; they are flipped to `dismissed` and never fed.
 - **Explicit-content withholding (source-side rating discipline).** An explicit-rated candidate is **withheld** from the refresh sources unless the `style_analyze` route's resolved agent declares the `explicit` rating. Withheld candidates stay pending, and the preview notes them (e.g. *"1 explicit candidate withheld: style route not explicit-cleared"*). Style routes are non-prose-bearing, so this guard protects at the **source** — an explicit example never enters an analyzer that never declared explicit coverage — mirroring the prose-bearing dispatch gate. Point `style_analyze` at an explicit-cleared agent to include them.
 
@@ -1003,7 +1003,7 @@ The evaluation performs the following checks for each scene:
 
 #### Integration Points
 
-1. **Preview Integration**: The `preview_style_revision_patch` input supports an optional `run_evaluation` flag. If `true`, the preview output embeds a complete `EvaluateStyleRevisionPatchOutput`.
+1. **Preview Integration**: The `create_style_revision_patch` input supports an optional `run_evaluation` flag. If `true`, the preview output embeds a complete `EvaluateStyleRevisionPatchOutput`.
 2. **Apply Gating Integration**: The `apply_style_revision_patch` input accepts `require_positive_evaluation: Option<bool>` and `minimum_improvement_score: Option<f64>`. When enabled:
    - It runs the evaluation before applying.
    - It rejects the apply with an error if the overall patch status is `regressed` or if the score falls below the minimum threshold.

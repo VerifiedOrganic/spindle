@@ -2,34 +2,14 @@
   "version": 1,
   "compatibility": {
     "default": {
-      "tools": 181,
-      "input_bytes": 171911,
-      "full_bytes": 740543
+      "tools": 44,
+      "input_bytes": 57633,
+      "full_bytes": 112551
     },
     "new-book": {
       "tools": 14,
       "input_bytes": 20204,
       "full_bytes": 26534
-    },
-    "minimal": {
-      "tools": 22,
-      "input_bytes": 30835,
-      "full_bytes": 207038
-    },
-    "write": {
-      "tools": 122,
-      "input_bytes": 115673,
-      "full_bytes": 468875
-    },
-    "import": {
-      "tools": 40,
-      "input_bytes": 21665,
-      "full_bytes": 229485
-    },
-    "authoring": {
-      "tools": 78,
-      "input_bytes": 88802,
-      "full_bytes": 336755
     },
     "planning": {
       "tools": 38,
@@ -47,9 +27,9 @@
       "full_bytes": 20069
     },
     "revision": {
-      "tools": 34,
-      "input_bytes": 22509,
-      "full_bytes": 57746
+      "tools": 33,
+      "input_bytes": 22015,
+      "full_bytes": 57073
     },
     "setup": {
       "tools": 9,
@@ -57,14 +37,14 @@
       "full_bytes": 9074
     },
     "style": {
-      "tools": 43,
-      "input_bytes": 34177,
-      "full_bytes": 94224
+      "tools": 40,
+      "input_bytes": 32009,
+      "full_bytes": 83088
     },
     "workflow-authoring": {
-      "tools": 74,
-      "input_bytes": 86589,
-      "full_bytes": 181722
+      "tools": 76,
+      "input_bytes": 90075,
+      "full_bytes": 185929
     },
     "workflow-import": {
       "tools": 20,
@@ -80,33 +60,28 @@
       "tools": 50,
       "input_bytes": 49068,
       "full_bytes": 84557
-    },
-    "legacy-all": {
-      "tools": 181,
-      "input_bytes": 171911,
-      "full_bytes": 740543
     }
   },
   "canonical": {
-    "minimal": {
-      "tools": 16,
-      "input_bytes": 12000,
-      "full_bytes": 16000
-    },
-    "write": {
+    "workflow-write": {
       "tools": 45,
       "input_bytes": 32000,
       "full_bytes": 40000
     },
-    "authoring": {
+    "workflow-authoring": {
       "tools": 55,
       "input_bytes": 40000,
       "full_bytes": 48000
     },
-    "import": {
+    "workflow-import": {
       "tools": 30,
       "input_bytes": 20000,
       "full_bytes": 24000
+    },
+    "new-book": {
+      "tools": 20,
+      "input_bytes": 16000,
+      "full_bytes": 20000
     },
     "revision": {
       "tools": 30,

@@ -25,7 +25,6 @@ const REFERENCED_OUTPUTS: &[&str] = &[
     "planning_decide",
     "planning_status",
     "prepare_scene",
-    "preview_refresh_style_profile",
     "refresh_style_profile",
 ];
 
@@ -89,7 +88,7 @@ pub(super) fn response_contract_reference(
         name: name.to_owned(),
         markdown,
         covered: true,
-        required_profile: Some("minimal".to_owned()),
+        required_profile: Some("workflow-write".to_owned()),
         available_units: router.covered_units(),
         missing_capabilities: Vec::new(),
     })

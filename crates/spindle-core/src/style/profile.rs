@@ -939,7 +939,7 @@ pub struct StyleEditCandidateRef {
 
 /// Compact, fully described preview of a refresh candidate. The full candidate
 /// card remains in `RefreshStyleProfileOutput::new_profile`; the release-R
-/// `preview_refresh_style_profile` twin returns the extended preview shape.
+/// full refresh preview is returned by the internal candidate builder.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RefreshStyleProfilePreview {
     /// Profile identifier the refresh starts from.
