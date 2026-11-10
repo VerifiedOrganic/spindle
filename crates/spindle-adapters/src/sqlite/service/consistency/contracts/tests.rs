@@ -6753,6 +6753,82 @@ mod claim_validation_lanes {
     }
 
     #[tokio::test]
+    async fn story_start_patch_does_not_merge_scene_one_state_backwards() {
+        use spindle_core::models::{
+            CharacterStateAnchor, CharacterStatePatch, CommitCharacterStateInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "anchor-cutoff".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id = create_character_named(&svc, &project.project_id, "Ada Ward").await;
+        let scene_one =
+            save_scene(&svc, &project.project_id, 1, "Ada Ward crossed the yard.").await;
+        let scene_state = svc
+            .commit_character_state(CommitCharacterStateInput {
+                character_id: character_id.clone(),
+                scene_id: Some(scene_one),
+                anchor: None,
+                changes: CharacterStatePatch {
+                    emotional_state: std::collections::BTreeMap::new(),
+                    goals: Some(vec!["scene-one goal".into()]),
+                    status: Some(vec!["dead".into()]),
+                    notes: Some(vec!["scene-one note".into()]),
+                    source_summary: None,
+                },
+            })
+            .await
+            .unwrap();
+        let scene_state = svc
+            .repository()
+            .get_character_state_by_id(&scene_state.state_id)
+            .await
+            .unwrap();
+        assert!(scene_state.status.iter().any(|status| status == "dead"));
+
+        let anchor = svc
+            .commit_character_state(CommitCharacterStateInput {
+                character_id,
+                scene_id: None,
+                anchor: Some(CharacterStateAnchor::StoryStart),
+                changes: CharacterStatePatch {
+                    emotional_state: std::collections::BTreeMap::new(),
+                    goals: None,
+                    status: None,
+                    notes: Some(vec!["backstory note".into()]),
+                    source_summary: None,
+                },
+            })
+            .await
+            .unwrap();
+        let anchor_state = svc
+            .repository()
+            .get_character_state_by_id(&anchor.state_id)
+            .await
+            .unwrap();
+        assert!(
+            !anchor_state.status.iter().any(|status| status == "dead"),
+            "scene-1 death must not merge backwards: {anchor_state:?}"
+        );
+        assert!(
+            anchor_state.goals.is_empty(),
+            "scene-1 goals must not merge backwards: {anchor_state:?}"
+        );
+        assert_eq!(anchor_state.notes, vec!["backstory note".to_string()]);
+    }
+
+    #[tokio::test]
     async fn story_start_anchor_sets_dead_state_before_first_scene() {
         use spindle_core::models::{
             CharacterStateAnchor, CharacterStatePatch, CommitCharacterStateInput,

@@ -170,12 +170,20 @@ impl SqliteSpindleService {
                     }
                     None => commit_branch_id.clone(),
                 };
+                // Scene commits include the state at the scene itself. A
+                // story-start anchor must not absorb a later scene-1 snapshot,
+                // so its inclusive cutoff is exactly its own placement.
+                let cutoff_order = if story_start {
+                    scene_order
+                } else {
+                    scene_order + 1
+                };
                 let latest_state = tx.resolve_character_state_for_branch(
                     &target_branch_id,
                     &character.id,
                     book_number,
                     chapter_number,
-                    scene_order + 1,
+                    cutoff_order,
                 )?;
                 let merged = CharacterStatePatch {
                     emotional_state: if changes.emotional_state.is_empty() {
