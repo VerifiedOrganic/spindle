@@ -1,28 +1,28 @@
 # Changelog
 
-## 0.3.1 (unreleased)
+## 0.3.1 — 2026-11-10
 
 ### Fixed
 
-- `get_writer_state` now fits the requested token budget instead of failing at
-  its 8,000-token default or returning a payload several times over budget.
-  Required sections are compacted, optional sections are dropped, and typed
-  `omissions` report what was left out and which tool/budget can fetch it.
-- Research and adapter guidance is provider-neutral. The stale Gemini/Claude/
-  Grok wording was removed from tool descriptions, schemas, and server
-  instructions, and a regression test now rejects model-provider names in the
-  served tool surface.
-- `spindle-mcp init` writes a `.spindle/.gitignore` covering the SQLite
-  database sidecars, the migration lock, and runtime files. Startup appends
-  missing entries for existing workspaces without replacing author rules, so
-  the migration lock no longer appears as an untracked book file.
-- Project calendars now support optional leap years: proleptic Gregorian rules
-  (every 4 years, except every 100, except every 400) or a custom rule naming
-  the month that gains days and its cadence. Existing calendars default to
-  fixed-length years, and date/day-index conversion, durations, births,
-  timeline clocks, and ages use the leap-aware calendar consistently.
-- `find_entity` now labels only a full name or alias equal to the query as exact (case/diacritic-insensitive); forename/surname/alias-token owners rank above fuzzy FTS hits, all owners of an ambiguous name are returned, and description/semantic hits are never mislabelled exact.
-- `commit_character_state` accepts a typed `story_start` anchor with no scene for backstory deaths and other pre-opening state. The snapshot and dead-character detector treat that state as true from story start. A scene-less chapter-one `life_status` canonical fact only counts from story start when it explicitly carries `valid_from` `(1,1,0)`; ordinary chapter-one facts apply from their own scene/chapter position.
+- `get_writer_state` now succeeds at its default budget and keeps the response
+  within any requested budget, compacts required sections, and reports typed
+  `omissions` with fetch hints.
+- `find_entity` now ranks exact matches accurately for shared first names and
+  aliases, returning every owner of an ambiguous name instead of mislabeling
+  fuzzy hits as exact.
+- `commit_character_state` accepts a `story_start` anchor for backstory deaths
+  and other pre-opening character state, without requiring a scene.
+- Project calendars support optional leap years using proleptic Gregorian rules
+  or custom month/cadence rules (migration V0057). Existing calendars keep
+  fixed-length years until configured otherwise.
+- `research_query` now uses provider-neutral discovery language.
+- `.spindle/spindle.db.migration.lock` is covered by the workspace
+  `.spindle/.gitignore`, so it no longer appears as an untracked book file.
+
+### Upgrade notes
+
+- Back up `.spindle/` before the first 0.3.1 start: migration V0057 runs on the
+  project database.
 
 ## 0.3.0 — 2026-11-10
 
