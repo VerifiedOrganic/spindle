@@ -1,8 +1,11 @@
 use super::*;
 use spindle_core::canon::{
     KnowledgeValidationFactV1, SceneValidationInputV1, SecretValidationCandidateV1,
-    detect_knowledge_paraphrase_leak, detect_secret_narration_leak,
+    detect_knowledge_paraphrase_leak, detect_secret_generic_disclosure,
+    detect_secret_narration_leak,
 };
+use spindle_core::character_mentions::{CharacterMentionRecord, CharacterMentionResolver};
+use spindle_core::models::PriceMention;
 
 impl SqliteSpindleService {
     /// Run the consistency validator suite over a project. Mirrors
@@ -576,6 +579,89 @@ impl SqliteSpindleService {
                     clock_by_scene.get(&scene.id).copied(),
                 ));
             }
+            // Explicit elapsed-time phrases after a recorded death: compare
+            // the prose's elapsed claim with the scene clocks that place the
+            // death. This is the recorded-clock counterpart to the prose-only
+            // band scan; clean controls that state the true gap stay silent.
+            let death_states = self
+                .repository
+                .list_character_states_by_project_and_branch(&project_id, &active_branch.id)
+                .await?;
+            if !death_states.is_empty() {
+                let death_characters = self
+                    .repository
+                    .list_characters_by_project_and_branch(&project_id, &active_branch.id)
+                    .await?;
+                let character_by_id: BTreeMap<String, &crate::sqlite::records::Character> =
+                    death_characters
+                        .iter()
+                        .map(|character| (character.id.clone(), character))
+                        .collect();
+                let mut death_day_by_character: BTreeMap<String, f64> = BTreeMap::new();
+                for state in &death_states {
+                    if !state
+                        .status
+                        .iter()
+                        .any(|status| status.to_ascii_lowercase().contains("dead"))
+                    {
+                        continue;
+                    }
+                    let Some(death_scene_id) = state.scene_id.as_deref() else {
+                        continue;
+                    };
+                    let Some(death_clock) = clock_by_scene.get(death_scene_id) else {
+                        continue;
+                    };
+                    let Some(death_day) = death_clock.clock.day_index else {
+                        continue;
+                    };
+                    death_day_by_character
+                        .entry(state.character_id.clone())
+                        .or_insert(death_day as f64);
+                }
+                for scene in &scenes {
+                    let Some(scene_clock) = clock_by_scene.get(&scene.id) else {
+                        continue;
+                    };
+                    let Some(scene_day) = scene_clock.clock.day_index else {
+                        continue;
+                    };
+                    for (character_id, death_day) in &death_day_by_character {
+                        let gap_days = scene_day as f64 - death_day;
+                        if gap_days <= 0.0 {
+                            continue;
+                        }
+                        let Some(character) = character_by_id.get(character_id) else {
+                            continue;
+                        };
+                        let Some(aliases) = death_aliases(character) else {
+                            continue;
+                        };
+                        let Some((phrase, claimed_days)) =
+                            elapsed_days_after_death(&scene.full_text, &aliases)
+                        else {
+                            continue;
+                        };
+                        if !elapsed_claim_conflicts(claimed_days, gap_days) {
+                            continue;
+                        }
+                        issues.push(ConsistencyIssue {
+                            severity: "warning".to_string(),
+                            check_type: "temporal_coherence".to_string(),
+                            message: format!(
+                                "scene says '{}' since {} died, but the recorded clocks place the death {gap_days} days before this scene",
+                                phrase, character.name
+                            ),
+                            entity_ids: vec![scene.id.clone()],
+                            suggested_action: Some(
+                                "correct the elapsed-time phrase or the scene clock so the claimed gap matches the recorded timeline"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                }
+            }
+
             // Tier 2 (opt-in): a model-backed semantic pass that catches the
             // idiomatic time jumps the deterministic lexicon cannot (meals,
             // light, errands, "three cigarettes later"). Falls back to nothing
@@ -838,9 +924,10 @@ impl SqliteSpindleService {
             }
         }
 
-        // ── Affordability: a priced purchase a present character can't cover ──
-        // Advisory (Info, high-precision/low-recall): if a scene names a price
-        // above a present character's tracked wealth (converted to base), flag.
+        // ── Affordability: a resolved spender exceeding tracked wealth ──
+        // A resolved owner spending more than their tracked balance is a
+        // contradiction (warning). Ambiguous spenders stay advisory (info);
+        // unresolved or untracked spenders stay silent.
         if should_run_check(&requested_checks_set, "affordability") {
             let schemes = self
                 .repository
@@ -858,32 +945,81 @@ impl SqliteSpindleService {
                     .repository
                     .list_characters_by_project_and_branch(&project_id, &active_branch.id)
                     .await?;
+                let mention_records: Vec<CharacterMentionRecord> = characters
+                    .iter()
+                    .map(|character| CharacterMentionRecord {
+                        id: character.id.clone(),
+                        name: character.name.clone(),
+                        aliases: character.aliases.clone(),
+                    })
+                    .collect();
+                let mention_resolver = CharacterMentionResolver::new(&mention_records);
+                let single_protagonist = {
+                    let protagonists: Vec<&str> = characters
+                        .iter()
+                        .filter(|character| character.role.eq_ignore_ascii_case("protagonist"))
+                        .map(|character| character.id.as_str())
+                        .collect();
+                    (protagonists.len() == 1).then(|| protagonists[0].to_string())
+                };
+                let pov_by_chapter: BTreeMap<(i32, i32), String> = scoped_plans
+                    .iter()
+                    .filter_map(|plan| {
+                        plan.pov_character_id
+                            .clone()
+                            .map(|pov| ((plan.book_number, plan.chapter_number), pov))
+                    })
+                    .collect();
                 for scene in &scenes {
                     let mentions =
                         spindle_core::models::extract_price_mentions(&scene.full_text, &units);
-                    let Some(max_price_base) = mentions
-                        .iter()
-                        .filter_map(|m| {
-                            unit_base
-                                .get(&m.unit.to_ascii_lowercase())
-                                .map(|per_base| m.amount * per_base)
-                        })
-                        .fold(None, |acc: Option<f64>, value| {
-                            Some(acc.map_or(value, |a| a.max(value)))
-                        })
-                    else {
+                    if mentions.is_empty() {
                         continue;
-                    };
+                    }
+                    let scene_pov = pov_by_chapter
+                        .get(&(scene.book_number, scene.chapter_number))
+                        .cloned()
+                        .or_else(|| single_protagonist.clone());
                     let cursor = scene.book_number as i64 * 1_000_000
                         + scene.chapter_number as i64 * 1_000
                         + scene.scene_order as i64;
-                    for character in &characters {
-                        if !contains_case_insensitive_word_boundary(
-                            &scene.full_text,
-                            &character.name,
-                        ) {
+                    let mut charges: BTreeMap<String, f64> = BTreeMap::new();
+                    let mut ambiguous_base = 0.0;
+                    for mention in &mentions {
+                        let Some(per_base) = unit_base.get(&mention.unit.to_ascii_lowercase())
+                        else {
                             continue;
+                        };
+                        let (sentence_start, sentence_end) =
+                            price_sentence_bounds(&scene.full_text, mention.start, mention.end);
+                        let sentence = &scene.full_text[sentence_start..sentence_end];
+                        let Some((verb_start, _)) =
+                            spending_verb_for_mention(sentence, mention.start - sentence_start)
+                        else {
+                            continue;
+                        };
+                        let price_base = mention.amount * per_base;
+                        match resolve_price_spender(
+                            &scene.full_text,
+                            mention,
+                            &mention_resolver,
+                            scene_pov.as_deref(),
+                            sentence_start + verb_start,
+                        ) {
+                            Ok(character_id) => {
+                                *charges.entry(character_id).or_default() += price_base;
+                            }
+                            Err("ambiguous") => ambiguous_base += price_base,
+                            Err(_) => {}
                         }
+                    }
+                    for (character_id, total_base) in &charges {
+                        let Some(character) = characters
+                            .iter()
+                            .find(|character| &character.id == character_id)
+                        else {
+                            continue;
+                        };
                         for stored in &schemes {
                             let measure = stored.scheme.measure.as_str();
                             let Some(state) = self
@@ -892,7 +1028,7 @@ impl SqliteSpindleService {
                                     &project_id,
                                     &active_branch.id,
                                     "character",
-                                    &character.id,
+                                    character_id,
                                     measure,
                                     cursor,
                                 )
@@ -909,12 +1045,12 @@ impl SqliteSpindleService {
                                 continue;
                             };
                             let wealth_base = amount * per_base;
-                            if max_price_base > wealth_base {
+                            if *total_base > wealth_base {
                                 issues.push(ConsistencyIssue {
-                                    severity: "info".to_string(),
+                                    severity: "warning".to_string(),
                                     check_type: "affordability".to_string(),
                                     message: format!(
-                                        "scene names a price of {max_price_base} base units, above {}'s tracked {measure} of {wealth_base} base units",
+                                        "scene names purchases totalling {total_base} base units for {}, above their tracked {measure} of {wealth_base} base units",
                                         character.name
                                     ),
                                     entity_ids: vec![scene.id.clone(), character.id.clone()],
@@ -923,9 +1059,23 @@ impl SqliteSpindleService {
                                             .to_string(),
                                     ),
                                 });
-                                break; // one advisory per character per scene
+                                break;
                             }
                         }
+                    }
+                    if ambiguous_base > 0.0 {
+                        issues.push(ConsistencyIssue {
+                            severity: "info".to_string(),
+                            check_type: "affordability".to_string(),
+                            message: format!(
+                                "scene names purchases totalling {ambiguous_base} base units, but the spender is ambiguous"
+                            ),
+                            entity_ids: vec![scene.id.clone()],
+                            suggested_action: Some(
+                                "name the spender or remove the price ambiguity before treating this as a contradiction"
+                                    .to_string(),
+                            ),
+                        });
                     }
                 }
             }
@@ -947,7 +1097,37 @@ impl SqliteSpindleService {
                     .await?;
                 let character_by_id: BTreeMap<String, &crate::sqlite::records::Character> =
                     characters.iter().map(|c| (c.id.clone(), c)).collect();
+                let mention_records: Vec<spindle_core::character_mentions::CharacterMentionRecord> =
+                    characters
+                        .iter()
+                        .map(|character| CharacterMentionRecord {
+                            id: character.id.clone(),
+                            name: character.name.clone(),
+                            aliases: character.aliases.clone(),
+                        })
+                        .collect();
+                let mention_resolver = CharacterMentionResolver::new(&mention_records);
+                let single_protagonist = {
+                    let protagonists: Vec<&str> = characters
+                        .iter()
+                        .filter(|character| character.role.eq_ignore_ascii_case("protagonist"))
+                        .map(|character| character.id.as_str())
+                        .collect();
+                    (protagonists.len() == 1).then(|| protagonists[0].to_string())
+                };
+                let pov_by_chapter: BTreeMap<(i32, i32), String> = scoped_plans
+                    .iter()
+                    .filter_map(|plan| {
+                        plan.pov_character_id
+                            .clone()
+                            .map(|pov| ((plan.book_number, plan.chapter_number), pov))
+                    })
+                    .collect();
                 for scene in &scenes {
+                    let scene_pov = pov_by_chapter
+                        .get(&(scene.book_number, scene.chapter_number))
+                        .cloned()
+                        .or_else(|| single_protagonist.clone());
                     let scene_position =
                         (scene.book_number, scene.chapter_number, scene.scene_order);
                     for fact in &knowledge_facts {
@@ -965,9 +1145,10 @@ impl SqliteSpindleService {
                         let Some(character) = character_by_id.get(&fact.character_id) else {
                             continue;
                         };
-                        if !contains_case_insensitive_word_boundary(
+                        if !mention_resolver.mentions_with_pov(
                             &scene.full_text,
-                            &character.name,
+                            &character.id,
+                            scene_pov.as_deref(),
                         ) {
                             continue;
                         }
@@ -989,6 +1170,11 @@ impl SqliteSpindleService {
                                 fact_id: fact.id.clone(),
                                 character_id: fact.character_id.clone(),
                                 character_names: vec![character.name.clone()],
+                                character_aliases: mention_resolver
+                                    .aliases_for(&character.id)
+                                    .to_vec(),
+                                first_person_subject: scene_pov.as_deref()
+                                    == Some(character.id.as_str()),
                                 fact: fact.fact.clone(),
                                 learned_book_number: learned_at.book_number,
                                 learned_chapter_number: learned_at.chapter_number,
@@ -1559,7 +1745,22 @@ impl SqliteSpindleService {
                             && existing.message == issue.message
                             && existing.entity_ids == issue.entity_ids
                     }) {
-                        issues.push(issue);
+                        issues.push(issue.clone());
+                    }
+                    // Stable detector-name alias: dead-character acting is a
+                    // first-class contradiction type for consumers that do not
+                    // know the historical `retcon_reachability` bucket.
+                    if matches!(
+                        finding,
+                        spindle_core::models::RetconFinding::DeadCharacterAct { .. }
+                    ) && !issues.iter().any(|existing| {
+                        existing.check_type == "dead_character_acting"
+                            && existing.message == issue.message
+                            && existing.entity_ids == issue.entity_ids
+                    }) {
+                        let mut alias = issue;
+                        alias.check_type = "dead_character_acting".to_string();
+                        issues.push(alias);
                     }
                 }
             }
@@ -2112,8 +2313,6 @@ impl SqliteSpindleService {
         // Narration/behavior scanning is deliberately out of v1 scope (deep tier,
         // next wave). Silent for projects with no secret facts.
         if should_run_check(&requested_checks_set, "secret_leak") {
-            use spindle_core::voice::{VoiceDriftCharacter, attributed_dialogue_ranges};
-
             let secret_facts = self
                 .repository
                 .list_active_canonical_facts_by_project_and_branch(&project_id, &active_branch.id)
@@ -2127,6 +2326,16 @@ impl SqliteSpindleService {
                     .repository
                     .list_characters_by_project(&project_id)
                     .await?;
+                let mention_records: Vec<spindle_core::character_mentions::CharacterMentionRecord> =
+                    characters
+                        .iter()
+                        .map(|character| CharacterMentionRecord {
+                            id: character.id.clone(),
+                            name: character.name.clone(),
+                            aliases: character.aliases.clone(),
+                        })
+                        .collect();
+                let mention_resolver = CharacterMentionResolver::new(&mention_records);
 
                 // Circle-at-cursor per fact is cursor-dependent, so compute it
                 // per (scene, fact). Cache the raw circle rows per fact to avoid
@@ -2180,35 +2389,27 @@ impl SqliteSpindleService {
                             .iter()
                             .filter(|character| !circle_at_cursor.contains(character.id.as_str()))
                             .filter(|character| {
-                                spindle_core::voice::character_present_in_scene(
-                                    &scene.full_text,
-                                    &VoiceDriftCharacter {
-                                        id: character.id.clone(),
-                                        name: character.name.clone(),
-                                    },
-                                )
+                                mention_resolver.mentions(&scene.full_text, &character.id)
                             })
                             .collect();
                         leakers.sort_by(|a, b| a.id.cmp(&b.id));
 
                         for character in leakers {
-                            let speaker = VoiceDriftCharacter {
-                                id: character.id.clone(),
-                                name: character.name.clone(),
-                            };
                             let dialogue_leak =
-                                attributed_dialogue_ranges(&scene.full_text, &speaker)
-                                    .into_iter()
-                                    .filter(|range| {
-                                        range.end > range.start
-                                            && range.end <= scene.full_text.len()
-                                    })
-                                    .any(|range| {
-                                        crate::sqlite::validators::contains_case_insensitive_word(
-                                            &scene.full_text[range.start..range.end],
-                                            &value,
-                                        )
-                                    });
+                                spindle_core::voice::attributed_dialogue_ranges_for_aliases(
+                                    &scene.full_text,
+                                    mention_resolver.aliases_for(&character.id),
+                                )
+                                .into_iter()
+                                .filter(|range| {
+                                    range.end > range.start && range.end <= scene.full_text.len()
+                                })
+                                .any(|range| {
+                                    crate::sqlite::validators::contains_case_insensitive_word(
+                                        &scene.full_text[range.start..range.end],
+                                        &value,
+                                    )
+                                });
                             let suggested_action = |medium: &str| {
                                 format!(
                                     "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the {medium}"
@@ -2250,10 +2451,20 @@ impl SqliteSpindleService {
                                 value: value.clone(),
                                 character_id: character.id.clone(),
                                 character_name: character.name.clone(),
+                                character_aliases: mention_resolver
+                                    .aliases_for(&character.id)
+                                    .to_vec(),
                                 other_present_character_names: characters
                                     .iter()
                                     .filter(|other| other.id != character.id)
                                     .map(|other| other.name.clone())
+                                    .collect(),
+                                other_present_character_aliases: characters
+                                    .iter()
+                                    .filter(|other| other.id != character.id)
+                                    .flat_map(|other| {
+                                        mention_resolver.aliases_for(&other.id).iter().cloned()
+                                    })
                                     .collect(),
                             };
                             if let Some(finding) =
@@ -2265,6 +2476,69 @@ impl SqliteSpindleService {
                                     message: finding.message,
                                     entity_ids: finding.entity_ids,
                                     suggested_action: Some(suggested_action("narration")),
+                                });
+                            }
+                        }
+                        let already_disclosed = issues.iter().any(|issue| {
+                            issue.check_type == "secret_leak"
+                                && issue.entity_ids.contains(&fact.id)
+                                && issue.entity_ids.contains(&scene.id)
+                        });
+                        if !already_disclosed {
+                            let holder_names: Vec<String> = fact
+                                .subject_id
+                                .as_ref()
+                                .and_then(|holder_id| {
+                                    characters
+                                        .iter()
+                                        .find(|character| &character.id == holder_id)
+                                })
+                                .map(|holder| {
+                                    let mut names =
+                                        mention_resolver.aliases_for(&holder.id).to_vec();
+                                    if names.is_empty() {
+                                        names.push(holder.name.clone());
+                                    }
+                                    names
+                                })
+                                .unwrap_or_default();
+                            let in_circle_names: Vec<String> = characters
+                                .iter()
+                                .filter(|character| {
+                                    circle_at_cursor.contains(character.id.as_str())
+                                })
+                                .flat_map(|character| {
+                                    let mut names =
+                                        mention_resolver.aliases_for(&character.id).to_vec();
+                                    if names.is_empty() {
+                                        names.push(character.name.clone());
+                                    }
+                                    names
+                                })
+                                .collect();
+                            let generic_scene = SceneValidationInputV1 {
+                                scene_id: &scene.id,
+                                book_number: scene.book_number,
+                                chapter_number: scene.chapter_number,
+                                scene_order: scene.scene_order,
+                                text: &scene.full_text,
+                            };
+                            if let Some(finding) = detect_secret_generic_disclosure(
+                                &generic_scene,
+                                &fact.id,
+                                &value,
+                                &holder_names,
+                                &in_circle_names,
+                            ) {
+                                issues.push(ConsistencyIssue {
+                                    severity: finding.severity.as_str().to_string(),
+                                    check_type: finding.check_type,
+                                    message: finding.message,
+                                    entity_ids: finding.entity_ids,
+                                    suggested_action: Some(
+                                        "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
+                                            .to_string(),
+                                    ),
                                 });
                             }
                         }
@@ -2486,5 +2760,500 @@ impl SqliteSpindleService {
             report_sections,
             markdown,
         })
+    }
+}
+
+fn price_sentence_bounds(text: &str, start: usize, end: usize) -> (usize, usize) {
+    let bytes = text.as_bytes();
+    let mut begin = start.min(text.len());
+    while begin > 0 && !matches!(bytes[begin - 1], b'.' | b'!' | b'?' | b';' | b'\n') {
+        begin -= 1;
+    }
+    let mut finish = end.min(text.len());
+    while finish < text.len() && !matches!(bytes[finish], b'.' | b'!' | b'?' | b';' | b'\n') {
+        finish += 1;
+    }
+    (begin, finish)
+}
+
+fn sentence_has_dialogue(sentence: &str) -> bool {
+    sentence.contains('"') || sentence.contains('“') || sentence.contains('”')
+}
+
+const SPEND_VERBS: &[&str] = &[
+    "paid",
+    "pay",
+    "pays",
+    "paying",
+    "bought",
+    "buy",
+    "buys",
+    "buying",
+    "spent",
+    "spend",
+    "spends",
+    "spending",
+    "cost",
+    "costs",
+    "lost",
+    "lose",
+    "loses",
+    "losing",
+    "purchased",
+    "purchase",
+    "purchases",
+    "gave",
+    "give",
+];
+
+const NON_AFFIRMATIVE_MARKERS: &[&str] = &[
+    "not",
+    "never",
+    "if",
+    "whether",
+    "would",
+    "could",
+    "should",
+    "might",
+    "asked",
+    "asking",
+    "unless",
+    "suppose",
+    "supposing",
+];
+
+const BALANCE_MARKERS: &[&str] = &[
+    "had",
+    "has",
+    "left",
+    "remaining",
+    "remained",
+    "kept",
+    "held",
+    "balance",
+    "saved",
+    "change",
+    "leaving",
+];
+
+fn word_at_boundary(text: &str, start: usize, end: usize) -> bool {
+    let prev_is_word = text[..start]
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let next_is_word = text[end..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_');
+    !prev_is_word && !next_is_word
+}
+
+fn contains_marker(text: &str, marker: &str) -> bool {
+    if marker.contains('\'') {
+        return text.to_ascii_lowercase().contains(marker);
+    }
+    contains_case_insensitive_word_boundary(text, marker)
+}
+
+fn contains_any_marker(text: &str, markers: &[&str]) -> bool {
+    markers.iter().any(|marker| contains_marker(text, marker))
+}
+
+fn last_spend_verb_before(sentence: &str, before: usize) -> Option<(usize, usize)> {
+    let lower = sentence.to_ascii_lowercase();
+    let mut best: Option<(usize, usize)> = None;
+    for verb in SPEND_VERBS {
+        let mut search_from = 0;
+        while let Some(relative) = lower[search_from..before].find(verb) {
+            let start = search_from + relative;
+            let end = start + verb.len();
+            if word_at_boundary(&lower, start, end)
+                && best.is_none_or(|(_, best_end)| end > best_end)
+            {
+                best = Some((start, end));
+            }
+            search_from = end;
+        }
+    }
+    best
+}
+
+fn spending_verb_for_mention(sentence: &str, mention_offset: usize) -> Option<(usize, usize)> {
+    let (verb_start, verb_end) = last_spend_verb_before(sentence, mention_offset)?;
+    let prefix = &sentence[..verb_start];
+    if passive_before(prefix) || contains_any_marker(prefix, NON_AFFIRMATIVE_MARKERS) {
+        return None;
+    }
+    let between = &sentence[verb_end..mention_offset];
+    if contains_any_marker(between, BALANCE_MARKERS) {
+        return None;
+    }
+    let mut after_end = (mention_offset + 40).min(sentence.len());
+    while after_end < sentence.len() && !sentence.is_char_boundary(after_end) {
+        after_end += 1;
+    }
+    if contains_any_marker(&sentence[mention_offset..after_end], BALANCE_MARKERS) {
+        return None;
+    }
+    Some((verb_start, verb_end))
+}
+
+fn passive_before(prefix: &str) -> bool {
+    let last = prefix
+        .split_whitespace()
+        .next_back()
+        .unwrap_or("")
+        .trim_matches(|c: char| !c.is_alphabetic())
+        .to_ascii_lowercase();
+    matches!(last.as_str(), "was" | "were" | "been" | "got" | "be")
+}
+
+fn sentence_starts_with_first_person(sentence: &str) -> bool {
+    let sentence = sentence.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let Some(first) = sentence.split_whitespace().next() else {
+        return false;
+    };
+    matches!(
+        first
+            .trim_matches(|c: char| !c.is_alphabetic())
+            .to_ascii_lowercase()
+            .as_str(),
+        "i" | "we"
+    )
+}
+
+fn sentence_starts_with_pronoun(sentence: &str) -> bool {
+    let sentence = sentence.trim_start_matches(|c: char| !c.is_alphanumeric());
+    let Some(first) = sentence.split_whitespace().next() else {
+        return false;
+    };
+    matches!(
+        first
+            .trim_matches(|c: char| !c.is_alphabetic())
+            .to_ascii_lowercase()
+            .as_str(),
+        "she" | "he" | "they"
+    )
+}
+
+fn resolve_price_spender(
+    text: &str,
+    mention: &PriceMention,
+    resolver: &CharacterMentionResolver,
+    scene_pov: Option<&str>,
+    spend_verb_start: usize,
+) -> Result<String, &'static str> {
+    let (sentence_start, sentence_end) = price_sentence_bounds(text, mention.start, mention.end);
+    let sentence = &text[sentence_start..sentence_end];
+    if sentence_has_dialogue(sentence) {
+        return Err("ambiguous");
+    }
+    if sentence_starts_with_first_person(sentence) {
+        let Some(pov) = scene_pov else {
+            return Err("unresolved");
+        };
+        return if resolver.mentions_with_pov(sentence, pov, Some(pov)) {
+            Ok(pov.to_string())
+        } else {
+            Err("unresolved")
+        };
+    }
+    let verb_offset = spend_verb_start
+        .saturating_sub(sentence_start)
+        .min(sentence.len());
+    if sentence_starts_with_pronoun(sentence) {
+        let prefix_start = text[..spend_verb_start]
+            .rfind("\n\n")
+            .map_or(0, |index| index + 2);
+        let antecedents = resolver.mentioned_ids(&text[prefix_start..spend_verb_start]);
+        return match antecedents.len() {
+            0 => Err("unresolved"),
+            1 => antecedents.into_iter().next().ok_or("unresolved"),
+            _ => Err("ambiguous"),
+        };
+    }
+    let subject_prefix = &sentence[..verb_offset];
+    let subjects = resolver.mentioned_ids(subject_prefix);
+    match subjects.len() {
+        1 => subjects.into_iter().next().ok_or("unresolved"),
+        _ if subjects.is_empty() => Err("unresolved"),
+        _ => Err("ambiguous"),
+    }
+}
+
+fn death_aliases(character: &crate::sqlite::records::Character) -> Option<Vec<String>> {
+    let mut aliases = vec![character.name.clone()];
+    aliases.extend(character.aliases.iter().cloned());
+    aliases.retain(|alias| !alias.trim().is_empty());
+    if aliases.is_empty() {
+        None
+    } else {
+        Some(aliases)
+    }
+}
+
+fn elapsed_days_after_death(text: &str, aliases: &[String]) -> Option<(String, f64)> {
+    let lower = text.to_ascii_lowercase();
+    for alias in aliases {
+        let alias = alias.to_ascii_lowercase();
+        if alias.is_empty() {
+            continue;
+        }
+        let mut from = 0;
+        while let Some(relative) = lower[from..].find(&alias) {
+            let position = from + relative;
+            let after_start = position + alias.len();
+            if !word_boundary_at(&lower, position, after_start) {
+                from = after_start;
+                continue;
+            }
+            let clause_end = clause_end_after(&lower, after_start);
+            let after = &lower[after_start..clause_end];
+            for marker in ["had been dead", "had been in the ground", "had been buried"] {
+                if let Some(marker_at) = after.find(marker) {
+                    let between = after[..marker_at].trim();
+                    if !matches!(between, "" | "'s" | "’s" | "body" | "corpse" | "remains") {
+                        continue;
+                    }
+                    let phrase = after[marker_at + marker.len()..]
+                        .trim_start()
+                        .strip_prefix("for ")
+                        .unwrap_or_else(|| after[marker_at + marker.len()..].trim_start())
+                        .split(['.', ',', ';', '\n'])
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+                    if let Some(days) = parse_elapsed_days(phrase) {
+                        return Some((phrase.to_string(), days));
+                    }
+                }
+            }
+            let mut before_start = position.saturating_sub(80);
+            while before_start > 0 && !lower.is_char_boundary(before_start) {
+                before_start -= 1;
+            }
+            let before = &lower[before_start..position];
+            if let Some(marker_at) = before.rfind("had passed since")
+                && death_predicate_in(after)
+            {
+                let phrase = before[..marker_at]
+                    .rsplit(['.', ',', ';', '\n'])
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if let Some(days) = parse_elapsed_days(phrase) {
+                    return Some((phrase.to_string(), days));
+                }
+            }
+            from = after_start;
+        }
+    }
+    None
+}
+
+fn word_boundary_at(text: &str, start: usize, end: usize) -> bool {
+    let prev = text[..start].chars().next_back();
+    let next = text[end..].chars().next();
+    !prev.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        && !next.is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
+fn clause_end_after(text: &str, start: usize) -> usize {
+    let tail = &text[start..];
+    let punctuation = tail
+        .char_indices()
+        .find(|(_, c)| matches!(c, '.' | ',' | ';' | '!' | '?' | '\n'))
+        .map(|(index, _)| index);
+    let conjunction = tail
+        .char_indices()
+        .find(|(index, _)| tail[*index..].starts_with(" and "))
+        .map(|(index, _)| index);
+    start
+        + punctuation
+            .into_iter()
+            .chain(conjunction)
+            .min()
+            .unwrap_or(tail.len())
+}
+
+fn death_predicate_in(text: &str) -> bool {
+    let mut text = text.trim_start();
+    for auxiliary in ["had ", "has ", "was ", "were ", "is ", "been "] {
+        if let Some(rest) = text.strip_prefix(auxiliary) {
+            text = rest.trim_start();
+            break;
+        }
+    }
+    if text.starts_with("passed away") {
+        return true;
+    }
+    let Some(first) = text.split_whitespace().next() else {
+        return false;
+    };
+    matches!(
+        first.trim_matches(|c: char| !c.is_alphabetic()),
+        "died" | "dead" | "drowned" | "buried" | "perished"
+    )
+}
+
+fn parse_elapsed_days(phrase: &str) -> Option<f64> {
+    let lower = phrase.to_ascii_lowercase();
+    if lower.contains("that morning") || lower.contains("this morning") {
+        return Some(0.5);
+    }
+    if lower.contains("yesterday") {
+        return Some(1.0);
+    }
+    if lower.contains("the previous day") || lower.contains("the day before") {
+        return Some(1.0);
+    }
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '-')
+        .filter(|word| !word.is_empty())
+        .collect();
+    let unit_at = words.iter().position(|word| {
+        matches!(
+            *word,
+            "day" | "days" | "week" | "weeks" | "month" | "months" | "year" | "years"
+        )
+    })?;
+    let number = if lower.contains("single ") {
+        1.0
+    } else {
+        parse_elapsed_number(&words[..unit_at])?
+    };
+    let unit_days = match words[unit_at] {
+        "day" | "days" => 1.0,
+        "week" | "weeks" => 7.0,
+        "month" | "months" => 30.0,
+        _ => 365.0,
+    };
+    Some(number * unit_days)
+}
+
+fn elapsed_claim_conflicts(claimed_days: f64, clock_gap_days: f64) -> bool {
+    (claimed_days - clock_gap_days).abs() > 1.0
+}
+
+fn parse_elapsed_number(words: &[&str]) -> Option<f64> {
+    let mut total = 0.0;
+    let mut current = 0.0;
+    let mut saw_number = false;
+    for token in words {
+        for word in token.split('-') {
+            let value = match word {
+                "a" | "an" | "one" | "single" => 1.0,
+                "two" => 2.0,
+                "three" => 3.0,
+                "four" => 4.0,
+                "five" => 5.0,
+                "six" => 6.0,
+                "seven" => 7.0,
+                "eight" => 8.0,
+                "nine" => 9.0,
+                "ten" => 10.0,
+                "eleven" => 11.0,
+                "twelve" => 12.0,
+                "thirteen" => 13.0,
+                "fourteen" => 14.0,
+                "fifteen" => 15.0,
+                "sixteen" => 16.0,
+                "seventeen" => 17.0,
+                "eighteen" => 18.0,
+                "nineteen" => 19.0,
+                "twenty" => 20.0,
+                "thirty" => 30.0,
+                "forty" => 40.0,
+                "fifty" => 50.0,
+                "sixty" => 60.0,
+                "seventy" => 70.0,
+                "eighty" => 80.0,
+                "ninety" => 90.0,
+                "hundred" => {
+                    current = if current == 0.0 { 1.0 } else { current } * 100.0;
+                    saw_number = true;
+                    continue;
+                }
+                "thousand" => {
+                    total += if current == 0.0 { 1.0 } else { current } * 1_000.0;
+                    current = 0.0;
+                    saw_number = true;
+                    continue;
+                }
+                "and" => continue,
+                _ => word.parse::<f64>().ok()?,
+            };
+            current += value;
+            saw_number = true;
+        }
+    }
+    saw_number.then_some(total + current)
+}
+
+#[cfg(test)]
+mod elapsed_phrase_tests {
+    use super::*;
+
+    #[test]
+    fn parses_elapsed_phrases_used_after_a_death() {
+        assert_eq!(parse_elapsed_days("four days"), Some(4.0));
+        assert_eq!(parse_elapsed_days("a single day"), Some(1.0));
+        assert_eq!(parse_elapsed_days("three weeks"), Some(21.0));
+        assert_eq!(parse_elapsed_days("only that morning"), Some(0.5));
+        assert_eq!(parse_elapsed_days("twenty-one days"), Some(21.0));
+        assert_eq!(parse_elapsed_days("one hundred days"), Some(100.0));
+        assert_eq!(
+            parse_elapsed_days("one hundred and twenty days"),
+            Some(120.0)
+        );
+    }
+
+    #[test]
+    fn finds_elapsed_claim_after_a_death_mention() {
+        let aliases = vec!["Mira Vale".to_string(), "Mira".to_string()];
+        assert_eq!(
+            elapsed_days_after_death("Mira Vale had been in the ground four days.", &aliases),
+            Some(("four days".to_string(), 4.0))
+        );
+        assert_eq!(
+            elapsed_days_after_death("Three weeks had passed since Mira drowned.", &aliases),
+            Some(("three weeks".to_string(), 21.0))
+        );
+    }
+
+    #[test]
+    fn does_not_bind_unrelated_or_other_subject_events_to_the_death() {
+        let aliases = vec!["Mira Vale".to_string(), "Mira".to_string()];
+        assert_eq!(
+            elapsed_days_after_death("Three weeks had passed since Mira bought a coat.", &aliases),
+            None
+        );
+        assert_eq!(
+            elapsed_days_after_death(
+                "Mira was remembered. Oren had been buried four days.",
+                &aliases
+            ),
+            None
+        );
+        assert_eq!(
+            elapsed_days_after_death(
+                "Three weeks had passed since Mira said Oren drowned.",
+                &aliases
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn multibyte_prefix_does_not_break_elapsed_binding() {
+        let aliases = vec!["Mira".to_string()];
+        let prose = format!(
+            "{}. Three weeks had passed since Mira drowned.",
+            "é".repeat(60)
+        );
+        assert_eq!(
+            elapsed_days_after_death(&prose, &aliases),
+            Some(("three weeks".to_string(), 21.0))
+        );
     }
 }

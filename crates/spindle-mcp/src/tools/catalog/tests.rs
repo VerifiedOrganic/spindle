@@ -48,8 +48,8 @@ async fn skill_tools_are_listed_in_every_tool_profile() {
         let db = SqlitePool::open(&temp.path().join("router.db"))
             .await
             .expect("db init");
-        let data_dir = temp.keep();
-        let router = ToolRouter::with_tool_profile_and_serialization(
+        let data_dir = temp.path().to_path_buf();
+        let mut router = ToolRouter::with_tool_profile_and_serialization(
             SpindleService::new(SpindleRepository::with_model_router(
                 db,
                 data_dir,
@@ -58,6 +58,7 @@ async fn skill_tools_are_listed_in_every_tool_profile() {
             Some(profile.to_string()),
             Arc::new(ToolSerializationState::default()),
         );
+        router.hold_temp_dir(temp);
         let names: Vec<String> = router
             .list_tools()
             .iter()

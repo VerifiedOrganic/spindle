@@ -396,6 +396,87 @@ async fn internal_call_token_allows_reentrant_dispatch_while_blocking_external_c
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn history_tools_dispatch_and_reject_checkpoint_undo() {
+    let router = router().await;
+    let project = structured_json(
+        router
+            .call_tool(
+                "create_project",
+                Some(
+                    serde_json::json!({
+                        "name": "History Router",
+                        "project_type": "novel",
+                        "genre": "fantasy",
+                        "reader_contract": {"promise": "History test"}
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let project_id = project["project_id"].as_str().unwrap().to_string();
+    let save_point = structured_json(
+        router
+            .call_tool(
+                "create_save_point",
+                Some(
+                    serde_json::json!({
+                        "project_id": project_id,
+                        "name": "history snapshot"
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    let save_point_id = save_point["save_point_id"].as_str().unwrap().to_string();
+
+    let changes = structured_json(
+        router
+            .call_tool(
+                "list_changes",
+                Some(
+                    serde_json::json!({
+                        "project_id": project_id,
+                        "kind": "branch_checkpoint"
+                    })
+                    .as_object()
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert!(!changes["changes"].as_array().unwrap().is_empty());
+
+    let undo = router
+        .call_tool(
+            "undo_change",
+            Some(
+                serde_json::json!({
+                    "project_id": project_id,
+                    "operation_id": format!("save_point:{save_point_id}"),
+                    "expected_head": save_point_id,
+                    "dry_run": true
+                })
+                .as_object()
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(undo.is_error, Some(true));
+    assert!(
+        format!("{:?}", undo.content).contains("checkpoint_only"),
+        "unexpected undo response: {undo:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn canonical_batch_creates_dispatch_and_alias_still_works() {
     let router = router().await;
     let project_id = prepare_run_project(&router, "Batch Router").await;

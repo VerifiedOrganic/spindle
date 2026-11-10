@@ -17,8 +17,8 @@ async fn router() -> ToolRouter {
     let db = SqlitePool::open(&temp.path().join("router.db"))
         .await
         .expect("db init");
-    let data_dir = temp.keep();
-    ToolRouter::with_tool_profile_and_serialization(
+    let data_dir = temp.path().to_path_buf();
+    let mut router = ToolRouter::with_tool_profile_and_serialization(
         SpindleService::new(SpindleRepository::with_model_router(
             db,
             data_dir,
@@ -26,7 +26,9 @@ async fn router() -> ToolRouter {
         )),
         None,
         Arc::new(ToolSerializationState::default()),
-    )
+    );
+    router.hold_temp_dir(temp);
+    router
 }
 
 /// A fresh repository + a persisted `active` authoring run, for driving the

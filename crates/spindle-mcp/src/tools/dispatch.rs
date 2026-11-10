@@ -928,6 +928,14 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.delete_scene(input))
                     .await
             }
+            "list_changes" => {
+                self.invoke(arguments, |input| self.service.list_changes(input))
+                    .await
+            }
+            "undo_change" => {
+                self.invoke(arguments, |input| self.service.undo_change(input))
+                    .await
+            }
             "list_scene_versions" => {
                 self.invoke(arguments, |input| self.service.list_scene_versions(input))
                     .await

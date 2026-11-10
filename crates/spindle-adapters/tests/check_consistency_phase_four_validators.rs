@@ -217,7 +217,7 @@ async fn secrecy_class_world_rule_scans_dialogue_only() {
     assert!(
         out.issues
             .iter()
-            .any(|i| i.check_type == "world_rule_semantic_drift"),
-        "spoken disclosure must still fire the secrecy-class rule"
+            .any(|i| { i.check_type == "world_rule_semantic_drift" && i.severity == "warning" }),
+        "spoken disclosure must still fire a warning-level secrecy finding"
     );
 }

@@ -579,30 +579,31 @@ mod tests {
     use tempfile::tempdir;
     use tower::util::ServiceExt;
 
-    async fn app() -> Router {
+    async fn app() -> (tempfile::TempDir, Router) {
         let temp = tempdir().expect("temp dir");
         let db = SqlitePool::open(&temp.path().join("http.db"))
             .await
             .expect("db init");
-        let data_dir = temp.keep();
+        let data_dir = temp.path().to_path_buf();
         let service = SpindleService::new(Repository::with_model_router(
             db,
             data_dir,
             ModelRouter::local_only(),
         ));
-        mcp_router(service, CancellationToken::new())
+        let router = mcp_router(service, CancellationToken::new());
+        (temp, router)
     }
 
     /// A router plus the service backing it, so tests can seed journal rows on
     /// the same database the router reads. Returns the created project so the
     /// authoring_run FK target is valid.
-    async fn app_with_service() -> (Router, SpindleService, String) {
+    async fn app_with_service() -> (tempfile::TempDir, Router, SpindleService, String) {
         use spindle_core::models::{CreateProjectInput, ReaderContract};
         let temp = tempdir().expect("temp dir");
         let db = SqlitePool::open(&temp.path().join("http.db"))
             .await
             .expect("db init");
-        let data_dir = temp.keep();
+        let data_dir = temp.path().to_path_buf();
         let service = SpindleService::new(Repository::with_model_router(
             db,
             data_dir,
@@ -622,7 +623,7 @@ mod tests {
             .await
             .expect("project");
         let router = mcp_router(service.clone(), CancellationToken::new());
-        (router, service, project.project_id)
+        (temp, router, service, project.project_id)
     }
 
     /// Persist a minimal `active` authoring run so events have a valid FK
@@ -683,22 +684,23 @@ mod tests {
         text
     }
 
-    async fn service() -> SpindleService {
+    async fn service() -> (tempfile::TempDir, SpindleService) {
         let temp = tempdir().expect("temp dir");
         let db = SqlitePool::open(&temp.path().join("service.db"))
             .await
             .expect("db init");
-        let data_dir = temp.keep();
-        SpindleService::new(Repository::with_model_router(
+        let data_dir = temp.path().to_path_buf();
+        let service = SpindleService::new(Repository::with_model_router(
             db,
             data_dir,
             ModelRouter::local_only(),
-        ))
+        ));
+        (temp, service)
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn health_route_returns_ok() {
-        let app = app().await;
+        let (_temp, app) = app().await;
 
         let response = app
             .oneshot(
@@ -729,7 +731,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn model_routes_route_returns_current_route_snapshot() {
-        let app = app().await;
+        let (_temp, app) = app().await;
 
         let response = app
             .oneshot(
@@ -759,7 +761,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn events_route_exposes_sse_content_type() {
-        let app = app().await;
+        let (_temp, app) = app().await;
 
         let response = app
             .oneshot(
@@ -782,7 +784,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn events_run_topic_replays_journal_rows_with_id_and_event_fields() {
-        let (app, service, project_id) = app_with_service().await;
+        let (_temp, app, service, project_id) = app_with_service().await;
         let run_id = seed_run(&service, &project_id).await;
         for kind in ["run_started", "scene_drafted", "scene_committed"] {
             service
@@ -816,7 +818,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn events_run_topic_resumes_after_last_event_id() {
-        let (app, service, project_id) = app_with_service().await;
+        let (_temp, app, service, project_id) = app_with_service().await;
         let run_id = seed_run(&service, &project_id).await;
         for i in 1..=4 {
             service
@@ -855,8 +857,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn events_malformed_topic_returns_400() {
         // Unknown topic scheme.
-        let response = app()
-            .await
+        let (_temp, router) = app().await;
+        let response = router
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/events?topic=garbage")
@@ -868,8 +870,8 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
 
         // Right scheme, wrong run-id shape.
-        let response = app()
-            .await
+        let (_temp2, app2) = app().await;
+        let response = app2
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/events?topic=run:not-a-run")
@@ -885,8 +887,8 @@ mod tests {
     async fn events_no_topic_stream_is_unchanged_model_route_snapshot() {
         // No topic param → the existing snapshot stream (I1): SSE content-type
         // and a `snapshot` event carrying model_routes.
-        let response = app()
-            .await
+        let (_temp, app) = app().await;
+        let response = app
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/events")
@@ -914,8 +916,8 @@ mod tests {
     async fn events_unknown_run_topic_is_valid_empty_stream() {
         // A well-formed run id with no rows is a valid empty stream (ADR D4: no
         // existence check), not a 400.
-        let response = app()
-            .await
+        let (_temp, app) = app().await;
+        let response = app
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/events?topic=run:authoring_run:doesnotexist")
@@ -929,7 +931,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn http_surface_is_get_only() {
-        let app = app().await;
+        let (_temp, app) = app().await;
 
         let response = app
             .oneshot(
@@ -950,7 +952,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn sse_snapshot_payload_stays_read_only_and_model_route_focused() {
-        let service = service().await;
+        let (_temp, service) = service().await;
         let payload = snapshot_payload(&service);
         let payload = payload.as_object().expect("snapshot payload object");
 
@@ -967,8 +969,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn console_route_serves_embedded_page() {
-        let response = app()
-            .await
+        let (_temp, app) = app().await;
+        let response = app
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/console")
@@ -1012,8 +1014,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn console_health_route_reports_console_endpoint() {
         // /health advertises the console so an operator can discover it.
-        let response = app()
-            .await
+        let (_temp, app) = app().await;
+        let response = app
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/health")
@@ -1031,7 +1033,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn console_api_projects_matches_service_serialization() {
-        let (app, service, project_id) = app_with_service().await;
+        let (_temp, app, service, project_id) = app_with_service().await;
 
         let response = app
             .oneshot(
@@ -1064,7 +1066,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn console_api_canon_deltas_is_read_only_and_shape_stable() {
-        let (app, service, project_id) = app_with_service().await;
+        let (_temp, app, service, project_id) = app_with_service().await;
 
         let response = app
             .oneshot(
@@ -1102,7 +1104,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn console_api_plan_amendments_is_read_only_and_shape_stable() {
-        let (app, service, project_id) = app_with_service().await;
+        let (_temp, app, service, project_id) = app_with_service().await;
 
         let response = app
             .oneshot(
@@ -1139,7 +1141,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn console_api_manuscript_matches_service_serialization() {
-        let (app, service, project_id) = app_with_service().await;
+        let (_temp, app, service, project_id) = app_with_service().await;
 
         let response = app
             .oneshot(
@@ -1181,7 +1183,7 @@ mod tests {
     async fn console_api_status_without_run_reports_no_run_honestly() {
         // Empty project, no runs: the status endpoint reports an honest empty
         // state (200 with a `no_run` marker), never a 500 or blank body.
-        let (app, _service, project_id) = app_with_service().await;
+        let (_temp, app, _service, project_id) = app_with_service().await;
 
         let response = app
             .oneshot(
@@ -1206,7 +1208,7 @@ mod tests {
         // With a seeded run, the status endpoint returns the reconciled status
         // for the latest run (run-id discovery: run_id omitted → latest run) —
         // and is read-only: two calls do not change stored run state.
-        let (app, service, project_id) = app_with_service().await;
+        let (_temp, app, service, project_id) = app_with_service().await;
         let run_id = seed_run(&service, &project_id).await;
 
         let call = |uri: String| {
@@ -1274,8 +1276,8 @@ mod tests {
     async fn console_api_missing_project_id_is_bad_request() {
         // A defensive read endpoint returns 400 (not 500) when its required
         // query parameter is absent.
-        let response = app()
-            .await
+        let (_temp, app) = app().await;
+        let response = app
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/console/api/status")

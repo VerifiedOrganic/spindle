@@ -25,7 +25,7 @@ fail closed. Select a generated workflow or specialist profile with
 | workflow-write | Scene-writer core + craft/packet/research refs + setup | 44 | 57,268 | 112,186 |
 | workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 76 | 89,355 | 185,209 |
 | workflow-import | Manuscript importer and source sync | 20 | 12,306 | 30,747 |
-| revision | Branch/revision/history workflow | 31 | 20,456 | 53,512 |
+| revision | Branch/revision/history workflow | 33 | 22,015 | 57,073 |
 | worldbuilding | Worldbuilder + character creator | 50 | 48,325 | 83,814 |
 | planning | Plot architect | 38 | 32,352 | 63,550 |
 | new-book | New-book entry: planning sessions, human gates and handoff | 14 | 20,204 | 26,534 |

@@ -18,6 +18,7 @@ fn attribute_fact(key: &str, value: &str, subject_names: &[&str]) -> AttributeVa
             .iter()
             .map(|name| (*name).to_string())
             .collect(),
+        first_person_subject: false,
         key: key.into(),
         value: value.into(),
     }
@@ -28,6 +29,8 @@ fn knowledge_fact(fact: &str, names: &[&str], chapter: i32) -> KnowledgeValidati
         fact_id: "knowledge_fact:1".into(),
         character_id: "character:caelen".into(),
         character_names: names.iter().map(|name| (*name).to_string()).collect(),
+        character_aliases: names.iter().map(|name| (*name).to_string()).collect(),
+        first_person_subject: false,
         fact: fact.into(),
         learned_book_number: 1,
         learned_chapter_number: chapter,
@@ -177,7 +180,9 @@ fn secret_narration_leak_is_detected_but_negation_and_dialogue_are_not() {
         value: "obsidiancrown".into(),
         character_id: "character:caelen".into(),
         character_name: "Caelen Dravos".into(),
+        character_aliases: vec!["Caelen Dravos".into()],
         other_present_character_names: vec!["Oren Vale".into()],
+        other_present_character_aliases: vec!["Oren Vale".into()],
     };
     let text = "While Oren Vale turned away, Caelen Dravos quietly copied the vault passphrase obsidiancrown into his personal field notebook.";
     let finding = detect_secret_narration_leak(&scene(text), &candidate).expect("narration leak");
@@ -285,4 +290,526 @@ fn semantic_route_failure_is_degraded_not_clean() {
         }
         other => panic!("expected degraded, got {other:?}"),
     }
+}
+
+#[test]
+fn attribute_eye_color_matches_plural_head_and_rejects_opposite_color() {
+    let fact = attribute_fact("eye_color", "blue", &["Sela Voss"]);
+    let finding = detect_attribute_prose_contradiction(
+        &scene("Sela Voss watched the door, her eyes a warm brown in the lamplight."),
+        &fact,
+    )
+    .expect("eye colour conflict");
+    assert!(finding.message.contains("eye_color"));
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela Voss watched the door, her eyes a pale blue."),
+            &fact,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn attribute_handedness_height_and_scar_families_are_checked() {
+    let handed = attribute_fact("handedness", "right-handed", &["Sela Voss", "Sela", "Voss"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela signed the ledger with her left hand."),
+            &handed,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela signed the ledger with her right hand."),
+            &handed,
+        )
+        .is_none()
+    );
+
+    let height = attribute_fact("height", "tall", &["Sela Voss", "Sela", "Voss"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela was short enough to pass under the low beam."),
+            &height,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela was tall enough to pass over the low beam."),
+            &height,
+        )
+        .is_none()
+    );
+
+    let scar = attribute_fact(
+        "scar",
+        "a scar across her jaw",
+        &["Sela Voss", "Sela", "Voss"],
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Sela's jaw was smooth and unblemished."),
+            &scar,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("The old scar across Sela's jaw caught the light."),
+            &scar,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn knowledge_and_secret_accept_resolver_approved_forenames() {
+    let knowledge = KnowledgeValidationFactV1 {
+        fact_id: "knowledge_fact:first-name".into(),
+        character_id: "character:caelen".into(),
+        character_names: vec!["Caelen Dravos".into()],
+        character_aliases: vec!["Caelen".into(), "Dravos".into()],
+        first_person_subject: false,
+        fact: "the eastern gate is unlocked".into(),
+        learned_book_number: 1,
+        learned_chapter_number: 12,
+        learned_scene_order: Some(1),
+    };
+    assert!(
+        detect_knowledge_paraphrase_leak(
+            &scene("Caelen told the guard the eastern gate was unlocked."),
+            &knowledge,
+        )
+        .is_some()
+    );
+
+    let secret = SecretValidationCandidateV1 {
+        fact_id: "canonical_fact:secret".into(),
+        predicate: "vault passphrase".into(),
+        value: "obsidiancrown".into(),
+        character_id: "character:caelen".into(),
+        character_name: "Caelen Dravos".into(),
+        character_aliases: vec!["Caelen".into(), "Dravos".into()],
+        other_present_character_names: vec!["Oren Vale".into()],
+        other_present_character_aliases: vec!["Oren".into()],
+    };
+    assert!(
+        detect_secret_narration_leak(
+            &scene("Caelen copied obsidiancrown into the ledger."),
+            &secret,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_secret_narration_leak(
+            &scene("Oren copied obsidiancrown into the ledger while Caelen watched."),
+            &secret,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn attribute_height_accepts_a_pronoun_after_the_subject_is_established() {
+    let fact = attribute_fact("height", "tall", &["Mor Tarn", "Mor"]);
+    let finding = detect_attribute_prose_contradiction(
+        &scene("Mor Tarn entered the hall. He was short."),
+        &fact,
+    )
+    .expect("pronoun height conflict");
+    assert!(finding.message.contains("height"));
+}
+
+#[test]
+fn knowledge_two_strong_tokens_and_light_stemming_are_enough() {
+    let fact = KnowledgeValidationFactV1 {
+        fact_id: "knowledge_fact:two-token".into(),
+        character_id: "character:soren".into(),
+        character_names: vec!["Soren Pike".into()],
+        character_aliases: vec!["Soren".into()],
+        first_person_subject: false,
+        fact: "Lord Vale forged the harbor tide charts.".into(),
+        learned_book_number: 1,
+        learned_chapter_number: 12,
+        learned_scene_order: Some(1),
+    };
+    assert!(
+        detect_knowledge_paraphrase_leak(&scene("Soren said the charts were forged."), &fact,)
+            .is_some()
+    );
+    assert!(
+        detect_knowledge_paraphrase_leak(
+            &scene("Soren repeated the forgery of the charts."),
+            &fact,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_knowledge_paraphrase_leak(&scene("Soren said the weather was fine."), &fact,)
+            .is_none()
+    );
+}
+
+#[test]
+fn knowledge_first_person_subject_is_used_only_when_declared() {
+    let mut fact = KnowledgeValidationFactV1 {
+        fact_id: "knowledge_fact:pov".into(),
+        character_id: "character:tam".into(),
+        character_names: vec!["Tamsin Okoro".into()],
+        character_aliases: vec!["Tam".into()],
+        first_person_subject: true,
+        fact: "Cassian cut the orchard roots.".into(),
+        learned_book_number: 1,
+        learned_chapter_number: 14,
+        learned_scene_order: Some(1),
+    };
+    assert!(
+        detect_knowledge_paraphrase_leak(
+            &scene("I tell the clerk that Cassian cut the roots."),
+            &fact,
+        )
+        .is_some()
+    );
+    fact.first_person_subject = false;
+    assert!(
+        detect_knowledge_paraphrase_leak(
+            &scene("I tell the clerk that Cassian cut the roots."),
+            &fact,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn numeric_height_sight_and_first_person_attribute_families() {
+    let numeric = attribute_fact("height", "six feet two", &["Mara Voss", "Mara"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara stood five feet nine in her boots."),
+            &numeric,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara stood six feet one in her boots."),
+            &numeric,
+        )
+        .is_none()
+    );
+
+    let metric = attribute_fact("height", "180 cm", &["Mara Voss", "Mara"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara carried a five foot ladder across the yard."),
+            &metric,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara stood beside Tomas, who was six feet tall."),
+            &metric,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara was carrying a five foot ladder across the yard."),
+            &metric,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara stood beside a five foot ladder."),
+            &metric,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(&scene("Mara was five feet tall."), &metric,)
+            .is_some()
+    );
+
+    let sight = attribute_fact("sight", "blind", &["Rook", "Elder Rook"]);
+    assert!(
+        detect_attribute_prose_contradiction(&scene("Rook saw the crack in the glass."), &sight,)
+            .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Rook was blind and read the tree by touch."),
+            &sight,
+        )
+        .is_none()
+    );
+
+    let handed = AttributeValidationFactV1 {
+        fact_id: "canonical_fact:pov-hand".into(),
+        subject_id: Some("character:tam".into()),
+        subject_names: vec!["Tamsin Okoro".into(), "Tam".into()],
+        first_person_subject: true,
+        key: "handedness".into(),
+        value: "right-handed".into(),
+    };
+    assert!(detect_attribute_prose_contradiction(&scene("I am left-handed."), &handed,).is_some());
+}
+
+#[test]
+fn height_parser_handles_word_digit_apostrophe_and_metric_forms() {
+    for (text, expected) in [
+        ("six feet two", 74.0),
+        ("5 feet 9", 69.0),
+        ("5'9\"", 69.0),
+        ("five foot four", 64.0),
+        ("180 cm", 180.0 / 2.54),
+        ("1.8 m", 1.8 * 39.370_078_740_157_48),
+    ] {
+        let got = parse_height_inches(text).unwrap_or_else(|| panic!("no parse: {text}"));
+        assert!((got - expected).abs() < 0.01, "{text}: {got} vs {expected}");
+    }
+}
+
+#[test]
+fn generic_secret_disclosure_covers_roles_notices_and_reported_speech() {
+    let value = "Lord Vale forged the harbor tide charts.";
+    let holder = vec!["Lord Vale".to_string(), "Vale".to_string()];
+    let in_circle = holder.clone();
+    for text in [
+        "A dockworker shouted that Vale's charts were false.",
+        "The broadsheet printed the forged charts in full.",
+        "Everyone on the quay already knew that Lord Vale had forged the charts.",
+        "The clerk announced that Vale forged the charts.",
+        "The broadsheet printed that Lord Vale forged the charts.",
+        "The clerk read the letter aloud: Vale forged the charts.",
+    ] {
+        assert!(
+            detect_secret_generic_disclosure(
+                &scene(text),
+                "canonical_fact:secret",
+                value,
+                &holder,
+                &in_circle
+            )
+            .is_some(),
+            "expected generic disclosure: {text}"
+        );
+    }
+    for text in [
+        "Lord Vale said that the charts were forged.",
+        "Vale's charts lay on the table.",
+        "In a dream, a dockworker shouted that Vale's charts were false.",
+        "A rumor claimed that Vale forged the charts.",
+        "Mara read the harbor notices and found Vale's name beside new charts.",
+        "The clerk never announced that Vale forged the charts.",
+        "If the clerk announced that Vale forged the charts, everyone would panic.",
+    ] {
+        assert!(
+            detect_secret_generic_disclosure(
+                &scene(text),
+                "canonical_fact:secret",
+                value,
+                &holder,
+                &in_circle
+            )
+            .is_none(),
+            "unexpected generic disclosure: {text}"
+        );
+    }
+}
+
+#[test]
+fn generic_secret_disclosure_handles_orchard_content_and_role_notice() {
+    let value = "Cassian Reed cut the orchard roots and sold the copper.";
+    let holder = vec!["Cassian Reed".to_string(), "Cassian".to_string()];
+    let in_circle = holder.clone();
+    for text in [
+        "A picker says Cassian cut the roots.",
+        "The pickers' notice board says Cassian cut the roots and sold the copper.",
+        "The carrier says Cassian cut the roots.",
+        "Everyone at the south wall already knew that Cassian had cut the roots.",
+    ] {
+        assert!(
+            detect_secret_generic_disclosure(
+                &scene(text),
+                "canonical_fact:secret",
+                value,
+                &holder,
+                &in_circle
+            )
+            .is_some(),
+            "expected orchard disclosure: {text}"
+        );
+    }
+}
+
+#[test]
+fn named_secret_narration_accepts_paraphrased_content() {
+    let candidate = SecretValidationCandidateV1 {
+        fact_id: "canonical_fact:secret".into(),
+        predicate: "root_cause".into(),
+        value: "Lord Vale forged the harbor tide charts.".into(),
+        character_id: "character:soren".into(),
+        character_name: "Soren Pike".into(),
+        character_aliases: vec!["Soren".into()],
+        other_present_character_names: Vec::new(),
+        other_present_character_aliases: Vec::new(),
+    };
+    assert!(
+        detect_secret_narration_leak(
+            &scene("Soren said the tide charts were forged."),
+            &candidate,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_secret_narration_leak(&scene("Soren said the weather was fine."), &candidate,)
+            .is_none()
+    );
+}
+
+#[test]
+fn keyed_composite_eye_color_still_detects_conflicting_color() {
+    let fact = attribute_fact("Mira eye color", "amber", &["Mira Vale", "Mira"]);
+    let finding = detect_attribute_prose_contradiction(
+        &scene("In the mirror, Mira eye color gleamed a vivid cerulean blue."),
+        &fact,
+    )
+    .expect("keyed composite eye colour conflict");
+    assert!(finding.message.contains("eye color"));
+}
+
+#[test]
+fn credential_value_swap_is_a_contradiction() {
+    let fact = attribute_fact(
+        "Elena badge clearance",
+        "silver-inspector",
+        &["Elena Rostova", "Elena"],
+    );
+    let finding = detect_attribute_prose_contradiction(
+        &scene("Under the console lamp, Elena badge clearance read bronze-provisional instead of its registered tier."),
+        &fact,
+    )
+    .expect("credential conflict");
+    assert!(finding.message.contains("badge") || finding.message.contains("clearance"));
+}
+
+#[test]
+fn scar_absence_sight_clearance_and_side_swap_are_contradictions() {
+    let scar = attribute_fact(
+        "burn scar",
+        "on her left forearm",
+        &["Iris Calloway", "Iris"],
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Iris's burn scar on her right forearm is gone."),
+            &scar,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Iris's burn scar on her left forearm shows pale in the lamplight."),
+            &scar,
+        )
+        .is_none()
+    );
+
+    let eye = attribute_fact("left eye", "blind and milky", &["Tobin Sarrow", "Tobin"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Tobin's blind left eye was clear and brown."),
+            &eye,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Tobin's blind left eye was milky and pale."),
+            &eye,
+        )
+        .is_none()
+    );
+
+    let colors = attribute_fact("Mara eye color", "amber", &["Mara Vance", "Mara"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara eye color appeared in the ledger with no value stated."),
+            &colors,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Mara's eyes were amber in the lantern light."),
+            &colors,
+        )
+        .is_none()
+    );
+
+    let glass = attribute_fact("glass eye", "his left eye", &["Vey", "Magistrate Vey"]);
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Vey stood there with his right eye gleaming."),
+            &glass,
+        )
+        .is_some()
+    );
+
+    let fingers = attribute_fact(
+        "left hand",
+        "two fingers missing",
+        &["Kestrel", "Kestrel Vane"],
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Kestrel counted the crates on the fingers of his left hand, all five of them."),
+            &fingers,
+        )
+        .is_some()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene(
+                "Kestrel counted the crates on the fingers of his right hand, all five of them."
+            ),
+            &fingers,
+        )
+        .is_none()
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Kestrel still had two fingers missing from his left hand."),
+            &fingers,
+        )
+        .is_none(),
+        "a matching missing-finger count is consistent"
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Kestrel still had three fingers on his left hand."),
+            &fingers,
+        )
+        .is_none(),
+        "the matching remaining count is consistent"
+    );
+
+    let whole_hand = attribute_fact(
+        "fingers",
+        "ten fingers missing",
+        &["Kestrel", "Kestrel Vane"],
+    );
+    assert!(
+        detect_attribute_prose_contradiction(
+            &scene("Kestrel showed all ten fingers to the guard."),
+            &whole_hand,
+        )
+        .is_some(),
+        "a ten-finger whole-character loss must not wrap or miss"
+    );
 }

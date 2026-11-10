@@ -717,4 +717,17 @@ startup default is resolved before the server constructs its router, while the
 internal/test unset router remains unfiltered so in-process orchestration and
 diagnostics can still reach the full registry. Operator commands remain
 CLI-only, and stored history, scene versions, save points, and record IDs remain
-readable. (feat(mcp,skills): R+1 profile cleanup and preview alias removal) (feat(mcp,skills): R+1 profile cleanup and preview alias removal)
+readable.
+
+Phase 7 unified history now ships `list_changes` and `undo_change`.
+`list_changes` paginates compact receipts across scene versions, branch
+save-point checkpoints, style profile applications, and style revision patches,
+each with an explicit `undo_support` and reason. `undo_change` resolves an
+operation id to its explicit revision scope and refuses automatic mutation:
+scene snapshots do not capture approved continuity deltas, and the style
+rollback helpers are multi-step rather than atomic with their own audits. Those
+receipts are `checkpoint_only`, with recovery paths to `restore_scene_version`,
+`restore_save_point`, `rollback_style_profile_application`, or
+`rollback_style_revision_patch`. Unknown scopes fail closed. This keeps the
+unified history vocabulary without claiming reversibility the implementation
+cannot demonstrate.

@@ -73,6 +73,19 @@ rows remain committed. The
 `batch_create_narrative_promises`, and `batch_set_character_voice_profiles`
 names delegate to them as one-release compatibility aliases.
 
+### Unified history and undo scopes
+
+`list_changes` is the discoverable history surface: it paginates scene saves,
+branch checkpoints, style applications/patches, and marks each receipt
+`reversible`, `checkpoint_only`, or `irreversible` with a reason.
+`undo_change(project_id, operation_id, expected_head, dry_run)` resolves the
+operation to its explicit revision scope. Automatic mutation is not enabled:
+scene snapshots are `checkpoint_only` because they do not capture approved
+continuity deltas, and style rollback is multi-step rather than atomic with its
+audit. Use `restore_scene_version`, `restore_save_point`,
+`rollback_style_profile_application`, or `rollback_style_revision_patch`
+explicitly after reviewing the scope's effects.
+
 ### Profiles
 
 Unset starts the generated `workflow-write` profile. The legacy `minimal`,

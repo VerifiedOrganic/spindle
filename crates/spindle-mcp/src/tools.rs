@@ -199,6 +199,11 @@ pub struct ToolRouter {
     session_context: Arc<RwLock<SessionContext>>,
     serialization_state: Arc<ToolSerializationState>,
     tool_profile: Option<String>,
+    /// Test-only ownership guard for the fixture's temporary data directory.
+    /// Keeping it here lets the router's Drop remove the directory without
+    /// changing every fixture call site.
+    #[cfg(test)]
+    temp_dir: Option<Arc<tempfile::TempDir>>,
 }
 
 #[derive(Clone, Default)]
@@ -265,6 +270,8 @@ impl ToolRouter {
             session_context: Arc::new(RwLock::new(SessionContext::default())),
             serialization_state,
             tool_profile,
+            #[cfg(test)]
+            temp_dir: None,
         }
     }
 
@@ -277,11 +284,18 @@ impl ToolRouter {
             session_context: self.session_context.clone(),
             serialization_state: self.serialization_state.clone(),
             tool_profile,
+            #[cfg(test)]
+            temp_dir: self.temp_dir.clone(),
         }
     }
 
     pub(crate) fn tool_profile(&self) -> Option<&str> {
         self.tool_profile.as_deref()
+    }
+
+    #[cfg(test)]
+    pub fn hold_temp_dir(&mut self, temp: tempfile::TempDir) {
+        self.temp_dir = Some(Arc::new(temp));
     }
 
     pub(crate) fn serialization_state(&self) -> &Arc<ToolSerializationState> {

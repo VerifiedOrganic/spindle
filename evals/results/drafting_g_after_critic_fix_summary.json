@@ -1,0 +1,417 @@
+{
+  "schema_version": "drafting_g_after_critic_fix_summary_v1",
+  "generated_at": "2026-11-09T23:57:41.109558+00:00",
+  "source_main": "da91276",
+  "defaults": {
+    "editorial_policy": "legacy",
+    "line_edit_enabled": false,
+    "chapter_pass_enabled": false,
+    "activated": false
+  },
+  "gates": {
+    "loop_vs_baseline": {
+      "name": "drafting_loop_after_critic_fix_vs_legacy_baseline",
+      "comparison": "loop (merged critic) vs legacy full-context baseline",
+      "n_pairs": 90,
+      "n_clusters": 30,
+      "candidate_wins": 12,
+      "baseline_wins": 28,
+      "ties": 50,
+      "candidate_win_rate_tie_half": 0.4111,
+      "ci95": [
+        0.3278,
+        0.4944
+      ],
+      "lower_bound_exceeds_0_50": false,
+      "candidate_outright_win_rate": 0.1333,
+      "baseline_outright_win_rate": 0.3111,
+      "tie_rate": 0.5556,
+      "by_scene_type": {
+        "action": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.3889,
+          "ci95": [
+            0.2222,
+            0.5556
+          ]
+        },
+        "dialogue-heavy": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.3333,
+          "ci95": [
+            0.2222,
+            0.4722
+          ]
+        },
+        "quiet-interior": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.4722,
+          "ci95": [
+            0.2778,
+            0.6667
+          ]
+        },
+        "reveal": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.2778,
+          "ci95": [
+            0.0833,
+            0.4722
+          ]
+        },
+        "chapter-closer": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5833,
+          "ci95": [
+            0.5,
+            0.6944
+          ]
+        }
+      },
+      "position_bias_rate": 0.4963,
+      "order_consistency_rate": 0.5037,
+      "inter_judge_agreement": {
+        "fleiss_kappa": 0.2029,
+        "unanimous_rate": 0.3,
+        "n_judges": 3
+      },
+      "judges": [
+        "ollama-glm-5.2",
+        "ollama-deepseek-v4.1-flash",
+        "ollama-gemma4-31b"
+      ]
+    },
+    "loop_vs_packet_only": {
+      "name": "drafting_loop_after_critic_fix_vs_packet_only",
+      "comparison": "loop (merged critic) vs packet-only",
+      "n_pairs": 90,
+      "n_clusters": 30,
+      "candidate_wins": 19,
+      "baseline_wins": 19,
+      "ties": 52,
+      "candidate_win_rate_tie_half": 0.5,
+      "ci95": [
+        0.45,
+        0.55
+      ],
+      "lower_bound_exceeds_0_50": false,
+      "candidate_outright_win_rate": 0.2111,
+      "baseline_outright_win_rate": 0.2111,
+      "tie_rate": 0.5778,
+      "by_scene_type": {
+        "action": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5278,
+          "ci95": [
+            0.4444,
+            0.6111
+          ]
+        },
+        "dialogue-heavy": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.4167,
+          "ci95": [
+            0.2778,
+            0.5556
+          ]
+        },
+        "quiet-interior": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5833,
+          "ci95": [
+            0.4722,
+            0.6667
+          ]
+        },
+        "reveal": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5,
+          "ci95": [
+            0.4167,
+            0.5833
+          ]
+        },
+        "chapter-closer": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.4722,
+          "ci95": [
+            0.3889,
+            0.5556
+          ]
+        }
+      },
+      "position_bias_rate": 0.5185,
+      "order_consistency_rate": 0.4815,
+      "inter_judge_agreement": {
+        "fleiss_kappa": 0.2449,
+        "unanimous_rate": 0.3333,
+        "n_judges": 3
+      },
+      "judges": [
+        "ollama-glm-5.2",
+        "ollama-deepseek-v4.1-flash",
+        "ollama-gemma4-31b"
+      ]
+    },
+    "self_pair": {
+      "name": "drafting_loop_after_critic_fix_self_pair_initial_vs_final",
+      "comparison": "each loop's own saved initial draft vs its final draft (incremental self-pair)",
+      "n_pairs": 90,
+      "n_clusters": 30,
+      "candidate_wins": 10,
+      "baseline_wins": 0,
+      "ties": 80,
+      "candidate_win_rate_tie_half": 0.5556,
+      "ci95": [
+        0.5222,
+        0.5944
+      ],
+      "lower_bound_exceeds_0_50": true,
+      "candidate_outright_win_rate": 0.1111,
+      "baseline_outright_win_rate": 0.0,
+      "tie_rate": 0.8889,
+      "by_scene_type": {
+        "action": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5278,
+          "ci95": [
+            0.5,
+            0.5833
+          ]
+        },
+        "dialogue-heavy": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.6111,
+          "ci95": [
+            0.5,
+            0.7222
+          ]
+        },
+        "quiet-interior": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5278,
+          "ci95": [
+            0.5,
+            0.5833
+          ]
+        },
+        "reveal": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5833,
+          "ci95": [
+            0.5278,
+            0.6389
+          ]
+        },
+        "chapter-closer": {
+          "n_pairs": 18,
+          "candidate_win_rate_tie_half": 0.5278,
+          "ci95": [
+            0.5,
+            0.5833
+          ]
+        }
+      },
+      "position_bias_rate": 0.2259,
+      "order_consistency_rate": 0.7741,
+      "inter_judge_agreement": {
+        "fleiss_kappa": 0.2669,
+        "unanimous_rate": 0.7111,
+        "n_judges": 3
+      },
+      "judges": [
+        "ollama-glm-5.2",
+        "ollama-deepseek-v4.1-flash",
+        "ollama-gemma4-31b"
+      ]
+    },
+    "line_edit_vs_scene_loop_only": {
+      "status": "not_run",
+      "reason": "No evals-only line-edit bridge; not run in this measurement and not activated."
+    },
+    "chapter_coherence_blinded_comparison": {
+      "status": "not_run",
+      "reason": "No evals-only chapter-coherence harness; not run and not activated."
+    },
+    "hybrid_agent_execution_mode_g": {
+      "status": "not_run",
+      "reason": "No hybrid/agent execution-mode G harness; neither mode activated."
+    }
+  },
+  "loop_distribution": {
+    "n": 90,
+    "revision_promoted": 42,
+    "revision_retained": 48,
+    "retention_reason_counts": {
+      "critic_invalid": 8,
+      "judge_order_disagreement_tie": 27,
+      "judge_preferred_incumbent": 13,
+      "promoted": 42
+    },
+    "total_calls_used": 345,
+    "total_tokens_used": 2200128
+  },
+  "usage": {
+    "schema_version": "drafting_g_after_critic_fix_usage_v1",
+    "cost_usd": null,
+    "cost_note": "No per-token price is configured in the eval agent/judge configs; tokens and latency are recorded. Cost is null rather than fabricated.",
+    "generation": {
+      "calls": 810,
+      "input_tokens": 4126948,
+      "output_tokens": 386909,
+      "elapsed_ms": 1920150,
+      "by_route_template": [
+        {
+          "route": "draft",
+          "prompt_template_id": "draft.packet",
+          "calls": 90,
+          "input_tokens": 295782,
+          "output_tokens": 52692,
+          "elapsed_ms": 307590
+        },
+        {
+          "route": "draft",
+          "prompt_template_id": "draft.revise_v1",
+          "calls": 82,
+          "input_tokens": 354843,
+          "output_tokens": 47861,
+          "elapsed_ms": 158102
+        },
+        {
+          "route": "draft",
+          "prompt_template_id": "token_count.ollama_probe",
+          "calls": 112,
+          "input_tokens": 453437,
+          "output_tokens": 112,
+          "elapsed_ms": 69700
+        },
+        {
+          "route": "review",
+          "prompt_template_id": "review.critique_v1",
+          "calls": 90,
+          "input_tokens": 661609,
+          "output_tokens": 169818,
+          "elapsed_ms": 539563
+        },
+        {
+          "route": "review",
+          "prompt_template_id": "review.critique_v1.repair",
+          "calls": 9,
+          "input_tokens": 60136,
+          "output_tokens": 17054,
+          "elapsed_ms": 45029
+        },
+        {
+          "route": "review",
+          "prompt_template_id": "review.pairwise_judge_v1.pass_1",
+          "calls": 82,
+          "input_tokens": 394849,
+          "output_tokens": 49597,
+          "elapsed_ms": 303761
+        },
+        {
+          "route": "review",
+          "prompt_template_id": "review.pairwise_judge_v1.pass_2",
+          "calls": 82,
+          "input_tokens": 394849,
+          "output_tokens": 49512,
+          "elapsed_ms": 309590
+        },
+        {
+          "route": "review",
+          "prompt_template_id": "token_count.ollama_probe",
+          "calls": 263,
+          "input_tokens": 1511443,
+          "output_tokens": 263,
+          "elapsed_ms": 186815
+        }
+      ],
+      "token_count_probes": {
+        "calls": 375,
+        "input_tokens": 1964880,
+        "output_tokens": 375,
+        "elapsed_ms": 256515
+      },
+      "excluding_token_count_probes": {
+        "calls": 435,
+        "input_tokens": 2162068,
+        "output_tokens": 386534,
+        "elapsed_ms": 1663635
+      }
+    },
+    "judging": {
+      "loop_vs_baseline": {
+        "ollama-glm-5.2": {
+          "calls": 180,
+          "input_tokens": 500952,
+          "output_tokens": 132784,
+          "elapsed_seconds": 743.3990000000001
+        },
+        "ollama-deepseek-v4.1-flash": {
+          "calls": 180,
+          "input_tokens": 506334,
+          "output_tokens": 155471,
+          "elapsed_seconds": 711.1189999999997
+        },
+        "ollama-gemma4-31b": {
+          "calls": 180,
+          "input_tokens": 506858,
+          "output_tokens": 113657,
+          "elapsed_seconds": 451.0849999999999
+        }
+      },
+      "loop_vs_packet_only": {
+        "ollama-glm-5.2": {
+          "calls": 180,
+          "input_tokens": 505398,
+          "output_tokens": 129838,
+          "elapsed_seconds": 721.0079999999999
+        },
+        "ollama-deepseek-v4.1-flash": {
+          "calls": 180,
+          "input_tokens": 510602,
+          "output_tokens": 154386,
+          "elapsed_seconds": 697.1149999999998
+        },
+        "ollama-gemma4-31b": {
+          "calls": 180,
+          "input_tokens": 511158,
+          "output_tokens": 112261,
+          "elapsed_seconds": 503.58099999999996
+        }
+      },
+      "self_pair": {
+        "ollama-glm-5.2": {
+          "calls": 180,
+          "input_tokens": 505074,
+          "output_tokens": 116078,
+          "elapsed_seconds": 658.7459999999996
+        },
+        "ollama-deepseek-v4.1-flash": {
+          "calls": 180,
+          "input_tokens": 510154,
+          "output_tokens": 124741,
+          "elapsed_seconds": 566.261
+        },
+        "ollama-gemma4-31b": {
+          "calls": 180,
+          "input_tokens": 510890,
+          "output_tokens": 101145,
+          "elapsed_seconds": 452.72699999999986
+        }
+      },
+      "loop_vs_baseline_total_calls": 540,
+      "loop_vs_packet_only_total_calls": 540,
+      "self_pair_total_calls": 540,
+      "total_calls": 1620
+    }
+  },
+  "conclusion": {
+    "loop_vs_baseline_lower_bound_exceeds_0_50": false,
+    "loop_vs_packet_only_lower_bound_exceeds_0_50": false,
+    "self_pair_lower_bound_exceeds_0_50": true,
+    "any_default_activation": false,
+    "note": "Defaults unchanged. Even a gate pass would not activate anything in this PR."
+  },
+  "branch_merged_main": "b3d4b03"
+}

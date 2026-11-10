@@ -185,6 +185,7 @@
       "get_scene_context",
       "get_skill",
       "get_writer_state",
+      "list_changes",
       "list_projects",
       "list_revision_markers",
       "list_scene_versions",
@@ -202,6 +203,7 @@
       "select_alternative",
       "set_active_project",
       "switch_branch",
+      "undo_change",
       "update_entity",
       "update_writer_position"
     ],

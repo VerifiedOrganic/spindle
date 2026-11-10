@@ -58,7 +58,7 @@ DraftingPacketV1 {
     emotion: { entry, exit },
     chapter: { book_number, number, scene_index, planned_scene_count?, is_closer },
     target_words: { min, preferred, max },
-    location: { id, name }, story_clock, rating, tone?,
+    location: { id, name }, story_clock, rating, tone?, scene_type?,
     participants: [{ id, display_name, role }],
     required_beats[], promises_due[], prohibited_outcomes[]
   },
@@ -83,6 +83,10 @@ can fill a persisted provisional scene card from existing plans. Do not invent
 canon or silently resolve contradictory author locks. P3 can later provide the
 same card. `is_closer` is explicit even when final chapter length is unknown.
 Person/tense may inherit an author-approved project default, with provenance.
+`scene_type` is an optional explicit classification (action, quiet-interior,
+dialogue-heavy, reveal, chapter-closer); the service packet builder carries it
+from the scene's tone label when that label names a recognized mode, and
+`value_shift.axis` remains the narrative value axis.
 
 Only approved prose excerpts enter `exemplars`; existing do-rules remain rules.
 If none exist, say `exemplars=[]`. Never manufacture a “voice sample.” Default
@@ -186,17 +190,27 @@ CritiqueV1 {
     anchor: { scene_id, base_text_hash, start_byte, end_byte, exact_quote },
     diagnosis, requested_change, preserve[], success_test,
     source_finding_ids[], scope: span|scene|chapter }],
-  strengths_to_preserve[], requires_author_decision[], no_edit_reason?
+  strengths_to_preserve[], requires_author_decision[],
+  no_change? { reason_code, explanation },
+  no_edit_reason?  // legacy mirror
 }
 ```
 
 Offsets are half-open UTF-8 byte ranges validated against exact quoted text.
-Insertions use zero-width anchors and surrounding context; scene-wide concerns
-anchor their evidence and declare scope explicitly. Reject malformed, stale or
-unverifiable anchors. One bounded schema repair is allowed inside the call cap;
-otherwise retain draft with `critic_invalid`. Select at most five actionable
-directives, prioritize continuity and author intent, deduplicate deterministic
-and reader concerns. Model suggestions cannot create new canon or override locks.
+`exact_quote` is authoritative: a unique quote resolves its byte offsets even
+when the model's initial offsets are approximate; repeated quotes require
+matching context, and a directive quote is capped at 800 bytes so it cannot
+target the whole draft. Insertions use zero-width anchors and surrounding
+context; scene-wide concerns anchor their evidence and declare scope explicitly.
+Reject malformed, stale or unverifiable anchors. An empty directive list
+requires a typed `no_change { reason_code, explanation }`; action, quiet-interior,
+dialogue-heavy, and reveal scenes require at least one directive unless
+`insufficient_evidence`, `author_intent_ambiguous`, or
+`hard_constraints_prevent_change` applies. One compact schema/anchor repair is
+allowed inside the call cap; otherwise retain draft with `critic_invalid`. Select
+at most five actionable directives, prioritize continuity and author intent,
+deduplicate deterministic and reader concerns. Model suggestions cannot create
+new canon or override locks.
 
 The revision prompt contains the full prior draft, compact packet, selected
 directives and strengths to preserve. Ask for targeted edits preserving unaffected
@@ -682,7 +696,8 @@ the empirical failure modes measured in the 90-pair live **G** experiment:
     `entry_exit_emotion`, `chapter_role`, with serde aliases for the
     `prose_judge.py` rubric keys), up to 5 ordered `CritiqueDirective` items,
     `strengths_to_preserve`, `requires_author_decision: Vec<AuthorDecisionItem>`,
-    and optional `no_edit_reason`.
+    optional typed `no_change: NoChangeV1 { reason_code, explanation }`, and the
+    legacy `no_edit_reason` mirror.
 - **UTF-8 byte-span, quote, and zero-width insertion validation
   (`validate_anchor`)**:
   - Every `CritiqueAnchor` is validated against `base_text` as a half-open UTF-8
@@ -691,6 +706,11 @@ the empirical failure modes measured in the 90-pair live **G** experiment:
     `scene_id`.
   - Non-empty spans (`start_byte < end_byte`) must have a non-empty
     `exact_quote` matching `&base_text[start_byte..end_byte]` byte-for-byte.
+    Before validation, a unique `exact_quote` is resolved to its actual byte
+    offsets; a repeated quote keeps an already-valid span or requires
+    `context_before`/`context_after` that selects exactly one occurrence.
+    Ambiguous quotes (including context shared by multiple occurrences) are a
+    typed failure.
   - Zero-width insertion spans (`start_byte == end_byte`) must have
     `exact_quote == ""` and at least one non-empty surrounding context
     (`context_before` matching the bytes immediately preceding `start_byte`, or
@@ -726,9 +746,12 @@ the empirical failure modes measured in the 90-pair live **G** experiment:
   - Budgets the critic prompt (`CriticBudget::scene_default`: `input_limit = 16_000`,
     `output_reserve = 1_500`, `framing_reserve = 512`) and verifies token counts
     via the configured calibrated tokenizer when present.
-  - Executes at most 1 initial critic call plus at most 1 bounded repair call
-    (`max_calls` in `1..=2`) that includes the exact schema/anchor validation error.
-    If the repair output is still invalid or truncated, returns
+  - Executes at most 1 initial critic call plus at most 1 bounded compact repair
+    call (`max_calls` in `1..=2`) that includes the exact schema/anchor
+    validation error, scene card, constraints, knowledge boundaries, continuity,
+    and base draft — but not a duplicate of the full schema/template/rubric, so
+    the repair does not overflow when the draft is large. If the repair output is
+    still invalid or truncated, returns
     `ShadowCritiqueOutcome::CriticInvalid` and retains the original draft unchanged.
   - Persists `ShadowCritiqueArtifactV1` (`schema_version = "shadow_critique_artifact_v1"`)
     via atomic tempfile rename and verifies that the underlying
@@ -1038,13 +1061,129 @@ activates a prose-affecting default.
   rewrite, plot redesign, or plan mutation. The queue can be persisted beside
   the run artifacts with `save_book_advisory_queue`.
 
+### Measured row-6 G: critique→revise loop (PR 9)
+
+The previously unrun row-6 G was executed on fresh `main` `601bf09` (the PR branch later merged `main` `9b6a70e`, an eval-corpus/release-only update): 30 briefs
+× 3 generation seeds (90 scenes), the calibrated gemma tokenizer/drafter, and
+three live Ollama judge families (zhipu-glm, deepseek, google-gemma). Every pair
+was judged in randomized and swapped presentation order; CIs are 95%
+non-parametric cluster bootstraps by brief. Checked-in results:
+`evals/results/drafting_g_loop_vs_baseline.json`,
+`evals/results/drafting_g_loop_vs_packet_only.json`,
+`evals/results/drafting_g_loop_incremental_vs_own_initial.json`,
+`evals/results/drafting_g_summary.json`, and
+`evals/results/drafting_g_usage.json`.
+
+| Comparison | n pairs | Win rate (tie-half) | 95% CI | Lower bound > 0.50? |
+| --- | ---: | ---: | --- | --- |
+| Loop vs legacy baseline | 90 | 0.4389 | [0.3667, 0.5111] | **No** |
+| Loop vs packet-only | 90 | 0.4833 | [0.4111, 0.5556] | **No** |
+| Loop final vs own initial (self-pair ablation) | 90 | 0.5111 | [0.5000, 0.5333] | **No** (lower bound = 0.50) |
+
+**Control disclosure.** The packet-only arm is an independent generation, not
+each loop's own initial draft. Its text hash differs from the loop's saved
+initial hash in all 90 pairs, so loop-vs-packet measures two end-to-end
+pipelines, not the incremental effect of editing the same draft. An incremental
+self-pair ablation (each loop's final text vs its own saved `initial_text`)
+gives `0.5111 [0.5000, 0.5333]`, with 2 wins, 0 losses, and 88 ties; 81 pairs
+are unchanged and only 9 differ. It is underpowered and the lower bound is
+exactly 0.50, so it still does not clear the `> 0.50` gate.
+
+The loop promoted a revision in only `9 / 90` scenes (`10.0%`). Of the rest,
+`56` had no actionable directives, `20` produced an invalid critic response,
+`3` ended in judge-order disagreement, and `2` kept the incumbent on judge
+preference. Position bias was high (`48.5%` vs baseline, `46.3%` vs packet-only)
+and three-judge agreement was low-to-fair (Fleiss' kappa `0.2302` / `0.2552`).
+Per-scene-type rates did not clear 0.50 either; the best was dialogue-heavy
+`0.4722` vs baseline and `0.5833` vs packet-only, both with CIs spanning 0.50.
+Neither lower bound exceeds 0.50, so the loop G does **not** clear and
+`EditorialPolicy::Legacy` stays the default.
+
+Usage: `532` generation-ledger calls (including `221` token-count probes; `311`
+draft/critic/revise/judge calls), `3.43M` input / `397k` output tokens total;
+`1,620` live judge passes (540 per comparison across three comparisons). Cost is
+not recorded because the eval configs carry no token price; tokens and latency
+are in the usage JSON.
+No defaults, flags, or product code were changed.
+
+The line-edit and chapter-pass G experiments, the chapter-coherence blinded
+comparison, and the row-7 hybrid/agent per-execution-mode G remain **unrun**:
+there is no evals-only bridge/harness for those passes/modes in this tree, and
+this measurement PR intentionally did not add product code. Both optional passes
+remain off and neither host execution mode is activated.
+
+### Critic quality replay (pre-release fix)
+
+The pre-release critic fix was measured offline on the **same 90 saved initial
+drafts** from the row-6 G run, not with a new full G. Each draft was replayed
+through critic + prior-draft revision + the internal acceptance judge using
+`spindle-tokenizer revise-artifact`; the before column is the original G critic,
+the after column is the new quote-first / typed-no-change / scene-focus critic.
+Because the original G packets predate `scene_card.scene_type`, the replay
+injects the brief's explicit scene classification into each saved packet; the
+production path is covered separately by the `prepare_scene` service test.
+Results are checked in at `evals/results/drafting_critic_quality.json`.
+
+| Metric | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| Invalid critic output | 22.2% (20/90) | 4.4% (4/90) | -17.8 pp |
+| Actionable directive | 15.6% (14/90) | 95.6% (86/90) | +80.0 pp |
+| Revision attempted | 15.6% (14/90) | 95.6% (86/90) | +80.0 pp |
+| Revision promoted by internal judge | 10.0% (9/90) | 45.6% (41/90) | +35.6 pp |
+
+Per-scene-type promoted rates before → after: action 11.1% → 22.2%,
+chapter-closer 11.1% → 55.6%, dialogue-heavy 5.6% → 38.9%, quiet-interior
+11.1% → 66.7%, reveal 11.1% → 44.4%. The internal judge is the same gemma
+review route used by the loop; this replay is a critic-quality measurement, not
+the 3-family G verdict. The 4 remaining invalid outputs are the same honest
+typed failure (missing top-level `base_text_hash` after repair). A full G on
+merged main is the next gate (PR 2), and no default is activated by this result.
+
+### Post-critic-fix G re-run (PR 2)
+
+The row-6 G was repeated after the critic-quality fix merged, using fresh
+`main` `da91276` (the PR branch later merged `main` `b3d4b03`, an unrelated
+quantity fix), 30 briefs × 3 seeds, the calibrated gemma drafter, and the
+same frozen 90-pair legacy and packet-only controls. Three live Ollama families
+(zhipu-glm, deepseek, google-gemma) judged every pair in randomized and swapped
+order; CIs are 95% cluster bootstraps by brief. Results are checked in at
+`evals/results/drafting_g_after_critic_fix_*.json`.
+
+| Comparison | n | Tie-half rate | 95% CI | Lower bound > 0.50? |
+| --- | ---: | ---: | --- | --- |
+| Loop vs legacy baseline | 90 | 0.4111 | [0.3278, 0.4944] | **No** |
+| Loop vs packet-only | 90 | 0.5000 | [0.4500, 0.5500] | **No** |
+| Self-pair: own initial → final | 90 | 0.5556 | [0.5222, 0.5944] | **Yes** |
+
+The loop promoted `42 / 90` revisions (`46.7%`) and retained 48; 8 were
+critic-invalid (`8.9%`), 27 ended in judge-order disagreement, and 13 kept the
+incumbent on judge preference. Position bias was `49.6%` vs baseline and
+`51.9%` vs packet-only; three-judge agreement was low-to-fair (Fleiss' kappa
+`0.2029` / `0.2449`). Per-scene-type tie-half rates:
+
+- vs baseline: action `0.3889`, dialogue-heavy `0.3333`, quiet-interior `0.4722`,
+  reveal `0.2778`, chapter-closer `0.5833`.
+- vs packet-only: action `0.5278`, dialogue-heavy `0.4167`, quiet-interior
+  `0.5833`, reveal `0.5000`, chapter-closer `0.4722`.
+- self-pair: action `0.5278`, dialogue-heavy `0.6111`, quiet-interior `0.5278`,
+  reveal `0.5833`, chapter-closer `0.5278`.
+
+The incremental self-pair gate clears (10 wins, 0 losses, 80 ties), but both
+end-to-end gates fail; 48 of the 80 ties are unchanged pairs, so the incremental
+signal is sparse. No default is activated. Usage: 810 generation-ledger calls
+(435 real + 375 token probes), 1,620 live judge passes; cost is not recorded as
+USD because the eval configs carry no price, tokens/latency are in
+`evals/results/drafting_g_after_critic_fix_usage.json`.
+
 ### Gates and defaults
 
 - Legacy remains the default. Line edit and the chapter pass stay opt-in and
   off; bounded chapter edits additionally require an explicit author selection.
-- Release gate **G** has not been run for line edit or the chapter pass. The
-  design's chapter-coherence blinded comparison lower-bound `> 0.50` gate is
-  therefore not cleared, so neither optional pass is activated by default.
+- Release gate **G** for the critique→revise loop was measured with the row-6
+  experiment above and did not clear either lower bound. G for line edit and the
+  chapter pass, and the design's chapter-coherence blinded comparison
+  lower-bound `> 0.50` gate, remain unrun; neither optional pass is activated by
+  default.
 - Continuity gate **C** now matches the post-P2 #62 baseline: `28 / 28 = 1.0000`
   overall recall with `5` control false positives, `4 / 4` accepted-prose
   violating probes, `90` verified live artifacts, and `0` clean blocker issues.

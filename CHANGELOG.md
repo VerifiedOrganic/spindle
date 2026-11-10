@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Unreleased (0.4.0)
 
 ### Changed
 
@@ -13,7 +13,187 @@
   `create_style_revision_patch`. Stored history, scene versions, save points,
   and record IDs remain readable.
 
+## 0.3.0 — 2026-11-10
+
+Spindle 0.3.0 is the compatibility release for the consolidated tool surface.
+It keeps the release-R aliases working while recommending the generated
+workflow profiles for new sessions.
+
+### Highlights for authors
+
+**Plan before drafting**
+
+- Durable new-book and planning sessions: `planning_begin`, `planning_advance`,
+  `planning_status`, and `planning_decide` stage proposals level by level and
+  keep human decisions explicit. The `new-book` skill takes a premise through
+  intake, staged planning, review, and a ready-to-draft handoff.
+- Plan review and release smoke checks catch malformed or incomplete plans
+  before they reach the drafting loop.
+
+**Canon, memory, and retrieval**
+
+- Shared claim-vs-canon validation lanes give miners, importers, and the
+  authoring loop one place to distinguish explicit canon, inferred claims, and
+  contradictions.
+- Layered derived memory keeps compact summaries and retrieval context fresh as
+  scenes, chapters, and books grow.
+- Configurable embedding providers and dimensions are tracked by index
+  generation, so changing the embedding route no longer silently mixes vector
+  spaces.
+- Continuity detectors resolve full names, forenames, surnames, cast aliases and
+  a declared single POV's first-person narration without guessing across
+  ambiguous names. Knowledge paraphrase matching uses two strong stemmed
+  content tokens; dead-character checks read character state and canonical
+  `life_status` and recognize irregular/third-person finite verbs; attribute
+  checks cover numeric heights, sight/vision, handedness, colour, scars and
+  build.
+- Secret-leak detection also catches paraphrased disclosures through reported
+  speech, written notices/broadsheets/letters read aloud, and role or collective
+  actors, while holder/in-circle and framed sentences stay silent.
+
+**Drafting packets, critic, and revision (off by default)**
+
+- `prepare_scene` assembles a bounded scene packet with cast, setting, canon,
+  continuity, promises, and voice guidance; `commit_scene` persists the prose
+  and approved continuity effects atomically.
+- The authoring supervisor can run deterministic verify/revise, dual-persona
+  critic review, canon mining, checkpoint review, and replanning as opt-in run
+  phases. These advanced loop features remain off by default pending
+  measurement.
+- Optional line edits and bounded chapter passes help revise without turning a
+  single instruction into an unbounded rewrite.
+- The scene critic now resolves quote-first anchors, requires a typed
+  `no_change` reason when it proposes nothing, applies action/quiet-interior/
+  dialogue/reveal focus, and uses a compact single repair prompt. Offline replay
+  on the 90 G drafts improved invalid output 22.2% → 4.4%, actionable directives
+  15.6% → 95.6%, and internal-judge promoted revisions 10.0% → 45.6%; a full G
+  remains the activation gate.
+
+**Tool surface**
+
+- Generated workflow and specialist profiles are the recommended startup
+  surface: `workflow-write`, `workflow-authoring`, `workflow-import`, and
+  focused profiles for revision, worldbuilding, planning, new-book, research,
+  style, release, and setup.
+- `prepare_scene` and `commit_scene` provide the ordinary scene read/write
+  boundary, with dry runs, stale-token checks, idempotency, and run-phase
+  handoff.
+- Typed `update_character`, `update_location`, `update_conflict`, and
+  `update_character_arc` replace the supported fields of the open
+  `update_entity` path. Atomic batch creates cover terms, motifs, narrative
+  promises, and character voice profiles.
+- `list_changes` gives one paginated history vocabulary; `undo_change` resolves
+  an operation to its explicit revision scope and refuses automatic mutation
+  where compensation is not atomic.
+- Operator commands (`configure-agents`, `test-agent`, `rebuild-search-index`,
+  `backfill-scene-source-offsets`, `operator-delete-scene`) are CLI-only and
+  denied on model transports. The authoring harness keeps an internal,
+  token-scoped `test_agent` dispatch.
+
+**Security and reliability**
+
+- Operator tools are hidden from every model profile and denied by name over
+  stdio and HTTP.
+- A panic in a tool handler returns a named error instead of hanging the
+  caller; project serialization and internal-token dispatch are shared across
+  transports.
+- Scene addressing is unambiguous with `scene_id`, stale scene versions and
+  preparation tokens are rejected, and commit paths avoid partial writes.
+- Import, pull/push, review dispatch, and checkpoint paths no longer lose or
+  duplicate work on retries, timeouts, or transport failures.
+
+### Compatibility
+
+0.3.0 is a **compatibility release**. The following release-R names still work
+but are **deprecated** and will be removed in the next release:
+
+- Legacy profiles: `authoring`, `write`, `minimal`, `import`, and `legacy-all`.
+- Style preview twins: `preview_refresh_style_profile`,
+  `preview_apply_style_profile`, and `preview_style_revision_patch`.
+- Batch aliases: `batch_create_terms`, `batch_create_motifs`,
+  `batch_create_narrative_promises`, and
+  `batch_set_character_voice_profiles`.
+- The generic `update_entity` path for entity types that now have typed
+  updates; `save_scene_draft`, `revise_scene`, `authoring_save_scene_draft`,
+  and `commit_scene_changes` retain their existing save-only and branch
+  semantics.
+
+Use the generated profiles and canonical tools for new work. See
+[`docs/tool-profiles.md`](docs/tool-profiles.md) and the
+[release-R migration guide](docs/tool-migration-r.md) for the mapping and
+removal plan.
+
+### Known limitations
+
+- Held-out-3 recall was measured blind at 23/56 localized after the detector
+  work (16/56 before it). After the false-alarm round it is 26/56 localized
+  (46.43%) and 28/56 type-present (50%). Weakest areas remain secret-leak
+  paraphrase (0/8) and timeline (3/8, up from 1/8 before the round).
+- Held-out-3 is no longer blind for false alarms: the false-alarm fixes used
+  its findings, so its post-round false-alarm numbers are regression evidence,
+  not a blind-generalization claim.
+- Held-out-3 control warnings fell from 17 to 0; the prior canonical-drift 8,
+  dead 2, retcon 2 and temporal 5 warnings are all gone. Eight info-level
+  world-rule "no violation context" diagnostics remain; they are not
+  warnings/errors.
+- Release reference measurements: baseline 28/28 with 3 control findings (2
+  `world_rule_compliance` from a control-metadata defect, 1 info homonym);
+  held-out #72 54/56 with 0; held-out-2 55/56 localized, 56/56 type-present,
+  0 control warnings.
+- The critique-revise drafting loop fails both end-to-end quality gates
+  (vs legacy baseline 0.41 [0.33, 0.49]; vs packet-only 0.50 [0.45, 0.55]) and
+  remains off by default. Other advanced loop phases (verify/revise,
+  dual-persona critic, canon mining, self-clearing checkpoints) also remain
+  off pending measurement.
+- Semantic contradiction detection is degraded; deterministic claim-vs-canon
+  lanes are the reliable path. A model-assisted semantic continuity lane is
+  planned for 0.4.
+- There is no operator CLI for rebuilding the embedding index; index generation
+  changes are tracked, but rebuild tooling is not shipped.
+- Unified undo is checkpoint-only for scene continuity and multi-step style
+  rollback. Scene prose restores use `restore_scene_version`; style effects use
+  the explicit rollback tools.
+
 ### Added
+
+- Continuity uses one shared cast-mention resolver: full names, forenames,
+  surnames and explicit aliases resolve without guessing across ambiguous
+  names, with conservative pronoun handling. Dead-character detection reads
+  both character state and canonical `life_status`, frames out memories,
+  letters, dreams, recordings, corpses and graves, and emits a stable
+  `dead_character_acting` alias; attribute drift covers eye/hair/skin colour,
+  handedness, height, scars and build with plural heads and conservative
+  negations.
+- Added the blind held-out-3 continuity corpus and `held-out-3` evaluation
+  mode for independent recall and false-alarm measurement.
+- Re-ran the 90-draft G quality gates after critic hardening: the loop scored
+  0.41 [0.33, 0.49] against the legacy baseline and 0.50 [0.45, 0.55] against
+  packet-only, failing both promotion gates, so it remains disabled (see Known
+  limitations).
+
+- Quantity affordability now parses English number words alongside digits and
+  resolves the spender name through the shared character-mention resolver
+  (canonical name, first name, alias, conservative sentence-initial pronoun,
+  and first-person POV). A resolved spender whose purchases exceed their
+  tracked balance produces a warning; ambiguous spenders remain advisory info.
+
+- World-rule prose scanning derives required cost/effect nouns from rule
+  descriptions and promotes explicit omissions ("without a/the <cost>",
+  "without <cost>", "no <cost>") to warning-level `world_rule_semantic_drift`
+  findings, including when the prose does not repeat the rule's scan label.
+  Vague rule mentions remain advisory. Scanner semantics version is now v5 so
+  cached findings are recomputed.
+
+- Held-out-2 continuity scoring now follows the detector contract: attribute
+  coverage accepts `canonical_fact_prose_drift`, world-rule expectations use
+  `world_rule_semantic_drift`, and a broad finding localizes by planted scene
+  only when it cites the plant's own subject. Warnings/errors still count;
+  info-level advisories do not.
+
+- Unified history and undo scopes: `list_changes` paginates scene-version,
+  checkpoint, and style receipts with explicit undo support; `undo_change`
+  resolves an operation id and refuses automatic mutation for scopes whose
+  compensation is not atomic, directing callers to the explicit revision tool.
 
 - Canonical atomic batch creates: `create_terms`, `create_motifs`,
   `create_narrative_promises`, and `set_character_voice_profiles` accept 1-50
@@ -129,6 +309,11 @@
 
 ### Fixed
 
+- Temporal coherence now budgets prose time-of-day jumps against the recorded scene duration and compares explicit elapsed-time claims with recorded death clocks, so overnight scenes are not false alarms. Clean world-rule cost demonstrations no longer emit info-level semantic-drift noise.
+- Continuity false alarms: passing death references ("since Maren drowned", "the late Bran", remembering/mourning) no longer count as post-mortem action, and canonical-fact drift warns only on positive contradictory evidence rather than a bare key mention.
+- Test fixtures now drop their temporary SQLite directories instead of calling
+  `TempDir::keep()`, preventing multi-gigabyte temp-dir accumulation across
+  workspace test runs.
 - `reader_contract` is no longer immutable. It was set once at `create_project`
   and could never be changed — `update_entity` rejected `reader_contract`,
   `promise`, `style_notes`, and `boundaries` as "not in the update allowlist"
@@ -388,8 +573,6 @@
   still receives the real prose — and it fails closed when the target scene's
   rating cannot be established. See "Mixed-rating chapters" in
   `docs/spindle-agent-config.md`.
-
-### Fixed
 
 - `docs/spindle-agent-config.md` no longer claims `save_scene_draft` persists
   the server-held generation output for explicit saves. The caller's
