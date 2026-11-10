@@ -8,7 +8,7 @@ use super::*;
 #[tokio::test]
 async fn story_clock_round_trip_persists_calendar_and_scene_clock() {
     use spindle_core::models::{
-        CalendarDef, CalendarMonth, ContentRating, SaveSceneDraftInput, StoryClock,
+        CalendarDef, CalendarMonth, ContentRating, LeapYearRule, SaveSceneDraftInput, StoryClock,
     };
 
     let (_tmp, svc) = fresh_service().await;
@@ -64,6 +64,12 @@ async fn story_clock_round_trip_persists_calendar_and_scene_clock() {
         }],
         days_per_year: 300,
         epoch_label: Some("Founding".into()),
+        leap_rule: LeapYearRule::Custom {
+            month: "Longdark".into(),
+            every_years: 3,
+            extra_days: 2,
+            anchor_year: 0,
+        },
     };
     repo.upsert_project_calendar(&proj.project_id, &calendar)
         .await
@@ -74,6 +80,8 @@ async fn story_clock_round_trip_persists_calendar_and_scene_clock() {
         .unwrap()
         .expect("calendar persisted");
     assert_eq!(loaded.calendar, calendar);
+    assert!(loaded.calendar.is_leap_year(3));
+    assert_eq!(loaded.calendar.days_in_year(3), 302);
 
     let clock = StoryClock {
         day_index: Some(412),
@@ -172,6 +180,7 @@ async fn chronology_check_flags_unmarked_backward_time_jump() {
         months: Vec::new(),
         days_per_year: 365,
         epoch_label: None,
+        leap_rule: Default::default(),
     };
     repo.upsert_project_calendar(&proj.project_id, &calendar)
         .await
@@ -377,6 +386,7 @@ async fn check_consistency_flashback_scene_not_flagged_for_temporal_coherence() 
         months: Vec::new(),
         days_per_year: 365,
         epoch_label: None,
+        leap_rule: Default::default(),
     };
     repo.upsert_project_calendar(&proj.project_id, &calendar)
         .await
@@ -631,6 +641,7 @@ async fn temporal_anchor_names_prior_scene_location() {
         months: Vec::new(),
         days_per_year: 365,
         epoch_label: None,
+        leap_rule: Default::default(),
     };
     repo.upsert_project_calendar(&proj.project_id, &calendar)
         .await
@@ -1588,6 +1599,7 @@ async fn set_clock_tools_validate_and_persist() {
                 }],
                 days_per_year: 365,
                 epoch_label: None,
+                leap_rule: Default::default(),
             },
         })
         .await
@@ -1604,6 +1616,7 @@ async fn set_clock_tools_validate_and_persist() {
             months: Vec::new(),
             days_per_year: 365,
             epoch_label: None,
+            leap_rule: Default::default(),
         },
     })
     .await
@@ -1696,5 +1709,118 @@ fn temporal_deep_skip_issue_generic_message_frames_the_deep_tier() {
         !issue.message.contains("This scene"),
         "transport-skip is once-per-run, not per-scene: {}",
         issue.message
+    );
+}
+
+#[tokio::test]
+async fn set_project_calendar_persists_leap_rule_and_clock_uses_leap_day() {
+    use spindle_core::models::{
+        CalendarDate, CalendarDef, ContentRating, LeapYearRule, SaveSceneDraftInput,
+        SetProjectCalendarInput, SetSceneClockInput, StoryClock,
+    };
+
+    let (_tmp, svc) = fresh_service().await;
+    let proj = svc
+        .create_project(CreateProjectInput {
+            name: "leap-calendar".into(),
+            project_type: "novel".into(),
+            genre: "fantasy".into(),
+            reader_contract: ReaderContract {
+                promise: "p".into(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let calendar = CalendarDef::gregorian();
+    svc.set_project_calendar(SetProjectCalendarInput {
+        project_id: proj.project_id.clone(),
+        calendar: calendar.clone(),
+    })
+    .await
+    .expect("Gregorian calendar must validate");
+
+    let stored = svc
+        .repository()
+        .get_project_calendar(&proj.project_id)
+        .await
+        .unwrap()
+        .expect("calendar stored");
+    assert!(matches!(stored.calendar.leap_rule, LeapYearRule::Gregorian));
+    assert_eq!(stored.calendar.days_in_month(2000, 2), Some(29));
+
+    // A custom rule naming a missing month is rejected.
+    let mut bad = calendar.clone();
+    bad.leap_rule = LeapYearRule::Custom {
+        month: "Missing".into(),
+        every_years: 4,
+        extra_days: 1,
+        anchor_year: 0,
+    };
+    assert!(
+        svc.set_project_calendar(SetProjectCalendarInput {
+            project_id: proj.project_id.clone(),
+            calendar: bad,
+        })
+        .await
+        .is_err()
+    );
+
+    let scene = svc
+        .save_scene_draft(SaveSceneDraftInput {
+            project_id: proj.project_id.clone(),
+            book_number: 1,
+            chapter_number: 1,
+            chapter_id: None,
+            scene_order: 1,
+            full_text: "The thaw came late that year.".into(),
+            summary: "leap day".into(),
+            content_rating: ContentRating::General,
+            tone: None,
+            generation_id: None,
+            source_path: None,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let leap_day = calendar
+        .day_index_for_date(&CalendarDate {
+            year: 2000,
+            month: 2,
+            day: 29,
+        })
+        .unwrap();
+    svc.set_scene_clock(SetSceneClockInput {
+        project_id: proj.project_id.clone(),
+        scene_id: scene.scene_id.clone(),
+        clock: StoryClock {
+            day_index: Some(leap_day),
+            time_of_day: Some(720),
+            duration_days: Some(0.5),
+            precision: Some("day".into()),
+        },
+        temporal_mode: Some("linear".into()),
+        thread_key: Some("main".into()),
+    })
+    .await
+    .unwrap();
+    let loaded = svc
+        .repository()
+        .get_scene_clock(&scene.scene_id)
+        .await
+        .unwrap()
+        .expect("scene clock stored");
+    assert_eq!(loaded.clock.day_index, Some(leap_day));
+    assert_eq!(
+        calendar
+            .date_for_day_index(loaded.clock.day_index.unwrap())
+            .unwrap(),
+        CalendarDate {
+            year: 2000,
+            month: 2,
+            day: 29,
+        }
     );
 }

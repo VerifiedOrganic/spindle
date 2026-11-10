@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 (unreleased)
+
+### Fixed
+
+- Project calendars now support optional leap years: proleptic Gregorian rules
+  (every 4 years, except every 100, except every 400) or a custom rule naming
+  the month that gains days and its cadence. Existing calendars default to
+  fixed-length years, and date/day-index conversion, durations, births,
+  timeline clocks, and ages use the leap-aware calendar consistently.
+
 ## 0.3.0 — 2026-11-10
 
 Spindle 0.3.0 is the compatibility release for the consolidated tool surface.
