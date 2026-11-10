@@ -284,7 +284,8 @@ async fn mcp_priority_flow_full_chapter_with_branching_and_search() {
 
     svc.commit_character_state(CommitCharacterStateInput {
         character_id: mara.character_id.clone(),
-        scene_id: scene.scene_id.clone(),
+        scene_id: Some(scene.scene_id.clone()),
+        anchor: None,
         changes: CharacterStatePatch {
             emotional_state: BTreeMap::new(),
             goals: Some(vec!["hold the gate".into()]),

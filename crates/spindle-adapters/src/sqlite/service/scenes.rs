@@ -2,6 +2,62 @@ use super::*;
 use crate::sqlite::repository::{legacy_claim, legacy_snapshot_claim};
 use spindle_core::canon::*;
 
+/// Classify a name/alias set against an entity lookup. Exact means the whole
+/// name or an alias equals the query; token means a single query token equals
+/// one of the name/alias tokens. Case and diacritics are ignored.
+fn classify_lookup_name(
+    query: &str,
+    names: &[&str],
+) -> Option<(u8, f32, EntityResolutionConfidence)> {
+    use spindle_core::models::{entity_lookup_tokens, normalize_entity_lookup};
+
+    let normalized_query = normalize_entity_lookup(query);
+    if normalized_query.is_empty() {
+        return None;
+    }
+    if names
+        .iter()
+        .any(|name| normalize_entity_lookup(name) == normalized_query)
+    {
+        return Some((0, 1.0, EntityResolutionConfidence::ExactName));
+    }
+    let query_tokens = entity_lookup_tokens(query);
+    if query_tokens.len() == 1
+        && names
+            .iter()
+            .flat_map(|name| entity_lookup_tokens(name))
+            .any(|token| token == query_tokens[0])
+    {
+        return Some((1, 0.9, EntityResolutionConfidence::SemanticMatch));
+    }
+    None
+}
+
+fn add_ranked_match(
+    ranked: &mut std::collections::BTreeMap<String, (u8, FindEntityMatch)>,
+    entity_id: String,
+    rank: u8,
+    confidence: EntityResolutionConfidence,
+    score: f32,
+) {
+    let replace = ranked
+        .get(&entity_id)
+        .is_none_or(|(old_rank, old)| rank < *old_rank || (rank == *old_rank && score > old.score));
+    if replace {
+        ranked.insert(
+            entity_id.clone(),
+            (
+                rank,
+                FindEntityMatch {
+                    entity_id,
+                    confidence,
+                    score,
+                },
+            ),
+        );
+    }
+}
+
 impl SqliteSpindleService {
     // Outline setters are deferred — they return spindle_core's BookOutline /
     // ChapterOutline shapes (distinct from my sqlite::records types), and the
@@ -20,12 +76,16 @@ impl SqliteSpindleService {
     ///
     /// Output reports whether the source position was left with a numeric
     /// gap (i.e., a later scene_order at the source position still exists).
-    /// Find entities by name across the searchable surface. Uses FTS5 over
-    /// the character/location/world_rule indexes for exact matches and
-    /// supplements with vec0 kNN for fuzzy/semantic resolution. Simplified
-    /// version of the SurrealDB resolve_subject_by_name — uses the existing
-    /// search backends rather than a dedicated repository helper.
+    /// Find entities by name across the searchable surface.
+    ///
+    /// Name resolution is deterministic and tiered: a name or alias that
+    /// equals the query (case/diacritic-insensitive) is exact; a forename,
+    /// surname or alias token outranks fuzzy FTS/kNN hits; FTS hits are
+    /// semantic matches and are never labelled exact. All owners of an
+    /// ambiguous name/alias are retained before the limit is applied.
     pub async fn find_entity(&self, input: FindEntityInput) -> Result<FindEntityOutput> {
+        use std::collections::BTreeMap;
+
         let query = input.query.trim();
         if query.is_empty() {
             anyhow::bail!("find_entity query must not be empty");
@@ -39,54 +99,103 @@ impl SqliteSpindleService {
                 .ok_or_else(|| anyhow::anyhow!("project has no active branch"))?,
         };
         let limit = input.limit.unwrap_or(5).clamp(1, 20);
-
-        // Collect FTS5 hits across character / location / world_rule.
-        // table_filter narrows the search to a single table if specified.
         let table_filter = input.table.map(|t| t.as_str().to_string());
 
-        let mut matches: Vec<FindEntityMatch> = Vec::new();
+        // rank: 0 = exact name/alias, 1 = name/alias token, 2 = fuzzy.
+        let mut ranked: BTreeMap<String, (u8, FindEntityMatch)> = BTreeMap::new();
+        if table_filter.is_none() || table_filter.as_deref() == Some("character") {
+            for character in self
+                .repository
+                .list_characters_by_project_and_branch(&input.project_id, &branch_id)
+                .await?
+            {
+                let mut names = vec![character.name.as_str()];
+                names.extend(character.aliases.iter().map(String::as_str));
+                if let Some((rank, score, confidence)) = classify_lookup_name(query, &names) {
+                    add_ranked_match(&mut ranked, character.id, rank, confidence, score);
+                }
+            }
+        }
+        if table_filter.is_none() || table_filter.as_deref() == Some("location") {
+            for location in self
+                .repository
+                .list_locations_by_project_and_branch(&input.project_id, &branch_id)
+                .await?
+            {
+                if let Some((rank, score, confidence)) =
+                    classify_lookup_name(query, &[location.name.as_str()])
+                {
+                    add_ranked_match(&mut ranked, location.id, rank, confidence, score);
+                }
+            }
+        }
+        if table_filter.is_none() || table_filter.as_deref() == Some("world_rule") {
+            for rule in self
+                .repository
+                .list_world_rules_by_project_and_branch(&input.project_id, &branch_id)
+                .await?
+            {
+                if let Some((rank, score, confidence)) =
+                    classify_lookup_name(query, &[rule.rule_name.as_str()])
+                {
+                    add_ranked_match(&mut ranked, rule.id, rank, confidence, score);
+                }
+            }
+        }
+
+        // FTS supplies fuzzy/descriptive hits only. It gets a wider candidate
+        // pool than the final limit so exact/token owners loaded above are not
+        // displaced by unrelated lexical matches.
+        let fts_limit = limit.max(20);
         if table_filter.is_none() || table_filter.as_deref() == Some("character") {
             for (id, _rank, _snippet) in self
                 .repository
-                .fts_search_characters(&input.project_id, Some(&branch_id), query, limit)
+                .fts_search_characters(&input.project_id, Some(&branch_id), query, fts_limit)
                 .await?
             {
-                matches.push(FindEntityMatch {
-                    entity_id: id,
-                    confidence: EntityResolutionConfidence::ExactName,
-                    score: 1.0,
-                });
+                add_ranked_match(
+                    &mut ranked,
+                    id,
+                    2,
+                    EntityResolutionConfidence::SemanticMatch,
+                    0.5,
+                );
             }
         }
         if table_filter.is_none() || table_filter.as_deref() == Some("location") {
             for (id, _rank, _snippet) in self
                 .repository
-                .fts_search_locations(&input.project_id, Some(&branch_id), query, limit)
+                .fts_search_locations(&input.project_id, Some(&branch_id), query, fts_limit)
                 .await?
             {
-                matches.push(FindEntityMatch {
-                    entity_id: id,
-                    confidence: EntityResolutionConfidence::ExactName,
-                    score: 1.0,
-                });
+                add_ranked_match(
+                    &mut ranked,
+                    id,
+                    2,
+                    EntityResolutionConfidence::SemanticMatch,
+                    0.5,
+                );
             }
         }
         if table_filter.is_none() || table_filter.as_deref() == Some("world_rule") {
             for (id, _rank, _snippet) in self
                 .repository
-                .fts_search_world_rules(&input.project_id, Some(&branch_id), query, limit)
+                .fts_search_world_rules(&input.project_id, Some(&branch_id), query, fts_limit)
                 .await?
             {
-                matches.push(FindEntityMatch {
-                    entity_id: id,
-                    confidence: EntityResolutionConfidence::ExactName,
-                    score: 1.0,
-                });
+                add_ranked_match(
+                    &mut ranked,
+                    id,
+                    2,
+                    EntityResolutionConfidence::SemanticMatch,
+                    0.5,
+                );
             }
         }
 
-        // If FTS turns up no hits, fall back to vec0 semantic search.
-        if matches.is_empty() {
+        // Only fall back to the semantic kNN index when neither names nor FTS
+        // produced anything.
+        if ranked.is_empty() {
             let query_embedding = self
                 .repository
                 .embed_query_for_active_generation(&input.project_id, query)
@@ -101,22 +210,28 @@ impl SqliteSpindleService {
                 {
                     continue;
                 }
-                matches.push(FindEntityMatch {
-                    entity_id: embedding.entity_id,
-                    confidence: EntityResolutionConfidence::SemanticMatch,
-                    score: (1.0 / (1.0 + distance)) as f32,
-                });
+                add_ranked_match(
+                    &mut ranked,
+                    embedding.entity_id,
+                    2,
+                    EntityResolutionConfidence::SemanticMatch,
+                    (1.0 / (1.0 + distance)) as f32,
+                );
             }
         }
 
-        // Sort by score descending and cap at limit.
-        matches.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+        let mut matches: Vec<(u8, FindEntityMatch)> = ranked.into_values().collect();
+        matches.sort_by(|(a_rank, a), (b_rank, b)| {
+            a_rank.cmp(b_rank).then_with(|| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         });
         matches.truncate(limit);
-        Ok(FindEntityOutput { matches })
+        Ok(FindEntityOutput {
+            matches: matches.into_iter().map(|(_, m)| m).collect(),
+        })
     }
 
     /// Find scenes that mention a phrase or reference a subject id. Phrase

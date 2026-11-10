@@ -1092,7 +1092,8 @@ async fn export_series_bible_state_as_of_cursor_glossary_sorted_and_empty() {
     let s1 = recap_scene(&svc, &proj, 1, 1, 1, "Vex is calm at the start.").await;
     svc.commit_character_state(CommitCharacterStateInput {
         character_id: vex.clone(),
-        scene_id: s1,
+        scene_id: Some(s1),
+        anchor: None,
         changes: CharacterStatePatch {
             emotional_state: std::collections::BTreeMap::new(),
             goals: None,
@@ -1106,7 +1107,8 @@ async fn export_series_bible_state_as_of_cursor_glossary_sorted_and_empty() {
     let s3 = recap_scene(&svc, &proj, 1, 3, 1, "Vex is furious later.").await;
     svc.commit_character_state(CommitCharacterStateInput {
         character_id: vex.clone(),
-        scene_id: s3,
+        scene_id: Some(s3),
+        anchor: None,
         changes: CharacterStatePatch {
             emotional_state: std::collections::BTreeMap::new(),
             goals: None,
