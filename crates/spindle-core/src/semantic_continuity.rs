@@ -105,19 +105,13 @@ impl SemanticCandidateFamily {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticCanonRefV1 {
     pub table: String,
     pub id: String,
     /// Row/version hash, not a display value.
     pub version: String,
-}
-
-impl SemanticCanonRefV1 {
-    pub fn key(&self) -> String {
-        format!("{}:{}:{}", self.table, self.id, self.version)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -365,7 +359,7 @@ pub fn decide_semantic_severity(
 pub struct SemanticDedupeKeyV1 {
     pub scene_id: String,
     pub check_type: String,
-    pub canon_refs: Vec<String>,
+    pub canon_refs: Vec<SemanticCanonRefV1>,
     pub subject_ids: Vec<String>,
     pub evidence_start: usize,
     pub evidence_end: usize,
@@ -378,7 +372,7 @@ pub fn semantic_dedupe_key(
     subject_ids: &[String],
     evidence: Option<&SemanticEvidenceSpanV1>,
 ) -> SemanticDedupeKeyV1 {
-    let mut refs: Vec<String> = canon_refs.iter().map(SemanticCanonRefV1::key).collect();
+    let mut refs = canon_refs.to_vec();
     refs.sort();
     refs.dedup();
     let mut subjects = subject_ids.to_vec();
@@ -528,10 +522,23 @@ pub fn validate_semantic_evidence_span(
 }
 
 fn refs_are_subset(judgment: &[SemanticCanonRefV1], candidate: &[SemanticCanonRefV1]) -> bool {
-    let candidate_keys: BTreeSet<String> = candidate.iter().map(SemanticCanonRefV1::key).collect();
-    judgment
+    let candidate_keys: BTreeSet<(&str, &str, &str)> = candidate
         .iter()
-        .all(|reference| candidate_keys.contains(&reference.key()))
+        .map(|reference| {
+            (
+                reference.table.as_str(),
+                reference.id.as_str(),
+                reference.version.as_str(),
+            )
+        })
+        .collect();
+    judgment.iter().all(|reference| {
+        candidate_keys.contains(&(
+            reference.table.as_str(),
+            reference.id.as_str(),
+            reference.version.as_str(),
+        ))
+    })
 }
 
 fn span_overlaps_candidate(span: &SemanticEvidenceSpanV1, candidate: &SemanticCandidateV1) -> bool {
@@ -988,7 +995,7 @@ mod tests {
             &["b".into(), "a".into()],
             Some(&evidence),
         );
-        assert_eq!(key_a.canon_refs, vec![canon_ref().key()]);
+        assert_eq!(key_a.canon_refs, vec![canon_ref()]);
         assert_eq!(key_a.subject_ids, vec!["a".to_string(), "b".to_string()]);
 
         let mut later = evidence.clone();
@@ -1088,6 +1095,33 @@ mod tests {
                 .unwrap_err()
                 .kind,
             SemanticErrorKind::MalformedOutput
+        );
+    }
+
+    #[test]
+    fn canon_ref_identity_is_not_colon_ambiguous() {
+        let mut set = candidate_set();
+        set.candidates[0].canon_refs = vec![SemanticCanonRefV1 {
+            table: "canonical_fact".into(),
+            id: "canonical_fact:abc".into(),
+            version: "v1".into(),
+        }];
+        let mut report = SemanticJudgeReportV1 {
+            schema_version: SEMANTIC_CONTRACT_VERSION.into(),
+            scene_id: "scene-1".into(),
+            scene_sha256: scene_sha256(scene()),
+            judgments: vec![judgment()],
+        };
+        report.judgments[0].canon_refs = vec![SemanticCanonRefV1 {
+            table: "canonical_fact".into(),
+            id: "canonical_fact".into(),
+            version: "abc:v1".into(),
+        }];
+        assert_eq!(
+            validate_semantic_judge_report(&report, &set, scene())
+                .unwrap_err()
+                .kind,
+            SemanticErrorKind::UnknownCanonRef
         );
     }
 
