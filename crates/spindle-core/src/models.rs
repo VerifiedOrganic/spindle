@@ -408,7 +408,8 @@ impl CalendarDef {
 
     /// Days elapsed before January 1 of `year` (year 1 starts at day zero).
     fn days_before_year(&self, year: i64) -> i64 {
-        (year - 1) * self.days_per_year as i64 + self.leap_years_before(year)
+        (year - 1) * self.days_per_year as i64
+            + self.leap_years_before(year) * self.leap_extra_days() as i64
     }
 
     /// Convert a calendar date to its absolute `day_index`.
@@ -1585,6 +1586,18 @@ mod story_clock_tests {
         assert_eq!(cal.days_in_month(3, 2), Some(10));
         let index = cal.day_index_for_date(&date(2, 2, 12)).unwrap();
         assert_eq!(cal.date_for_day_index(index).unwrap(), date(2, 2, 12));
+
+        // Year 2 has 42 days; year 3 starts after both extra days.
+        assert_eq!(cal.day_index_for_date(&date(3, 1, 1)).unwrap(), 82);
+        assert_eq!(cal.date_for_day_index(81).unwrap(), date(2, 4, 10));
+        assert_eq!(cal.date_for_day_index(82).unwrap(), date(3, 1, 1));
+        for ordinal in [0, 39, 40, 41, 81, 82, 123, 164, 205, 246] {
+            let date = cal.date_for_day_index(ordinal).unwrap();
+            assert_eq!(cal.day_index_for_date(&date).unwrap(), ordinal);
+        }
+        // Leap years 2 and 4 have occurred; year 7 follows three leap years
+        // (2, 4, 6), each contributing two days.
+        assert_eq!(cal.day_index_for_date(&date(7, 1, 1)).unwrap(), 246);
     }
 
     #[test]
