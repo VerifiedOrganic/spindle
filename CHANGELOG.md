@@ -10,7 +10,7 @@
   fixed-length years, and date/day-index conversion, durations, births,
   timeline clocks, and ages use the leap-aware calendar consistently.
 - `find_entity` now labels only a full name or alias equal to the query as exact (case/diacritic-insensitive); forename/surname/alias-token owners rank above fuzzy FTS hits, all owners of an ambiguous name are returned, and description/semantic hits are never mislabelled exact.
-- `commit_character_state` accepts a typed `story_start` anchor with no scene for backstory deaths and other pre-opening state. The snapshot and dead-character detector treat that state as true from story start, and a scene-less chapter-one `life_status` fact does the same.
+- `commit_character_state` accepts a typed `story_start` anchor with no scene for backstory deaths and other pre-opening state. The snapshot and dead-character detector treat that state as true from story start. A scene-less chapter-one `life_status` canonical fact only counts from story start when it explicitly carries `valid_from` `(1,1,0)`; ordinary chapter-one facts apply from their own scene/chapter position.
 
 ## 0.3.0 — 2026-11-10
 
