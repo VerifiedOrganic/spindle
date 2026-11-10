@@ -306,6 +306,20 @@ pub struct SemanticJudgeReportV1 {
     pub judgments: Vec<SemanticJudgmentV1>,
 }
 
+pub struct SemanticHostRequestV1 {
+    pub request_id: String,            // stable hash of the whole request
+    pub contract_version: String,
+    pub candidate_set: SemanticCandidateSetV1,
+}
+
+pub struct SemanticHostReportV1 {
+    pub request_id: String,
+    pub candidate_set_hash: String,
+    pub scene_sha256: String,
+    pub canon_version: String,
+    pub judgments: Vec<SemanticJudgmentV1>,
+}
+
 pub struct SemanticJudgeErrorV1 {
     pub kind: SemanticErrorKind,
     pub retryable: bool,
@@ -324,6 +338,7 @@ pub enum SemanticErrorKind {
     UnknownCandidate,
     UnknownCanonRef,
     InvalidEvidence,
+    StaleHostRequest,
     CacheCorrupt,
 }
 ```
@@ -450,13 +465,28 @@ is local and no host report exists, the lane skips honestly.
 
 ### 2.9 Host-output fallback
 
-Hosts that run their own model can submit a `SemanticJudgeReportV1` per scene
-through a typed host-report input on the audit. The report is validated exactly
-like a route response (scene hash, candidates, canon refs, evidence anchor,
-confidence), cached with provider `host`, and never trusted as raw prose. A
-missing or malformed host report produces coverage info, not a warning. This
-keeps local/offline deployments and tests able to exercise the lane without a
-configured HTTP route.
+Hosts that run their own model use a two-step request/report protocol; a host
+cannot construct a valid report from scene prose alone because candidate IDs,
+canon refs, excerpts, and evidence hints are server-computed.
+
+1. **Request.** A read-only `prepare_semantic_continuity` call returns one
+   `SemanticHostRequestV1` per scene. It contains the ranked/capped candidate set,
+   contract version, scene hash, canon version, and stable `request_id`. The call
+   makes no model call and changes nothing.
+2. **Report.** The host returns `SemanticHostReportV1` through the typed
+   `semantic_host_reports` input on `check_consistency` (or the equivalent
+   authoring checkpoint input). The report carries `request_id`,
+   `candidate_set_hash`, `scene_sha256`, `canon_version`, and judgments using the
+   same `SemanticJudgmentV1` contract.
+
+The server validates the report exactly like a route response (request id,
+candidate set hash, scene/canon version, candidates, canon refs, evidence anchor,
+confidence), caches it with provider `host`, and never trusts raw prose. A
+missing or malformed report produces coverage info, not a warning. A report whose
+scene, canon, or candidate hashes do not match the current request is rejected
+with `StaleHostRequest`; the host must request a fresh candidate set rather than
+reuse IDs or offsets. This keeps local/offline deployments and tests able to
+exercise the lane without a configured HTTP route.
 
 ### 2.10 Cost and latency ceilings
 
@@ -582,10 +612,12 @@ brief:
 - no knowledge of candidate IDs, prompts, thresholds, or check names beyond the
   category names.
 
-The corpus is frozen with a manifest hash before any semantic-lane code is
-written. It is not edited after the first measurement. A second worker audits
-that the clean twins contain no unintentional contradictions. Held-out-4 is
-blind for the semantic lane because the builder never sees the lane internals.
+The corpus is authored and frozen (manifest hash) in **P0, before P1/P2 begin**.
+It is sealed from the semantic-lane implementation: the implementation team does
+not inspect held-out-4 plant data or use it for tuning. The evaluator may emit
+only aggregate candidate/coverage counts before the final P4 measurement. The
+corpus is not edited after the P0 freeze; a second worker audits that the clean
+twins contain no unintentional contradictions.
 
 ### 4.3 Metrics on all five sets
 
@@ -636,20 +668,22 @@ limitation rather than weakening the gate.
 
 | PR | Scope | Depends on | Acceptance gate |
 | --- | --- | --- | --- |
-| **P1** | `spindle-core` DTOs: candidate/judgment/evidence/error contracts, canonical-ref and evidence validation, severity policy, dedupe keys; pure tests; optional evidence field on `ConsistencyIssue` | none | No behavior change; schema/roundtrip/validation tests; deterministic suites unchanged |
-| **P2** | Deterministic candidate builder in the SQLite service: family selection, ranking, caps, canon version, audit coverage; `semantic_mode` off/shadow/on plumbing; host-report input; no model calls | P1 | Candidate snapshots for all five sets; zero model calls in off; no finding changes; secret candidates only with out-of-circle presence |
-| **P3** | Judge transport: `continuity_semantic` route + `review` fallback, prompt, strict parser, one repair, typed errors, cache table/key/invalidation, budget/latency guard | P1, P2 | Shadow metrics; evidence validity; cache stale tests; route/rating fail-closed tests; no control warnings |
-| **P4** | Held-out-4 corpus by the independent worker, five-set evaluation mode, cost/latency report, PR body tables; docs update and `CHANGELOG` under 0.4 | P2, P3; corpus frozen before P3 measurement | All activation gates measured; h4 blind; no detector-code changes after freeze |
+| **P0** | Independent held-out-4 authoring and clean-twin audit; freeze manifest hash before any semantic-lane code | none | New worker brief only; 28 plants across seven categories + clean twins; hash frozen; no detector/code exposure; corpus sealed from implementation |
+| **P1** | `spindle-core` DTOs: candidate/judgment/evidence/error contracts, canonical-ref and evidence validation, severity policy, dedupe keys; pure tests; optional evidence field on `ConsistencyIssue` | P0 freeze (sealed corpus; no h4 plant inspection) | No behavior change; schema/roundtrip/validation tests; deterministic suites unchanged |
+| **P2** | Deterministic candidate builder in the SQLite service: family selection, ranking, caps, canon version, audit coverage; `semantic_mode` off/shadow/on plumbing; host request surface; no model calls | P1 | Candidate snapshots for baseline/#72/h2/h3; h4 only aggregate coverage through the sealed evaluator; zero model calls in off; no finding changes; secret candidates only with out-of-circle presence |
+| **P3** | Judge transport: `continuity_semantic` route + `review` fallback, prompt, strict parser, one repair, typed errors, cache table/key/invalidation, budget/latency guard; host report validation | P1, P2 | Shadow metrics; evidence validity; cache stale tests; route/rating fail-closed tests; host report/stale-request tests; no control warnings |
+| **P4** | Five-set evaluation integration after the corpus is already frozen: evaluator mode, cost/latency report, PR body tables; docs update and `CHANGELOG` under 0.4 | P0, P2, P3 | All activation gates measured; h4 measured once at final head; no h4-guided tuning and no corpus edits; no-route host round-trip passes |
 | **P5** | User-controlled activation: config/docs only, default remains off; optionally remove shadow-only reporting limits | P4 + user sign-off | No default behavior change without explicit user decision |
 
 Migration: P3 needs the semantic cache table; the next migration number is
-V0057 at the time of this design (V0056 is the current maximum). P1/P2 need no
+V0057 at the time of this design (V0056 is the current maximum). P0/P1/P2 need no
 migration. P4 should not add schema.
 
 Implementation sequencing keeps the deterministic lane and the released behavior
-untouched until P3 is behind an off-by-default flag. P4 is the only evaluation
-that may tune prompts/thresholds; held-out-4 is measured once at the final head
-after the corpus freeze, not used for iterative fitting.
+untouched until P3 is behind an off-by-default flag. P0 freezes held-out-4 before
+any semantic-lane code exists; the implementation team works from the public
+contract and the three visible corpora. P4 is the only stage allowed to run h4
+end-to-end; it measures once at the final head and does not tune on h4.
 
 ---
 
