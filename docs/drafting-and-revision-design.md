@@ -1139,6 +1139,42 @@ the 3-family G verdict. The 4 remaining invalid outputs are the same honest
 typed failure (missing top-level `base_text_hash` after repair). A full G on
 merged main is the next gate (PR 2), and no default is activated by this result.
 
+### Post-critic-fix G re-run (PR 2)
+
+The row-6 G was repeated after the critic-quality fix merged, using fresh
+`main` `da91276` (the PR branch later merged `main` `b3d4b03`, an unrelated
+quantity fix), 30 briefs × 3 seeds, the calibrated gemma drafter, and the
+same frozen 90-pair legacy and packet-only controls. Three live Ollama families
+(zhipu-glm, deepseek, google-gemma) judged every pair in randomized and swapped
+order; CIs are 95% cluster bootstraps by brief. Results are checked in at
+`evals/results/drafting_g_after_critic_fix_*.json`.
+
+| Comparison | n | Tie-half rate | 95% CI | Lower bound > 0.50? |
+| --- | ---: | ---: | --- | --- |
+| Loop vs legacy baseline | 90 | 0.4111 | [0.3278, 0.4944] | **No** |
+| Loop vs packet-only | 90 | 0.5000 | [0.4500, 0.5500] | **No** |
+| Self-pair: own initial → final | 90 | 0.5556 | [0.5222, 0.5944] | **Yes** |
+
+The loop promoted `42 / 90` revisions (`46.7%`) and retained 48; 8 were
+critic-invalid (`8.9%`), 27 ended in judge-order disagreement, and 13 kept the
+incumbent on judge preference. Position bias was `49.6%` vs baseline and
+`51.9%` vs packet-only; three-judge agreement was low-to-fair (Fleiss' kappa
+`0.2029` / `0.2449`). Per-scene-type tie-half rates:
+
+- vs baseline: action `0.3889`, dialogue-heavy `0.3333`, quiet-interior `0.4722`,
+  reveal `0.2778`, chapter-closer `0.5833`.
+- vs packet-only: action `0.5278`, dialogue-heavy `0.4167`, quiet-interior
+  `0.5833`, reveal `0.5000`, chapter-closer `0.4722`.
+- self-pair: action `0.5278`, dialogue-heavy `0.6111`, quiet-interior `0.5278`,
+  reveal `0.5833`, chapter-closer `0.5278`.
+
+The incremental self-pair gate clears (10 wins, 0 losses, 80 ties), but both
+end-to-end gates fail; 48 of the 80 ties are unchanged pairs, so the incremental
+signal is sparse. No default is activated. Usage: 810 generation-ledger calls
+(435 real + 375 token probes), 1,620 live judge passes; cost is not recorded as
+USD because the eval configs carry no price, tokens/latency are in
+`evals/results/drafting_g_after_critic_fix_usage.json`.
+
 ### Gates and defaults
 
 - Legacy remains the default. Line edit and the chapter pass stay opt-in and
