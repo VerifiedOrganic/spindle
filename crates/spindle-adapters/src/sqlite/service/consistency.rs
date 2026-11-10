@@ -579,6 +579,89 @@ impl SqliteSpindleService {
                     clock_by_scene.get(&scene.id).copied(),
                 ));
             }
+            // Explicit elapsed-time phrases after a recorded death: compare
+            // the prose's elapsed claim with the scene clocks that place the
+            // death. This is the recorded-clock counterpart to the prose-only
+            // band scan; clean controls that state the true gap stay silent.
+            let death_states = self
+                .repository
+                .list_character_states_by_project_and_branch(&project_id, &active_branch.id)
+                .await?;
+            if !death_states.is_empty() {
+                let death_characters = self
+                    .repository
+                    .list_characters_by_project_and_branch(&project_id, &active_branch.id)
+                    .await?;
+                let character_by_id: BTreeMap<String, &crate::sqlite::records::Character> =
+                    death_characters
+                        .iter()
+                        .map(|character| (character.id.clone(), character))
+                        .collect();
+                let mut death_day_by_character: BTreeMap<String, f64> = BTreeMap::new();
+                for state in &death_states {
+                    if !state
+                        .status
+                        .iter()
+                        .any(|status| status.to_ascii_lowercase().contains("dead"))
+                    {
+                        continue;
+                    }
+                    let Some(death_scene_id) = state.scene_id.as_deref() else {
+                        continue;
+                    };
+                    let Some(death_clock) = clock_by_scene.get(death_scene_id) else {
+                        continue;
+                    };
+                    let Some(death_day) = death_clock.clock.day_index else {
+                        continue;
+                    };
+                    death_day_by_character
+                        .entry(state.character_id.clone())
+                        .or_insert(death_day as f64);
+                }
+                for scene in &scenes {
+                    let Some(scene_clock) = clock_by_scene.get(&scene.id) else {
+                        continue;
+                    };
+                    let Some(scene_day) = scene_clock.clock.day_index else {
+                        continue;
+                    };
+                    for (character_id, death_day) in &death_day_by_character {
+                        let gap_days = scene_day as f64 - death_day;
+                        if gap_days <= 0.0 {
+                            continue;
+                        }
+                        let Some(character) = character_by_id.get(character_id) else {
+                            continue;
+                        };
+                        let Some(aliases) = death_aliases(character) else {
+                            continue;
+                        };
+                        let Some((phrase, claimed_days)) =
+                            elapsed_days_after_death(&scene.full_text, &aliases)
+                        else {
+                            continue;
+                        };
+                        if !elapsed_claim_conflicts(claimed_days, gap_days) {
+                            continue;
+                        }
+                        issues.push(ConsistencyIssue {
+                            severity: "warning".to_string(),
+                            check_type: "temporal_coherence".to_string(),
+                            message: format!(
+                                "scene says '{}' since {} died, but the recorded clocks place the death {gap_days} days before this scene",
+                                phrase, character.name
+                            ),
+                            entity_ids: vec![scene.id.clone()],
+                            suggested_action: Some(
+                                "correct the elapsed-time phrase or the scene clock so the claimed gap matches the recorded timeline"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                }
+            }
+
             // Tier 2 (opt-in): a model-backed semantic pass that catches the
             // idiomatic time jumps the deterministic lexicon cannot (meals,
             // light, errands, "three cigarettes later"). Falls back to nothing
@@ -2895,5 +2978,282 @@ fn resolve_price_spender(
         1 => subjects.into_iter().next().ok_or("unresolved"),
         _ if subjects.is_empty() => Err("unresolved"),
         _ => Err("ambiguous"),
+    }
+}
+
+fn death_aliases(character: &crate::sqlite::records::Character) -> Option<Vec<String>> {
+    let mut aliases = vec![character.name.clone()];
+    aliases.extend(character.aliases.iter().cloned());
+    aliases.retain(|alias| !alias.trim().is_empty());
+    if aliases.is_empty() {
+        None
+    } else {
+        Some(aliases)
+    }
+}
+
+fn elapsed_days_after_death(text: &str, aliases: &[String]) -> Option<(String, f64)> {
+    let lower = text.to_ascii_lowercase();
+    for alias in aliases {
+        let alias = alias.to_ascii_lowercase();
+        if alias.is_empty() {
+            continue;
+        }
+        let mut from = 0;
+        while let Some(relative) = lower[from..].find(&alias) {
+            let position = from + relative;
+            let after_start = position + alias.len();
+            if !word_boundary_at(&lower, position, after_start) {
+                from = after_start;
+                continue;
+            }
+            let clause_end = clause_end_after(&lower, after_start);
+            let after = &lower[after_start..clause_end];
+            for marker in ["had been dead", "had been in the ground", "had been buried"] {
+                if let Some(marker_at) = after.find(marker) {
+                    let between = after[..marker_at].trim();
+                    if !matches!(between, "" | "'s" | "’s" | "body" | "corpse" | "remains") {
+                        continue;
+                    }
+                    let phrase = after[marker_at + marker.len()..]
+                        .trim_start()
+                        .strip_prefix("for ")
+                        .unwrap_or_else(|| after[marker_at + marker.len()..].trim_start())
+                        .split(['.', ',', ';', '\n'])
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+                    if let Some(days) = parse_elapsed_days(phrase) {
+                        return Some((phrase.to_string(), days));
+                    }
+                }
+            }
+            let mut before_start = position.saturating_sub(80);
+            while before_start > 0 && !lower.is_char_boundary(before_start) {
+                before_start -= 1;
+            }
+            let before = &lower[before_start..position];
+            if let Some(marker_at) = before.rfind("had passed since")
+                && death_predicate_in(after)
+            {
+                let phrase = before[..marker_at]
+                    .rsplit(['.', ',', ';', '\n'])
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if let Some(days) = parse_elapsed_days(phrase) {
+                    return Some((phrase.to_string(), days));
+                }
+            }
+            from = after_start;
+        }
+    }
+    None
+}
+
+fn word_boundary_at(text: &str, start: usize, end: usize) -> bool {
+    let prev = text[..start].chars().next_back();
+    let next = text[end..].chars().next();
+    !prev.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        && !next.is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
+fn clause_end_after(text: &str, start: usize) -> usize {
+    let tail = &text[start..];
+    let punctuation = tail
+        .char_indices()
+        .find(|(_, c)| matches!(c, '.' | ',' | ';' | '!' | '?' | '\n'))
+        .map(|(index, _)| index);
+    let conjunction = tail
+        .char_indices()
+        .find(|(index, _)| tail[*index..].starts_with(" and "))
+        .map(|(index, _)| index);
+    start
+        + punctuation
+            .into_iter()
+            .chain(conjunction)
+            .min()
+            .unwrap_or(tail.len())
+}
+
+fn death_predicate_in(text: &str) -> bool {
+    let mut text = text.trim_start();
+    for auxiliary in ["had ", "has ", "was ", "were ", "is ", "been "] {
+        if let Some(rest) = text.strip_prefix(auxiliary) {
+            text = rest.trim_start();
+            break;
+        }
+    }
+    if text.starts_with("passed away") {
+        return true;
+    }
+    let Some(first) = text.split_whitespace().next() else {
+        return false;
+    };
+    matches!(
+        first.trim_matches(|c: char| !c.is_alphabetic()),
+        "died" | "dead" | "drowned" | "buried" | "perished"
+    )
+}
+
+fn parse_elapsed_days(phrase: &str) -> Option<f64> {
+    let lower = phrase.to_ascii_lowercase();
+    if lower.contains("that morning") || lower.contains("this morning") {
+        return Some(0.5);
+    }
+    if lower.contains("yesterday") {
+        return Some(1.0);
+    }
+    if lower.contains("the previous day") || lower.contains("the day before") {
+        return Some(1.0);
+    }
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '-')
+        .filter(|word| !word.is_empty())
+        .collect();
+    let unit_at = words.iter().position(|word| {
+        matches!(
+            *word,
+            "day" | "days" | "week" | "weeks" | "month" | "months" | "year" | "years"
+        )
+    })?;
+    let number = if lower.contains("single ") {
+        1.0
+    } else {
+        parse_elapsed_number(&words[..unit_at])?
+    };
+    let unit_days = match words[unit_at] {
+        "day" | "days" => 1.0,
+        "week" | "weeks" => 7.0,
+        "month" | "months" => 30.0,
+        _ => 365.0,
+    };
+    Some(number * unit_days)
+}
+
+fn elapsed_claim_conflicts(claimed_days: f64, clock_gap_days: f64) -> bool {
+    (claimed_days - clock_gap_days).abs() > 1.0
+}
+
+fn parse_elapsed_number(words: &[&str]) -> Option<f64> {
+    let mut total = 0.0;
+    let mut current = 0.0;
+    let mut saw_number = false;
+    for token in words {
+        for word in token.split('-') {
+            let value = match word {
+                "a" | "an" | "one" | "single" => 1.0,
+                "two" => 2.0,
+                "three" => 3.0,
+                "four" => 4.0,
+                "five" => 5.0,
+                "six" => 6.0,
+                "seven" => 7.0,
+                "eight" => 8.0,
+                "nine" => 9.0,
+                "ten" => 10.0,
+                "eleven" => 11.0,
+                "twelve" => 12.0,
+                "thirteen" => 13.0,
+                "fourteen" => 14.0,
+                "fifteen" => 15.0,
+                "sixteen" => 16.0,
+                "seventeen" => 17.0,
+                "eighteen" => 18.0,
+                "nineteen" => 19.0,
+                "twenty" => 20.0,
+                "thirty" => 30.0,
+                "forty" => 40.0,
+                "fifty" => 50.0,
+                "sixty" => 60.0,
+                "seventy" => 70.0,
+                "eighty" => 80.0,
+                "ninety" => 90.0,
+                "hundred" => {
+                    current = if current == 0.0 { 1.0 } else { current } * 100.0;
+                    saw_number = true;
+                    continue;
+                }
+                "thousand" => {
+                    total += if current == 0.0 { 1.0 } else { current } * 1_000.0;
+                    current = 0.0;
+                    saw_number = true;
+                    continue;
+                }
+                "and" => continue,
+                _ => word.parse::<f64>().ok()?,
+            };
+            current += value;
+            saw_number = true;
+        }
+    }
+    saw_number.then_some(total + current)
+}
+
+#[cfg(test)]
+mod elapsed_phrase_tests {
+    use super::*;
+
+    #[test]
+    fn parses_elapsed_phrases_used_after_a_death() {
+        assert_eq!(parse_elapsed_days("four days"), Some(4.0));
+        assert_eq!(parse_elapsed_days("a single day"), Some(1.0));
+        assert_eq!(parse_elapsed_days("three weeks"), Some(21.0));
+        assert_eq!(parse_elapsed_days("only that morning"), Some(0.5));
+        assert_eq!(parse_elapsed_days("twenty-one days"), Some(21.0));
+        assert_eq!(parse_elapsed_days("one hundred days"), Some(100.0));
+        assert_eq!(
+            parse_elapsed_days("one hundred and twenty days"),
+            Some(120.0)
+        );
+    }
+
+    #[test]
+    fn finds_elapsed_claim_after_a_death_mention() {
+        let aliases = vec!["Mira Vale".to_string(), "Mira".to_string()];
+        assert_eq!(
+            elapsed_days_after_death("Mira Vale had been in the ground four days.", &aliases),
+            Some(("four days".to_string(), 4.0))
+        );
+        assert_eq!(
+            elapsed_days_after_death("Three weeks had passed since Mira drowned.", &aliases),
+            Some(("three weeks".to_string(), 21.0))
+        );
+    }
+
+    #[test]
+    fn does_not_bind_unrelated_or_other_subject_events_to_the_death() {
+        let aliases = vec!["Mira Vale".to_string(), "Mira".to_string()];
+        assert_eq!(
+            elapsed_days_after_death("Three weeks had passed since Mira bought a coat.", &aliases),
+            None
+        );
+        assert_eq!(
+            elapsed_days_after_death(
+                "Mira was remembered. Oren had been buried four days.",
+                &aliases
+            ),
+            None
+        );
+        assert_eq!(
+            elapsed_days_after_death(
+                "Three weeks had passed since Mira said Oren drowned.",
+                &aliases
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn multibyte_prefix_does_not_break_elapsed_binding() {
+        let aliases = vec!["Mira".to_string()];
+        let prose = format!(
+            "{}. Three weeks had passed since Mira drowned.",
+            "é".repeat(60)
+        );
+        assert_eq!(
+            elapsed_days_after_death(&prose, &aliases),
+            Some(("three weeks".to_string(), 21.0))
+        );
     }
 }

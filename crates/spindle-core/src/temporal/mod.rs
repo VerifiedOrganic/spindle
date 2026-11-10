@@ -245,16 +245,23 @@ pub fn scan_temporal_coherence(input: &TemporalSceneInput) -> Vec<TemporalCohere
     let bridges = extract_bridge_positions(prose, &lower);
 
     let mut hits = Vec::new();
+    let recorded_hours = input.duration_days.map(|days| days * 24.0);
+    let mut elapsed_hours = 0.0;
 
-    // Teleport / drift across consecutive established times-of-day.
+    // Teleport / drift across consecutive established times-of-day. A scene
+    // with a recorded span gets a budget: every band jump consumes the
+    // minimum hours between those times, and a jump that fits the declared
+    // span is legitimate elapsed time rather than a contradiction.
     if let Some((first, rest)) = bands.split_first() {
         let mut current = first;
         for next in rest {
             let delta = next.band - current.band;
+            elapsed_hours += minimum_band_elapsed_hours(current.band, next.band);
             let bridged = bridges
                 .iter()
                 .any(|&pos| pos > current.start && pos < next.start);
-            if !bridged {
+            let fits_recorded_span = recorded_hours.is_some_and(|hours| elapsed_hours < hours);
+            if !bridged && !fits_recorded_span {
                 if delta >= FORWARD_TELEPORT_THRESHOLD {
                     hits.push(TemporalCoherenceHit {
                         kind: "temporal_teleport",
@@ -306,6 +313,29 @@ pub fn scan_temporal_coherence(input: &TemporalSceneInput) -> Vec<TemporalCohere
     }
 
     hits
+}
+
+/// Approximate clock hour for a time-of-day band, used only to price the
+/// minimum elapsed time between two prose anchors against `duration_days`.
+fn band_hour(band: i16) -> f64 {
+    match band {
+        0 => 5.0,
+        1 => 9.0,
+        2 => 12.0,
+        3 => 15.0,
+        4 => 19.0,
+        _ => 23.0,
+    }
+}
+
+fn minimum_band_elapsed_hours(from: i16, to: i16) -> f64 {
+    if to > from {
+        band_hour(to) - band_hour(from)
+    } else if to < from {
+        24.0 - band_hour(from) + band_hour(to)
+    } else {
+        0.0
+    }
 }
 
 fn band_label(band: i16) -> &'static str {
@@ -778,6 +808,46 @@ mod tests {
         assert!(
             hits.is_empty(),
             "retrospective contracted clauses must not anchor time: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn recorded_overnight_duration_permits_night_to_dawn() {
+        let hits = scan_temporal_coherence(&TemporalSceneInput {
+            prose: "Dusk settled over the harbor. Midnight came and went. Dawn found the boats still out.",
+            duration_days: Some(0.6),
+            ..Default::default()
+        });
+        assert!(
+            hits.is_empty(),
+            "a 0.6-day recorded span must permit an overnight jump: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn short_recorded_duration_still_flags_overnight_jump() {
+        let hits = scan_temporal_coherence(&TemporalSceneInput {
+            prose: "Dusk settled over the harbor. Midnight came and went. Dawn found the boats still out.",
+            duration_days: Some(0.1),
+            ..Default::default()
+        });
+        assert!(
+            hits.iter().any(|h| h.kind == "temporal_drift"),
+            "a 0.1-day span cannot contain dusk-to-dawn: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn recorded_duration_budget_accumulates_across_jumps() {
+        let hits = scan_temporal_coherence(&TemporalSceneInput {
+            prose: "Morning broke over the hills. Evening came slowly. Morning came again before the watch changed.",
+            duration_days: Some(0.6),
+            ..Default::default()
+        });
+        assert!(
+            hits.iter()
+                .any(|h| h.kind == "temporal_teleport" || h.kind == "temporal_drift"),
+            "a full day of jumps cannot fit a 0.6-day span: {hits:?}"
         );
     }
 

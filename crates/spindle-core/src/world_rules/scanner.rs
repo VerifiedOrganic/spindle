@@ -15,11 +15,13 @@ use crate::models::{TextByteRange, WorldRuleHit, WorldRuleSeverity};
 /// * v5 — required cost/effect nouns are derived from rule descriptions, and
 ///   their explicit absence promotes a hit to Likely even when the prose does
 ///   not repeat the rule's scan label.
+/// * v6 — an in-dialogue hit on a secrecy-class rule is itself the prohibited
+///   disclosure, so it is Likely rather than a vague Possible mention.
 ///
 /// The adapters layer mixes this into the `world_rule_semantic_drift` cache
 /// context hash, so deploying new scanner semantics invalidates cached
 /// findings computed by the old logic instead of serving them forever.
-pub const SCANNER_SEMANTICS_VERSION: u32 = 5;
+pub const SCANNER_SEMANTICS_VERSION: u32 = 6;
 
 pub struct ScanRule {
     pub rule_id: String,
@@ -187,8 +189,13 @@ pub fn scan_prose_for_world_rules(prose: &str, rules: &[ScanRule]) -> Vec<WorldR
                     {
                         continue;
                     }
-                    let severity =
-                        severity_for_hit(prose, mat.start(), mat.end(), &rule.description);
+                    let severity = if secrecy_class {
+                        // For a secrecy-class rule, an in-dialogue hit is the
+                        // prohibited disclosure itself, not a vague mention.
+                        WorldRuleSeverity::Likely
+                    } else {
+                        severity_for_hit(prose, mat.start(), mat.end(), &rule.description)
+                    };
                     rule_hits.push(build_hit(
                         &rule.rule_id,
                         mat.start(),
