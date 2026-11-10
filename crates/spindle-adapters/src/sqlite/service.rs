@@ -2260,11 +2260,6 @@ fn cached_validator_issues(
     issues
 }
 
-/// Compare two `(book, chapter, scene_order)` tuples lexicographically.
-fn position_lte(lhs: (i32, i32, i32), rhs: (i32, i32, i32)) -> bool {
-    lhs <= rhs
-}
-
 fn position_lt(lhs: (i32, i32, i32), rhs: (i32, i32, i32)) -> bool {
     lhs < rhs
 }

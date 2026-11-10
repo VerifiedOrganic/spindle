@@ -1652,6 +1652,35 @@ pub(crate) fn relationship_pair_key(a: &str, b: &str) -> (String, String) {
     }
 }
 
+/// Select the newest character state at or before a story position.
+///
+/// Ordering is explicit and independent of load order: narrative position
+/// first, then the SQLite rowid as the monotonic recency key. This is shared by
+/// the retcon validator and subject-snapshot projection so both agree when two
+/// states share a position.
+pub(crate) fn select_latest_character_state<'a>(
+    states: impl IntoIterator<Item = &'a CharacterState>,
+    character_id: &str,
+    max_position: (i32, i32, i32),
+) -> Option<&'a CharacterState> {
+    states
+        .into_iter()
+        .filter(|state| state.character_id == character_id)
+        .filter(|state| {
+            (state.book_number, state.chapter_number, state.scene_order) <= max_position
+        })
+        .max_by_key(|state| {
+            (
+                state.book_number,
+                state.chapter_number,
+                state.scene_order,
+                state.rowid,
+                state.created_at,
+                state.id.clone(),
+            )
+        })
+}
+
 /// Resolve the most recent `character_state` at or before `(book, chapter, scene_order)`
 /// across `branch_id` and its ancestor chain, with nearer branches breaking ties
 /// at the same narrative position.
@@ -3507,12 +3536,13 @@ fn batch_character_state_summary(
         .id()
         .context("character subject id missing")?
         .to_string();
-    let state = batch
-        .character_states
-        .iter()
-        .filter(|state| state.character_id == character_id)
-        .filter(|state| state_at_or_before(state, placement))
-        .max_by_key(|state| (state.book_number, state.chapter_number, state.scene_order));
+    let max_position = (
+        placement.book_number,
+        placement.chapter_number,
+        placement.scene_order.unwrap_or(i32::MAX),
+    );
+    let state =
+        select_latest_character_state(batch.character_states.iter(), &character_id, max_position);
     Ok(state.map(|state| CharacterStateSummary {
         emotional_state: state.emotional_state.clone(),
         goals: state.goals.clone(),
@@ -3750,15 +3780,6 @@ fn placement_at_or_after(current: &StoryPlacement, point: &StoryPlacement) -> bo
 
 fn scene_at_or_before(scene: &Scene, placement: &StoryPlacement) -> bool {
     (scene.book_number, scene.chapter_number, scene.scene_order)
-        <= (
-            placement.book_number,
-            placement.chapter_number,
-            placement.scene_order.unwrap_or(i32::MAX),
-        )
-}
-
-fn state_at_or_before(state: &CharacterState, placement: &StoryPlacement) -> bool {
-    (state.book_number, state.chapter_number, state.scene_order)
         <= (
             placement.book_number,
             placement.chapter_number,

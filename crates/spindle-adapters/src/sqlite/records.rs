@@ -382,7 +382,7 @@ impl<'a> TryFrom<&Row<'a>> for CharacterEmotionalProfile {
 // =============================================================================
 
 pub const CHARACTER_STATE_COLUMNS: &str = "id, project_id, branch_id, character_id, scene_id, book_number, chapter_number, \
-     scene_order, emotional_state, goals, status, notes, source_summary, created_at";
+     scene_order, emotional_state, goals, status, notes, source_summary, created_at, rowid";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CharacterState {
@@ -400,6 +400,10 @@ pub struct CharacterState {
     pub notes: Vec<String>,
     pub source_summary: Option<String>,
     pub created_at: Timestamp,
+    /// SQLite's monotonically increasing row identity. Used as the final
+    /// tie-break so newest-at-position does not depend on load order.
+    #[serde(skip)]
+    pub rowid: i64,
 }
 
 impl<'a> TryFrom<&Row<'a>> for CharacterState {
@@ -421,6 +425,7 @@ impl<'a> TryFrom<&Row<'a>> for CharacterState {
             notes: row::json(r, 11)?,
             source_summary: row::opt_text(r, 12)?,
             created_at: row::time(r, 13)?,
+            rowid: r.get(14)?,
         })
     }
 }
