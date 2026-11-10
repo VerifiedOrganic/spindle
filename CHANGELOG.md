@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 — 2026-11-09
+## 0.3.0 — 2026-11-10
 
 Spindle 0.3.0 is the compatibility release for the consolidated tool surface.
 It keeps the release-R aliases working while recommending the generated
@@ -112,10 +112,29 @@ removal plan.
 
 ### Known limitations
 
-- Advanced drafting-loop phases (verify/revise, dual-persona critic, canon
-  mining, self-clearing checkpoints) remain off by default pending measurement.
+- Held-out-3 recall was measured blind at 23/56 localized after the detector
+  work (16/56 before it). After the false-alarm round it is 26/56 localized
+  (46.43%) and 28/56 type-present (50%). Weakest areas remain secret-leak
+  paraphrase (0/8) and timeline (3/8, up from 1/8 before the round).
+- Held-out-3 is no longer blind for false alarms: the false-alarm fixes used
+  its findings, so its post-round false-alarm numbers are regression evidence,
+  not a blind-generalization claim.
+- Held-out-3 control warnings fell from 17 to 0; the prior canonical-drift 8,
+  dead 2, retcon 2 and temporal 5 warnings are all gone. Eight info-level
+  world-rule "no violation context" diagnostics remain; they are not
+  warnings/errors.
+- Release reference measurements: baseline 28/28 with 3 control findings (2
+  `world_rule_compliance` from a control-metadata defect, 1 info homonym);
+  held-out #72 54/56 with 0; held-out-2 55/56 localized, 56/56 type-present,
+  0 control warnings.
+- The critique-revise drafting loop fails both end-to-end quality gates
+  (vs legacy baseline 0.41 [0.33, 0.49]; vs packet-only 0.50 [0.45, 0.55]) and
+  remains off by default. Other advanced loop phases (verify/revise,
+  dual-persona critic, canon mining, self-clearing checkpoints) also remain
+  off pending measurement.
 - Semantic contradiction detection is degraded; deterministic claim-vs-canon
-  lanes are the reliable path.
+  lanes are the reliable path. A model-assisted semantic continuity lane is
+  planned for 0.4.
 - There is no operator CLI for rebuilding the embedding index; index generation
   changes are tracked, but rebuild tooling is not shipped.
 - Unified undo is checkpoint-only for scene continuity and multi-step style
@@ -123,6 +142,21 @@ removal plan.
   the explicit rollback tools.
 
 ### Added
+
+- Continuity uses one shared cast-mention resolver: full names, forenames,
+  surnames and explicit aliases resolve without guessing across ambiguous
+  names, with conservative pronoun handling. Dead-character detection reads
+  both character state and canonical `life_status`, frames out memories,
+  letters, dreams, recordings, corpses and graves, and emits a stable
+  `dead_character_acting` alias; attribute drift covers eye/hair/skin colour,
+  handedness, height, scars and build with plural heads and conservative
+  negations.
+- Added the blind held-out-3 continuity corpus and `held-out-3` evaluation
+  mode for independent recall and false-alarm measurement.
+- Re-ran the 90-draft G quality gates after critic hardening: the loop scored
+  0.41 [0.33, 0.49] against the legacy baseline and 0.50 [0.45, 0.55] against
+  packet-only, failing both promotion gates, so it remains disabled (see Known
+  limitations).
 
 - Quantity affordability now parses English number words alongside digits and
   resolves the spender name through the shared character-mention resolver
