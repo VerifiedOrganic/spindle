@@ -62,51 +62,32 @@ impl SceneValidator for CanonicalFactConsistencyValidator {
             if fact.key.trim().is_empty() || fact.value.trim().is_empty() {
                 continue;
             }
-            let key_hits = find_all_case_insensitive_word(&scene.full_text, &fact.key);
-            if key_hits.is_empty() {
-                // Unkeyed prose drift: the prose never repeats the fact key, so
-                // the lexical prefilter cannot retrieve it. Compare subject +
-                // attribute head + an explicit value antonym instead.
-                let scene_input = SceneValidationInputV1 {
-                    scene_id: &scene.scene_id,
-                    book_number: scene.book_number,
-                    chapter_number: scene.chapter_number,
-                    scene_order: scene.scene_order,
-                    text: &scene.full_text,
-                };
-                let fact_input = AttributeValidationFactV1 {
-                    fact_id: fact.fact_id.clone(),
-                    subject_id: fact.subject_id.clone(),
-                    subject_names: fact.subject_names.clone(),
-                    first_person_subject: scene.pov_character_id.as_deref()
-                        == fact.subject_id.as_deref(),
-                    key: fact.key.clone(),
-                    value: fact.value.clone(),
-                };
-                if let Some(finding) =
-                    detect_attribute_prose_contradiction(&scene_input, &fact_input)
-                {
-                    findings.push(ValidatorFinding {
-                        check_type: self.check_type(),
-                        severity: ValidatorSeverity::Warning,
-                        message: finding.message,
-                        byte_range: finding.byte_range,
-                    });
-                }
-                continue;
-            }
-            if contains_case_insensitive_word(&scene.full_text, &fact.value) {
-                continue;
-            }
-            for range in key_hits.into_iter().take(3) {
+            let scene_input = SceneValidationInputV1 {
+                scene_id: &scene.scene_id,
+                book_number: scene.book_number,
+                chapter_number: scene.chapter_number,
+                scene_order: scene.scene_order,
+                text: &scene.full_text,
+            };
+            let fact_input = AttributeValidationFactV1 {
+                fact_id: fact.fact_id.clone(),
+                subject_id: fact.subject_id.clone(),
+                subject_names: fact.subject_names.clone(),
+                first_person_subject: scene.pov_character_id.as_deref()
+                    == fact.subject_id.as_deref(),
+                key: fact.key.clone(),
+                value: fact.value.clone(),
+            };
+            // A key mention is only a retrieval hint. Emit a warning only when
+            // the deterministic family matcher finds positive contradiction
+            // evidence; a consistent paraphrase or a bare key mention is not a
+            // drift finding.
+            if let Some(finding) = detect_attribute_prose_contradiction(&scene_input, &fact_input) {
                 findings.push(ValidatorFinding {
                     check_type: self.check_type(),
                     severity: ValidatorSeverity::Warning,
-                    message: format!(
-                        "scene references canonical key '{}' but not canonical value '{}'",
-                        fact.key, fact.value
-                    ),
-                    byte_range: Some(range),
+                    message: finding.message,
+                    byte_range: finding.byte_range,
                 });
             }
         }

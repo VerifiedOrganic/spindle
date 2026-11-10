@@ -263,7 +263,7 @@ removal plan.
 ### Fixed
 
 - Temporal coherence now budgets prose time-of-day jumps against the recorded scene duration and compares explicit elapsed-time claims with recorded death clocks, so overnight scenes are not false alarms. Clean world-rule cost demonstrations no longer emit info-level semantic-drift noise.
-
+- Continuity false alarms: passing death references ("since Maren drowned", "the late Bran", remembering/mourning) no longer count as post-mortem action, and canonical-fact drift warns only on positive contradictory evidence rather than a bare key mention.
 - Test fixtures now drop their temporary SQLite directories instead of calling
   `TempDir::keep()`, preventing multi-gigabyte temp-dir accumulation across
   workspace test runs.
