@@ -642,7 +642,7 @@ impl SqliteSpindleService {
                         else {
                             continue;
                         };
-                        if (claimed_days - gap_days).abs() <= 1.0 {
+                        if !elapsed_claim_conflicts(claimed_days, gap_days) {
                             continue;
                         }
                         issues.push(ConsistencyIssue {
@@ -2996,17 +2996,25 @@ fn elapsed_days_after_death(text: &str, aliases: &[String]) -> Option<(String, f
     let lower = text.to_ascii_lowercase();
     for alias in aliases {
         let alias = alias.to_ascii_lowercase();
+        if alias.is_empty() {
+            continue;
+        }
         let mut from = 0;
         while let Some(relative) = lower[from..].find(&alias) {
             let position = from + relative;
             let after_start = position + alias.len();
-            let mut after_end = (after_start + 160).min(lower.len());
-            while after_end < lower.len() && !lower.is_char_boundary(after_end) {
-                after_end += 1;
+            if !word_boundary_at(&lower, position, after_start) {
+                from = after_start;
+                continue;
             }
-            let after = &lower[after_start..after_end];
+            let clause_end = clause_end_after(&lower, after_start);
+            let after = &lower[after_start..clause_end];
             for marker in ["had been dead", "had been in the ground", "had been buried"] {
                 if let Some(marker_at) = after.find(marker) {
+                    let between = after[..marker_at].trim();
+                    if !matches!(between, "" | "'s" | "’s" | "body" | "corpse" | "remains") {
+                        continue;
+                    }
                     let phrase = after[marker_at + marker.len()..]
                         .trim_start()
                         .strip_prefix("for ")
@@ -3020,12 +3028,11 @@ fn elapsed_days_after_death(text: &str, aliases: &[String]) -> Option<(String, f
                     }
                 }
             }
-            let mut before_start = position.saturating_sub(80);
-            while before_start > 0 && !lower.is_char_boundary(before_start) {
-                before_start -= 1;
-            }
+            let before_start = position.saturating_sub(80);
             let before = &lower[before_start..position];
-            if let Some(marker_at) = before.rfind("had passed since") {
+            if let Some(marker_at) = before.rfind("had passed since")
+                && death_predicate_in(after)
+            {
                 let phrase = before[..marker_at]
                     .rsplit(['.', ',', ';', '\n'])
                     .next()
@@ -3035,10 +3042,55 @@ fn elapsed_days_after_death(text: &str, aliases: &[String]) -> Option<(String, f
                     return Some((phrase.to_string(), days));
                 }
             }
-            from = position + alias.len();
+            from = after_start;
         }
     }
     None
+}
+
+fn word_boundary_at(text: &str, start: usize, end: usize) -> bool {
+    let prev = text[..start].chars().next_back();
+    let next = text[end..].chars().next();
+    !prev.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        && !next.is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
+fn clause_end_after(text: &str, start: usize) -> usize {
+    let tail = &text[start..];
+    let punctuation = tail
+        .char_indices()
+        .find(|(_, c)| matches!(c, '.' | ',' | ';' | '!' | '?' | '\n'))
+        .map(|(index, _)| index);
+    let conjunction = tail
+        .char_indices()
+        .find(|(index, _)| tail[*index..].starts_with(" and "))
+        .map(|(index, _)| index);
+    start
+        + punctuation
+            .into_iter()
+            .chain(conjunction)
+            .min()
+            .unwrap_or(tail.len())
+}
+
+fn death_predicate_in(text: &str) -> bool {
+    let mut text = text.trim_start();
+    for auxiliary in ["had ", "has ", "was ", "were ", "is ", "been "] {
+        if let Some(rest) = text.strip_prefix(auxiliary) {
+            text = rest.trim_start();
+            break;
+        }
+    }
+    if text.starts_with("passed away") {
+        return true;
+    }
+    let Some(first) = text.split_whitespace().next() else {
+        return false;
+    };
+    matches!(
+        first.trim_matches(|c: char| !c.is_alphabetic()),
+        "died" | "dead" | "drowned" | "buried" | "perished"
+    )
 }
 
 fn parse_elapsed_days(phrase: &str) -> Option<f64> {
@@ -3056,54 +3108,83 @@ fn parse_elapsed_days(phrase: &str) -> Option<f64> {
         .split(|c: char| !c.is_alphanumeric() && c != '-')
         .filter(|word| !word.is_empty())
         .collect();
-    let mut number: Option<f64> = None;
-    let mut unit_days: Option<f64> = None;
-    for word in words {
-        let value = match word {
-            "a" | "an" | "one" | "single" => Some(1.0),
-            "two" => Some(2.0),
-            "three" => Some(3.0),
-            "four" => Some(4.0),
-            "five" => Some(5.0),
-            "six" => Some(6.0),
-            "seven" => Some(7.0),
-            "eight" => Some(8.0),
-            "nine" => Some(9.0),
-            "ten" => Some(10.0),
-            "eleven" => Some(11.0),
-            "twelve" => Some(12.0),
-            "thirteen" => Some(13.0),
-            "fourteen" => Some(14.0),
-            "fifteen" => Some(15.0),
-            "sixteen" => Some(16.0),
-            "seventeen" => Some(17.0),
-            "eighteen" => Some(18.0),
-            "nineteen" => Some(19.0),
-            "twenty" => Some(20.0),
-            "thirty" => Some(30.0),
-            "forty" => Some(40.0),
-            "fifty" => Some(50.0),
-            "sixty" => Some(60.0),
-            "seventy" => Some(70.0),
-            "eighty" => Some(80.0),
-            "ninety" => Some(90.0),
-            _ => word.parse::<f64>().ok(),
-        };
-        if value.is_some() {
-            number = value;
-        }
-        unit_days = match word {
-            "day" | "days" => Some(1.0),
-            "week" | "weeks" => Some(7.0),
-            "month" | "months" => Some(30.0),
-            "year" | "years" => Some(365.0),
-            _ => unit_days,
-        };
-        if unit_days.is_some() {
-            break;
+    let unit_at = words.iter().position(|word| {
+        matches!(
+            *word,
+            "day" | "days" | "week" | "weeks" | "month" | "months" | "year" | "years"
+        )
+    })?;
+    let number = if lower.contains("single ") {
+        1.0
+    } else {
+        parse_elapsed_number(&words[..unit_at])?
+    };
+    let unit_days = match words[unit_at] {
+        "day" | "days" => 1.0,
+        "week" | "weeks" => 7.0,
+        "month" | "months" => 30.0,
+        _ => 365.0,
+    };
+    Some(number * unit_days)
+}
+
+fn elapsed_claim_conflicts(claimed_days: f64, clock_gap_days: f64) -> bool {
+    (claimed_days - clock_gap_days).abs() > 1.0
+}
+
+fn parse_elapsed_number(words: &[&str]) -> Option<f64> {
+    let mut total = 0.0;
+    let mut current = 0.0;
+    let mut saw_number = false;
+    for token in words {
+        for word in token.split('-') {
+            let value = match word {
+                "a" | "an" | "one" | "single" => 1.0,
+                "two" => 2.0,
+                "three" => 3.0,
+                "four" => 4.0,
+                "five" => 5.0,
+                "six" => 6.0,
+                "seven" => 7.0,
+                "eight" => 8.0,
+                "nine" => 9.0,
+                "ten" => 10.0,
+                "eleven" => 11.0,
+                "twelve" => 12.0,
+                "thirteen" => 13.0,
+                "fourteen" => 14.0,
+                "fifteen" => 15.0,
+                "sixteen" => 16.0,
+                "seventeen" => 17.0,
+                "eighteen" => 18.0,
+                "nineteen" => 19.0,
+                "twenty" => 20.0,
+                "thirty" => 30.0,
+                "forty" => 40.0,
+                "fifty" => 50.0,
+                "sixty" => 60.0,
+                "seventy" => 70.0,
+                "eighty" => 80.0,
+                "ninety" => 90.0,
+                "hundred" => {
+                    current = if current == 0.0 { 1.0 } else { current } * 100.0;
+                    saw_number = true;
+                    continue;
+                }
+                "thousand" => {
+                    total += if current == 0.0 { 1.0 } else { current } * 1_000.0;
+                    current = 0.0;
+                    saw_number = true;
+                    continue;
+                }
+                "and" => continue,
+                _ => word.parse::<f64>().ok()?,
+            };
+            current += value;
+            saw_number = true;
         }
     }
-    Some(number? * unit_days?)
+    saw_number.then_some(total + current)
 }
 
 #[cfg(test)]
@@ -3116,6 +3197,12 @@ mod elapsed_phrase_tests {
         assert_eq!(parse_elapsed_days("a single day"), Some(1.0));
         assert_eq!(parse_elapsed_days("three weeks"), Some(21.0));
         assert_eq!(parse_elapsed_days("only that morning"), Some(0.5));
+        assert_eq!(parse_elapsed_days("twenty-one days"), Some(21.0));
+        assert_eq!(parse_elapsed_days("one hundred days"), Some(100.0));
+        assert_eq!(
+            parse_elapsed_days("one hundred and twenty days"),
+            Some(120.0)
+        );
     }
 
     #[test]
@@ -3128,6 +3215,29 @@ mod elapsed_phrase_tests {
         assert_eq!(
             elapsed_days_after_death("Three weeks had passed since Mira drowned.", &aliases),
             Some(("three weeks".to_string(), 21.0))
+        );
+    }
+
+    #[test]
+    fn does_not_bind_unrelated_or_other_subject_events_to_the_death() {
+        let aliases = vec!["Mira Vale".to_string(), "Mira".to_string()];
+        assert_eq!(
+            elapsed_days_after_death("Three weeks had passed since Mira bought a coat.", &aliases),
+            None
+        );
+        assert_eq!(
+            elapsed_days_after_death(
+                "Mira was remembered. Oren had been buried four days.",
+                &aliases
+            ),
+            None
+        );
+        assert_eq!(
+            elapsed_days_after_death(
+                "Three weeks had passed since Mira said Oren drowned.",
+                &aliases
+            ),
+            None
         );
     }
 }
