@@ -98,6 +98,7 @@ impl SqliteSpindleService {
                     message: issue.message,
                     entity_ids: issue.entity_ids,
                     suggested_action: issue.suggested_action,
+                    evidence: None,
                 });
             }
         }
@@ -141,6 +142,7 @@ impl SqliteSpindleService {
                         message: finding.message,
                         entity_ids: vec![scene.id.clone()],
                         suggested_action: Some(finding.suggested_action),
+                        evidence: None,
                     });
                 }
                 chapter_priors
@@ -169,6 +171,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "Draft the scene fully, or delete it if it is abandoned.".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -223,6 +226,7 @@ impl SqliteSpindleService {
                         message,
                         entity_ids: vec![promise.id.clone()],
                         suggested_action,
+                        evidence: None,
                     });
                 }
             }
@@ -260,6 +264,7 @@ impl SqliteSpindleService {
                     suggested_action: Some(
                         "create_pacing_config before using arc pacing checks".to_string(),
                     ),
+                    evidence: None,
                 });
             }
 
@@ -274,6 +279,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "create_character_arc should seed a pacing tracker".to_string(),
                         ),
+                        evidence: None,
                     });
                     continue;
                 };
@@ -291,6 +297,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "slow the arc or rebalance pacing constraints".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
 
@@ -306,6 +313,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "recalculate progress or mark the arc complete".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
 
@@ -321,6 +329,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "accelerate the arc or update pacing constraints".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
 
@@ -336,6 +345,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "consider cooling the arc before the next milestone".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -359,6 +369,7 @@ impl SqliteSpindleService {
                         message: format!("book {} has no pacing curve", missing_book),
                         entity_ids: vec![],
                         suggested_action: Some("create_pacing_curve for this book".to_string()),
+                        evidence: None,
                     });
                 }
             }
@@ -386,6 +397,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "fill the missing scene order or renumber the chapter".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
                 previous = Some(scene);
@@ -408,6 +420,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "save_summary after the chapter draft stabilizes".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -450,6 +463,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "merge duplicate events or differentiate their placement".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
                 previous_event = Some(event);
@@ -491,6 +505,7 @@ impl SqliteSpindleService {
                             "verify source and target events are oriented correctly for time travel"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -546,6 +561,7 @@ impl SqliteSpindleService {
                             "set temporal_mode to 'flashback'/'concurrent' or correct the scene's day_index"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
                 if !is_out_of_line {
@@ -657,6 +673,7 @@ impl SqliteSpindleService {
                                 "correct the elapsed-time phrase or the scene clock so the claimed gap matches the recorded timeline"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -842,6 +859,7 @@ impl SqliteSpindleService {
                                 "record a change_reason for the jump or stage it across intermediate bands"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                     prev = Some(state);
@@ -918,6 +936,7 @@ impl SqliteSpindleService {
                             suggested_action: Some(
                                 "reconcile the prices or correct the denomination used".to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1058,6 +1077,7 @@ impl SqliteSpindleService {
                                         "confirm the character can afford this, or update their tracked amount"
                                             .to_string(),
                                     ),
+                                    evidence: None,
                                 });
                                 break;
                             }
@@ -1075,6 +1095,7 @@ impl SqliteSpindleService {
                                 "name the spender or remove the price ambiguity before treating this as a contradiction"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1195,6 +1216,7 @@ impl SqliteSpindleService {
                                     "move the reveal, or record the character learning this earlier"
                                         .to_string(),
                                 ),
+                                evidence: None,
                             });
                             continue;
                         }
@@ -1210,6 +1232,7 @@ impl SqliteSpindleService {
                                 "move the reveal, or record the character learning this earlier"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1269,6 +1292,7 @@ impl SqliteSpindleService {
                             suggested_action: Some(
                                 "raise the stakes or add a turn; a sustained intensity drop reads as a sagging middle".to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1303,6 +1327,7 @@ impl SqliteSpindleService {
                                 "revise scene tone or update the reader contract boundary"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 } else {
@@ -1314,6 +1339,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "save_scene_draft with a tone value for continuity review".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1334,6 +1360,7 @@ impl SqliteSpindleService {
                     suggested_action: Some(
                         "write scenes before expecting rule compliance checks".to_string(),
                     ),
+                    evidence: None,
                 });
             }
 
@@ -1365,6 +1392,7 @@ impl SqliteSpindleService {
                             suggested_action: Some(
                                 "add or restore the establishing scene for this rule".to_string(),
                             ),
+                            evidence: None,
                         });
                         continue;
                     }
@@ -1385,6 +1413,7 @@ impl SqliteSpindleService {
                                 "revise the establishing scenes so the rule is shown on page"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1435,6 +1464,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "add example_lines so dialogue checks have a baseline".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
 
@@ -1454,6 +1484,7 @@ impl SqliteSpindleService {
                             "expand the emotional profile before relying on consistency checks"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
 
@@ -1485,6 +1516,7 @@ impl SqliteSpindleService {
                             ),
                             entity_ids: vec![current.id.clone()],
                             suggested_action: Some("consolidate duplicate state commits for this scene".to_string()),
+                            evidence: None,
                         });
                     }
                 }
@@ -1510,6 +1542,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "rewrite scene purposes as concrete choices or pressures".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1534,6 +1567,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "add more failed attempts before resolution".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
                 if conflict.resolution_summary.is_some() && steps == 0 {
@@ -1548,6 +1582,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "record the failed attempts or simplify the conflict model".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1579,6 +1614,7 @@ impl SqliteSpindleService {
                             "show the consequence on page or mark it intentionally deferred"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1596,6 +1632,7 @@ impl SqliteSpindleService {
                         ),
                         entity_ids: vec![scene.id.clone()],
                         suggested_action: Some("review scene tags and boundaries before finalizing".to_string()),
+                        evidence: None,
                     });
                 }
             }
@@ -1619,6 +1656,7 @@ impl SqliteSpindleService {
                     "restore or rescope the related scenes before running contradiction checks"
                         .to_string(),
                 ),
+                evidence: None,
             });
         }
 
@@ -1668,6 +1706,7 @@ impl SqliteSpindleService {
                                 "move the expiry later or revise the learned-at placement"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1711,6 +1750,7 @@ impl SqliteSpindleService {
                             "set an expiry placement or clarify why the knowledge remains valid"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1843,6 +1883,7 @@ impl SqliteSpindleService {
                     suggested_action: Some(
                         "supersede the outdated fact (register_canonical_fact with supersedes_fact_id) or set distinct validity windows".to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }
@@ -1866,6 +1907,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "Link this claim to a parent note or source".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1914,6 +1956,7 @@ impl SqliteSpindleService {
                             ),
                             entity_ids: vec![scene.id.clone()],
                             suggested_action: Some("Draft or save the scene with research references".to_string()),
+                            evidence: None,
                         });
                     }
                 }
@@ -1979,6 +2022,7 @@ impl SqliteSpindleService {
                                     "thin the motif in this chapter or raise max_uses_per_chapter"
                                         .to_string(),
                                 ),
+                                evidence: None,
                             });
                         }
                     }
@@ -1998,6 +2042,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "annotate a scene with this motif or archive it".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -2058,6 +2103,7 @@ impl SqliteSpindleService {
                                 "annotate a scene in that chapter with this theme or move the placement"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -2143,6 +2189,7 @@ impl SqliteSpindleService {
                                 "annotate a scene in that chapter with a connected conflict/theme, or revise the convergence point"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -2220,6 +2267,7 @@ impl SqliteSpindleService {
                                  milestone lands, or to move its placement"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     } else {
                         // max_chapter == milestone_chapter.
@@ -2236,6 +2284,7 @@ impl SqliteSpindleService {
                                  via update_arc_milestone"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -2299,6 +2348,7 @@ impl SqliteSpindleService {
                             "demonstrate the earlier escalation stage first, or correct the demonstration markers"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -2435,6 +2485,7 @@ impl SqliteSpindleService {
                                         scene.id.clone(),
                                     ],
                                     suggested_action: Some(suggested_action("dialogue")),
+                                    evidence: None,
                                 });
                                 continue;
                             }
@@ -2476,6 +2527,7 @@ impl SqliteSpindleService {
                                     message: finding.message,
                                     entity_ids: finding.entity_ids,
                                     suggested_action: Some(suggested_action("narration")),
+                                    evidence: None,
                                 });
                             }
                         }
@@ -2539,6 +2591,7 @@ impl SqliteSpindleService {
                                         "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
                                             .to_string(),
                                     ),
+                                    evidence: None,
                                 });
                             }
                         }

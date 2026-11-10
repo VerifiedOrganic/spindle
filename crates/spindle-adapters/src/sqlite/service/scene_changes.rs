@@ -148,6 +148,7 @@ impl SqliteSpindleService {
                             suggested_action: Some(
                                 "supersede the outdated fact (supersedes_fact_id) or set distinct validity windows".to_string(),
                             ),
+                            evidence: None,
                         })
                         .collect();
             let retcons = self.scan_retcon_findings(&project_id, &scene).await?;

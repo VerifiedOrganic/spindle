@@ -749,6 +749,7 @@ pub(crate) fn divergence_observation_to_consistency_issue(
                  re-saving the scene / re-pushing with push_chapter_to_file"
                     .to_string(),
             ),
+            evidence: None,
         },
         DivergenceKind::SourceMissing => ConsistencyIssue {
             severity: "warning".to_string(),
@@ -759,6 +760,7 @@ pub(crate) fn divergence_observation_to_consistency_issue(
             ),
             entity_ids: vec![scene_id.to_string()],
             suggested_action: Some("re-link the scene to its current file location".to_string()),
+            evidence: None,
         },
         DivergenceKind::Unknown => ConsistencyIssue {
             severity: "warning".to_string(),
@@ -772,6 +774,7 @@ pub(crate) fn divergence_observation_to_consistency_issue(
                 "run backfill_scene_source_offsets and relink the scene if offsets remain unresolved"
                     .to_string(),
             ),
+            evidence: None,
         },
     }
 }

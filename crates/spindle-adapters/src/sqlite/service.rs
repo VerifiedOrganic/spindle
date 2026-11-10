@@ -1996,6 +1996,7 @@ fn scan_temporal_findings(
                 }
                 .to_string(),
             ),
+            evidence: None,
         })
         .collect()
 }
@@ -2254,6 +2255,7 @@ fn cached_validator_issues(
                 suggested_action: Some(
                     "revise scene prose or supporting canon records".to_string(),
                 ),
+                evidence: None,
             });
         }
     }
@@ -3898,6 +3900,7 @@ fn payoff_skip_issue(err: &anyhow::Error) -> spindle_core::models::ConsistencyIs
             "configure a review model route cleared for the batch rating, then re-run this check"
                 .to_string(),
         ),
+        evidence: None,
     }
 }
 
@@ -3925,6 +3928,7 @@ fn secret_leak_skip_issue(err: &anyhow::Error) -> spindle_core::models::Consiste
             "configure a review model route cleared for the scene rating, then re-run this check"
                 .to_string(),
         ),
+        evidence: None,
     }
 }
 
@@ -3962,6 +3966,7 @@ fn temporal_deep_skip_issue(err: &anyhow::Error) -> spindle_core::models::Consis
             "configure a review model route cleared for the scene rating, then re-run this check"
                 .to_string(),
         ),
+        evidence: None,
     }
 }
 
@@ -3999,6 +4004,7 @@ fn world_rule_deep_skip_issue(err: &anyhow::Error) -> spindle_core::models::Cons
             "configure a review model route cleared for the scene rating, then re-run this check"
                 .to_string(),
         ),
+        evidence: None,
     }
 }
 
@@ -4310,6 +4316,7 @@ fn scene_purpose_skip_issue(err: &anyhow::Error) -> spindle_core::models::Consis
             "configure a review model route cleared for the scene rating, then re-run this check"
                 .to_string(),
         ),
+        evidence: None,
     }
 }
 
@@ -4606,6 +4613,7 @@ fn retcon_finding_to_consistency_issue(
             suggested_action: Some(
                 "anchor the knowledge with future_knowledge or move the reveal later".to_string(),
             ),
+            evidence: None,
         },
         RetconFinding::MissingFutureKnowledgeAnchor {
             intervention_id,
@@ -4617,6 +4625,7 @@ fn retcon_finding_to_consistency_issue(
             message: message.clone(),
             entity_ids: vec![intervention_id.clone()],
             suggested_action: Some("add the missing future_knowledge anchor".to_string()),
+            evidence: None,
         },
         RetconFinding::DeadCharacterAct {
             character_id,
@@ -4635,6 +4644,7 @@ fn retcon_finding_to_consistency_issue(
             suggested_action: Some(
                 "revise so the deceased character does not act, or update their status".to_string(),
             ),
+            evidence: None,
         },
         RetconFinding::PrematureKnowledge {
             character_id,
@@ -4650,6 +4660,7 @@ fn retcon_finding_to_consistency_issue(
                 "move the reveal, or record the character learning this earlier (record_knowledge)"
                     .to_string(),
             ),
+            evidence: None,
         },
     }
 }

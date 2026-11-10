@@ -9,6 +9,7 @@ pub mod model_output;
 pub mod models;
 pub mod planning;
 pub mod provenance;
+pub mod semantic_continuity;
 pub mod serial;
 pub mod style;
 pub mod subject;
