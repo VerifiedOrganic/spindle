@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- Project calendars now support optional leap years: proleptic Gregorian rules
+  (every 4 years, except every 100, except every 400) or a custom rule naming
+  the month that gains days and its cadence. Existing calendars default to
+  fixed-length years, and date/day-index conversion, durations, births,
+  timeline clocks, and ages use the leap-aware calendar consistently.
 - `find_entity` now labels only a full name or alias equal to the query as exact (case/diacritic-insensitive); forename/surname/alias-token owners rank above fuzzy FTS hits, all owners of an ambiguous name are returned, and description/semantic hits are never mislabelled exact.
 - `commit_character_state` accepts a typed `story_start` anchor with no scene for backstory deaths and other pre-opening state. The snapshot and dead-character detector treat that state as true from story start, and a scene-less chapter-one `life_status` fact does the same.
 
