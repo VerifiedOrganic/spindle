@@ -262,6 +262,7 @@ removal plan.
 
 ### Fixed
 
+- Continuity false alarms: passing death references ("since Maren drowned", "the late Bran", remembering/mourning) no longer count as post-mortem action, and canonical-fact drift warns only on positive contradictory evidence rather than a bare key mention.
 - Test fixtures now drop their temporary SQLite directories instead of calling
   `TempDir::keep()`, preventing multi-gigabyte temp-dir accumulation across
   workspace test runs.
