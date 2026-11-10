@@ -16,6 +16,8 @@
   database sidecars, the migration lock, and runtime files. Startup appends
   missing entries for existing workspaces without replacing author rules, so
   the migration lock no longer appears as an untracked book file.
+- `find_entity` now labels only a full name or alias equal to the query as exact (case/diacritic-insensitive); forename/surname/alias-token owners rank above fuzzy FTS hits, all owners of an ambiguous name are returned, and description/semantic hits are never mislabelled exact.
+- `commit_character_state` accepts a typed `story_start` anchor with no scene for backstory deaths and other pre-opening state. The snapshot and dead-character detector treat that state as true from story start, and a scene-less chapter-one `life_status` fact does the same.
 
 ## 0.3.0 — 2026-11-10
 

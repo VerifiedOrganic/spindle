@@ -679,7 +679,8 @@ async fn end_to_end_full_flow_against_sqlite() {
     let state = svc
         .commit_character_state(CommitCharacterStateInput {
             character_id: mara.character_id.clone(),
-            scene_id: scene1.scene_id.clone(),
+            scene_id: Some(scene1.scene_id.clone()),
+            anchor: None,
             changes: CharacterStatePatch {
                 emotional_state: std::collections::BTreeMap::new(),
                 goals: Some(vec!["hold the gate at all costs".into()]),
@@ -6085,7 +6086,8 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
 
     svc.commit_character_state(CommitCharacterStateInput {
         character_id: char_tired.character_id.clone(),
-        scene_id: scene1.scene_id.clone(),
+        scene_id: Some(scene1.scene_id.clone()),
+        anchor: None,
         changes: CharacterStatePatch {
             emotional_state: std::collections::BTreeMap::new(),
             goals: None,
@@ -6099,7 +6101,8 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
 
     svc.commit_character_state(CommitCharacterStateInput {
         character_id: char_slain.character_id.clone(),
-        scene_id: scene1.scene_id.clone(),
+        scene_id: Some(scene1.scene_id.clone()),
+        anchor: None,
         changes: CharacterStatePatch {
             emotional_state: std::collections::BTreeMap::new(),
             goals: None,
@@ -6197,7 +6200,8 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
     // and verify that scene 3 triggers an "error" severity finding that blocks under BlockErrors.
     svc.commit_character_state(CommitCharacterStateInput {
         character_id: char_slain.character_id.clone(),
-        scene_id: scene2.scene_id.clone(),
+        scene_id: Some(scene2.scene_id.clone()),
+        anchor: None,
         changes: CharacterStatePatch {
             emotional_state: std::collections::BTreeMap::new(),
             goals: None,
@@ -6344,7 +6348,8 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
         .unwrap();
     svc.commit_character_state(CommitCharacterStateInput {
         character_id: char_slain.character_id.clone(),
-        scene_id: restored.scene_id,
+        scene_id: Some(restored.scene_id),
+        anchor: None,
         changes: CharacterStatePatch {
             status: Some(vec!["alive".into()]),
             emotional_state: Default::default(),
@@ -6391,7 +6396,8 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
     .unwrap();
     svc.commit_character_state(CommitCharacterStateInput {
         character_id: char_slain.character_id.clone(),
-        scene_id: living.scene_id.clone(),
+        scene_id: Some(living.scene_id.clone()),
+        anchor: None,
         changes: CharacterStatePatch {
             status: Some(vec!["status:deceased".into()]),
             emotional_state: Default::default(),
@@ -6638,7 +6644,8 @@ mod claim_validation_lanes {
             .unwrap();
         svc.commit_character_state(CommitCharacterStateInput {
             character_id: sela.character_id.clone(),
-            scene_id: act.scene_id.clone(),
+            scene_id: Some(act.scene_id.clone()),
+            anchor: None,
             changes: CharacterStatePatch {
                 emotional_state: std::collections::BTreeMap::new(),
                 goals: None,
@@ -6691,6 +6698,252 @@ mod claim_validation_lanes {
                 && issue.entity_ids.contains(&quoted.scene_id)
                 && issue.message.contains("Sela Voss")
         }));
+    }
+
+    #[tokio::test]
+    async fn story_start_anchor_requires_exactly_one_placement() {
+        use spindle_core::models::{
+            CharacterStateAnchor, CharacterStatePatch, CommitCharacterStateInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "anchor-validation".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id = create_character_named(&svc, &project.project_id, "Ada Ward").await;
+        let changes = CharacterStatePatch {
+            emotional_state: std::collections::BTreeMap::new(),
+            goals: None,
+            status: Some(vec!["dead".into()]),
+            notes: None,
+            source_summary: None,
+        };
+        assert!(
+            svc.commit_character_state(CommitCharacterStateInput {
+                character_id: character_id.clone(),
+                scene_id: None,
+                anchor: None,
+                changes: changes.clone(),
+            })
+            .await
+            .is_err(),
+            "neither placement must fail closed"
+        );
+        assert!(
+            svc.commit_character_state(CommitCharacterStateInput {
+                character_id,
+                scene_id: Some("scene:missing".into()),
+                anchor: Some(CharacterStateAnchor::StoryStart),
+                changes,
+            })
+            .await
+            .is_err(),
+            "both placements must fail closed before any write"
+        );
+    }
+
+    #[tokio::test]
+    async fn story_start_patch_does_not_merge_scene_one_state_backwards() {
+        use spindle_core::models::{
+            CharacterStateAnchor, CharacterStatePatch, CommitCharacterStateInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "anchor-cutoff".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "p".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id = create_character_named(&svc, &project.project_id, "Ada Ward").await;
+        let scene_one =
+            save_scene(&svc, &project.project_id, 1, "Ada Ward crossed the yard.").await;
+        let scene_state = svc
+            .commit_character_state(CommitCharacterStateInput {
+                character_id: character_id.clone(),
+                scene_id: Some(scene_one),
+                anchor: None,
+                changes: CharacterStatePatch {
+                    emotional_state: std::collections::BTreeMap::new(),
+                    goals: Some(vec!["scene-one goal".into()]),
+                    status: Some(vec!["dead".into()]),
+                    notes: Some(vec!["scene-one note".into()]),
+                    source_summary: None,
+                },
+            })
+            .await
+            .unwrap();
+        let scene_state = svc
+            .repository()
+            .get_character_state_by_id(&scene_state.state_id)
+            .await
+            .unwrap();
+        assert!(scene_state.status.iter().any(|status| status == "dead"));
+
+        let anchor = svc
+            .commit_character_state(CommitCharacterStateInput {
+                character_id,
+                scene_id: None,
+                anchor: Some(CharacterStateAnchor::StoryStart),
+                changes: CharacterStatePatch {
+                    emotional_state: std::collections::BTreeMap::new(),
+                    goals: None,
+                    status: None,
+                    notes: Some(vec!["backstory note".into()]),
+                    source_summary: None,
+                },
+            })
+            .await
+            .unwrap();
+        let anchor_state = svc
+            .repository()
+            .get_character_state_by_id(&anchor.state_id)
+            .await
+            .unwrap();
+        assert!(
+            !anchor_state.status.iter().any(|status| status == "dead"),
+            "scene-1 death must not merge backwards: {anchor_state:?}"
+        );
+        assert!(
+            anchor_state.goals.is_empty(),
+            "scene-1 goals must not merge backwards: {anchor_state:?}"
+        );
+        assert_eq!(anchor_state.notes, vec!["backstory note".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn story_start_anchor_sets_dead_state_before_first_scene() {
+        use spindle_core::models::{
+            CharacterStateAnchor, CharacterStatePatch, CommitCharacterStateInput,
+            GetCharacterSnapshotInput,
+        };
+
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "story-start-death".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "the dead stay dead".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id = create_character_named(&svc, &project.project_id, "Ada Ward").await;
+        svc.commit_character_state(CommitCharacterStateInput {
+            character_id: character_id.clone(),
+            scene_id: None,
+            anchor: Some(CharacterStateAnchor::StoryStart),
+            changes: CharacterStatePatch {
+                emotional_state: std::collections::BTreeMap::new(),
+                goals: None,
+                status: Some(vec!["dead".into()]),
+                notes: None,
+                source_summary: Some("died before the story opens".into()),
+            },
+        })
+        .await
+        .unwrap();
+
+        let snapshot = svc
+            .get_character_snapshot(GetCharacterSnapshotInput {
+                project_id: project.project_id.clone(),
+                character_id: character_id.clone(),
+                branch_id: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            snapshot
+                .current_state
+                .as_ref()
+                .is_some_and(|state| state.status.iter().any(|status| status == "dead")),
+            "story-start state must be visible in the first snapshot: {:?}",
+            snapshot.current_state
+        );
+
+        save_scene(&svc, &project.project_id, 1, "Ada Ward opened the door.").await;
+        let issues = run_checks(&svc, &project.project_id, "retcon_reachability").await;
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.message.contains("Ada Ward") && issue.message.contains("dead")),
+            "story-start death must flag an action in the first scene: {issues:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scene_less_chapter_one_life_status_fact_flags_first_scene_action() {
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "planned-story-start-death".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "the dead stay dead".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id = create_character_named(&svc, &project.project_id, "Ada Ward").await;
+        svc.register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project.project_id.clone(),
+            scene_id: None,
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: Some("life_status".into()),
+            key: Some("Ada Ward:life_status".into()),
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(character_id.clone()),
+            predicate: Some("life_status".into()),
+            value_kind: Some("text".into()),
+            value_text: Some("dead".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: None,
+        })
+        .await
+        .unwrap();
+        save_scene(&svc, &project.project_id, 1, "Ada Ward opened the door.").await;
+        let issues = run_checks(&svc, &project.project_id, "retcon_reachability").await;
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.message.contains("Ada Ward") && issue.message.contains("dead")),
+            "scene-less chapter-one life_status must count from story start: {issues:?}"
+        );
     }
 
     async fn run_checks(

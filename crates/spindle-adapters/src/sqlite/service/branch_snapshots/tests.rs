@@ -1325,7 +1325,8 @@ async fn commit_character_state_and_record_knowledge_target_active_branch_and_me
     main_emotions.insert("vigilance".to_string(), serde_json::json!(0.8));
     svc.commit_character_state(CommitCharacterStateInput {
         character_id: hero.character_id.clone(),
-        scene_id: main_scene.scene_id.clone(),
+        scene_id: Some(main_scene.scene_id.clone()),
+        anchor: None,
         changes: CharacterStatePatch {
             emotional_state: main_emotions,
             goals: Some(vec!["patrol the Citadel".to_string()]),
@@ -1376,7 +1377,8 @@ async fn commit_character_state_and_record_knowledge_target_active_branch_and_me
     let child_commit = svc
         .commit_character_state(CommitCharacterStateInput {
             character_id: hero.character_id.clone(),
-            scene_id: child_scene.scene_id.clone(),
+            scene_id: Some(child_scene.scene_id.clone()),
+            anchor: None,
             changes: CharacterStatePatch {
                 emotional_state: std::collections::BTreeMap::new(),
                 goals: None,
