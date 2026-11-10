@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 (unreleased)
+
+### Fixed
+
+- `find_entity` now labels only a full name or alias equal to the query as exact (case/diacritic-insensitive); forename/surname/alias-token owners rank above fuzzy FTS hits, all owners of an ambiguous name are returned, and description/semantic hits are never mislabelled exact.
+- `commit_character_state` accepts a typed `story_start` anchor with no scene for backstory deaths and other pre-opening state. The snapshot and dead-character detector treat that state as true from story start, and a scene-less chapter-one `life_status` fact does the same.
+
 ## 0.3.0 — 2026-11-10
 
 Spindle 0.3.0 is the compatibility release for the consolidated tool surface.

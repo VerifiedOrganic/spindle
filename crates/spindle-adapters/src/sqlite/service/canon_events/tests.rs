@@ -2373,7 +2373,8 @@ async fn backfill_and_shadow_parity_across_nested_branches_ancestor_edits_tombst
     .unwrap();
     svc.commit_character_state(CommitCharacterStateInput {
         character_id: veyra_id.clone(),
-        scene_id: main_scene_id.clone(),
+        scene_id: Some(main_scene_id.clone()),
+        anchor: None,
         changes: CharacterStatePatch {
             emotional_state: [("courage".to_string(), serde_json::json!(0.9))]
                 .into_iter()
@@ -3484,7 +3485,8 @@ async fn dual_write_character_state_emits_compatibility_snapshot_for_canon_read(
     emotional_state.insert("fear".to_string(), serde_json::json!("tight"));
     svc.commit_character_state(CommitCharacterStateInput {
         character_id: character_id.clone(),
-        scene_id: scene_id.clone(),
+        scene_id: Some(scene_id.clone()),
+        anchor: None,
         changes: CharacterStatePatch {
             emotional_state,
             goals: Some(vec!["escape the docks".into()]),

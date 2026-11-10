@@ -622,7 +622,12 @@ impl SqliteSpindleService {
                     }
                     let fact_position = (fact.book_number, fact.chapter_number);
                     let scene_chapter = (scene.book_number, scene.chapter_number);
-                    if fact_position >= scene_chapter {
+                    // A scene-less chapter-1 life_status fact is a story-start /
+                    // backstory fact. It applies to the opening scene too.
+                    let story_start_fact = fact.scene_id.is_none()
+                        && fact.book_number == 1
+                        && fact.chapter_number == 1;
+                    if fact_position >= scene_chapter && !story_start_fact {
                         return None;
                     }
                     Some(((fact.book_number, fact.chapter_number, 0), value))
