@@ -643,7 +643,7 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         ),
         tool::<CommitCharacterStateInput, CommitCharacterStateOutput>(
             "commit_character_state",
-            "Append a character state snapshot from a saved scene",
+            "Append a character state snapshot from a saved scene or a story-start/backstory anchor",
         ),
         tool::<UpdateRelationshipInput, UpdateRelationshipOutput>(
             "update_relationship",

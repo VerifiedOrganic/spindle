@@ -51,7 +51,7 @@ Prevents homogeneous dialogue across the cast:
 Capture moral framework, risk tolerance, stress response (`fight/flight/freeze/fawn`), specific physical capabilities/injuries, and per-character content boundaries in `summary` or as typed facts via `register_canonical_fact`.
 
 ### 4. Initial Character State (`initial_state` / `commit_character_state`)
-Seed baseline `emotional_state`, immediate `goals`, `status` tags, `notes`, and `source_summary` so `get_scene_context` has a valid pre-scene state from Scene 1 onward.
+Seed baseline `emotional_state`, immediate `goals`, `status` tags, `notes`, and `source_summary` so `get_scene_context` has a valid pre-scene state from Scene 1 onward. For a backstory death or other state that predates the opening scene, call `commit_character_state` with `anchor: "story_start"` and no `scene_id`.
 
 ## Step 3: Relationships and Character Arcs
 

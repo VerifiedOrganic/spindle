@@ -4161,12 +4161,30 @@ pub struct RestoreSceneVersionOutput {
     pub status: String,
 }
 
+/// Where a character-state snapshot is anchored when it is not tied to a
+/// saved scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CharacterStateAnchor {
+    /// The state is true before the first scene: backstory, a death before
+    /// page one, or another story-start condition. Stored at placement
+    /// `(book 1, chapter 1, scene_order 0)` with no scene id.
+    #[serde(alias = "backstory", alias = "before_first_scene")]
+    StoryStart,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CommitCharacterStateInput {
     /// Record id returned by create_character (e.g. "character:abc123")
     pub character_id: String,
-    /// Record id returned by save_scene_draft (e.g. "scene:abc123")
-    pub scene_id: String,
+    /// Record id returned by save_scene_draft (e.g. "scene:abc123").
+    /// Omit when `anchor` is supplied.
+    #[serde(default)]
+    pub scene_id: Option<String>,
+    /// Story-start/backstory anchor for state that predates the first scene.
+    /// Exactly one of `scene_id` or `anchor` must be supplied.
+    #[serde(default)]
+    pub anchor: Option<CharacterStateAnchor>,
     pub changes: CharacterStatePatch,
 }
 
@@ -9258,6 +9276,64 @@ pub struct AuthoringPrepareChapterDetails {
 
 pub fn normalize_name(input: &str) -> String {
     input.trim().to_lowercase()
+}
+
+/// Normalize a freeform entity lookup for case- and diacritic-insensitive
+/// comparison. Collapses whitespace but preserves punctuation inside a name.
+pub fn normalize_entity_lookup(input: &str) -> String {
+    let mut folded = String::new();
+    for ch in input.chars().flat_map(char::to_lowercase) {
+        // Combining marks left behind by lowercasing/decomposition are
+        // dropped; the precomposed Latin characters are folded below.
+        if matches!(
+            ch,
+            '\u{0300}'..='\u{036f}'
+                | '\u{1ab0}'..='\u{1aff}'
+                | '\u{1dc0}'..='\u{1dff}'
+                | '\u{20d0}'..='\u{20ff}'
+                | '\u{fe20}'..='\u{fe2f}'
+        ) {
+            continue;
+        }
+        match ch {
+            'a' | 'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => folded.push('a'),
+            'c' | 'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => folded.push('c'),
+            'd' | 'ď' | 'đ' | 'ð' => folded.push('d'),
+            'e' | 'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => folded.push('e'),
+            'g' | 'ĝ' | 'ğ' | 'ġ' | 'ģ' => folded.push('g'),
+            'h' | 'ĥ' | 'ħ' => folded.push('h'),
+            'i' | 'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => folded.push('i'),
+            'j' | 'ĵ' => folded.push('j'),
+            'k' | 'ķ' => folded.push('k'),
+            'l' | 'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => folded.push('l'),
+            'n' | 'ñ' | 'ń' | 'ņ' | 'ň' => folded.push('n'),
+            'o' | 'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => folded.push('o'),
+            'r' | 'ŕ' | 'ŗ' | 'ř' => folded.push('r'),
+            's' | 'ś' | 'ŝ' | 'ş' | 'š' | 'ș' => folded.push('s'),
+            't' | 'ţ' | 'ť' | 'ŧ' | 'ț' => folded.push('t'),
+            'u' | 'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => {
+                folded.push('u')
+            }
+            'w' | 'ŵ' => folded.push('w'),
+            'y' | 'ý' | 'ÿ' | 'ŷ' => folded.push('y'),
+            'z' | 'ź' | 'ż' | 'ž' => folded.push('z'),
+            'æ' => folded.push_str("ae"),
+            'œ' => folded.push_str("oe"),
+            'ß' => folded.push_str("ss"),
+            'þ' => folded.push_str("th"),
+            _ => folded.push(ch),
+        }
+    }
+    folded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Word tokens of an entity lookup/name, ignoring punctuation and whitespace.
+pub fn entity_lookup_tokens(input: &str) -> Vec<String> {
+    normalize_entity_lookup(input)
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Canonical `mode` values for an authoring run.

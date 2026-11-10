@@ -1,6 +1,7 @@
 use super::*;
 use crate::sqlite::repository::{legacy_claim, legacy_snapshot_claim};
 use spindle_core::canon::*;
+use spindle_core::models::CharacterStateAnchor;
 
 impl SqliteSpindleService {
     // =========================================================================
@@ -103,45 +104,86 @@ impl SqliteSpindleService {
         })
     }
 
-    /// Commit a character state snapshot at the moment of a scene.
+    /// Commit a character state snapshot at the moment of a scene, or at the
+    /// story-start/backstory anchor when no scene exists yet.
     /// Merges the input patch on top of the most recent character_state at
-    /// or before the scene, then appends a new state row + a progression
-    /// event recording the change.
+    /// or before the target placement, then appends a new state row + a
+    /// progression event recording the change.
     pub async fn commit_character_state(
         &self,
         input: CommitCharacterStateInput,
     ) -> Result<CommitCharacterStateOutput> {
         let character = self.repository.get_character(&input.character_id).await?;
-        let scene = self.repository.get_scene(&input.scene_id).await?;
-        if scene.project_id != character.project_id {
+        let scene = match (input.scene_id.as_deref(), input.anchor) {
+            (Some(scene_id), None) => Some(self.repository.get_scene(scene_id).await?),
+            (None, Some(CharacterStateAnchor::StoryStart)) => None,
+            (Some(_), Some(_)) => {
+                anyhow::bail!("commit_character_state accepts scene_id or anchor, not both")
+            }
+            (None, None) => {
+                anyhow::bail!("commit_character_state requires scene_id or anchor")
+            }
+        };
+        if let Some(scene) = &scene
+            && scene.project_id != character.project_id
+        {
             anyhow::bail!("scene and character must belong to the same project");
         }
+
+        let story_start = scene.is_none();
+        let scene_id = scene.as_ref().map(|scene| scene.id.clone());
+        let commit_branch_id = match &scene {
+            Some(scene) => scene.branch_id.clone(),
+            None => {
+                self.repository
+                    .active_branch_id_public(&character.project_id)
+                    .await?
+            }
+        };
+        let book_number = scene.as_ref().map_or(1, |scene| scene.book_number);
+        let chapter_number = scene.as_ref().map_or(1, |scene| scene.chapter_number);
+        let scene_order = scene.as_ref().map_or(0, |scene| scene.scene_order);
         let progression_delta = serde_json::to_value(&input.changes)?;
         let changes = input.changes;
         let mirror_statuses = changes.status.clone();
         let mirror_emotional_state = changes.emotional_state.clone();
-        let mirror_revision_id = format!(
-            "legacy:character_state:{}:{}:{}:{}:{}",
-            scene.id, character.id, scene.book_number, scene.chapter_number, scene.scene_order
-        );
+        let mirror_revision_id = match &scene_id {
+            Some(scene_id) => format!(
+                "legacy:character_state:{}:{}:{}:{}:{}",
+                scene_id, character.id, book_number, chapter_number, scene_order
+            ),
+            None => format!("legacy:character_state:story_start:{}", character.id),
+        };
         let mirror_placement = StoryPlacement {
-            book_number: scene.book_number,
-            chapter_number: scene.chapter_number,
-            scene_order: Some(scene.scene_order),
-            note: None,
+            book_number,
+            chapter_number,
+            scene_order: Some(scene_order),
+            note: story_start.then(|| "story start".to_string()),
         };
 
         let state_id = self
             .repository
             .with_transaction(move |tx| {
-                let target_branch_id =
-                    tx.resolve_effective_scene_branch(&character.project_id, &scene.branch_id)?;
+                let target_branch_id = match &scene_id {
+                    Some(_) => {
+                        tx.resolve_effective_scene_branch(&character.project_id, &commit_branch_id)?
+                    }
+                    None => commit_branch_id.clone(),
+                };
+                // Scene commits include the state at the scene itself. A
+                // story-start anchor must not absorb a later scene-1 snapshot,
+                // so its inclusive cutoff is exactly its own placement.
+                let cutoff_order = if story_start {
+                    scene_order
+                } else {
+                    scene_order + 1
+                };
                 let latest_state = tx.resolve_character_state_for_branch(
                     &target_branch_id,
                     &character.id,
-                    scene.book_number,
-                    scene.chapter_number,
-                    scene.scene_order + 1,
+                    book_number,
+                    chapter_number,
+                    cutoff_order,
                 )?;
                 let merged = CharacterStatePatch {
                     emotional_state: if changes.emotional_state.is_empty() {
@@ -173,17 +215,23 @@ impl SqliteSpindleService {
                     source_summary: changes
                         .source_summary
                         .or_else(|| latest_state.as_ref().and_then(|s| s.source_summary.clone()))
-                        .or_else(|| Some(format!("scene update for {}", character.name))),
+                        .or_else(|| {
+                            Some(if story_start {
+                                format!("story-start update for {}", character.name)
+                            } else {
+                                format!("scene update for {}", character.name)
+                            })
+                        }),
                 };
 
                 let state = tx.append_character_state(AppendCharacterStateParams {
                     project_id: character.project_id.clone(),
                     branch_id: target_branch_id.clone(),
                     character_id: character.id.clone(),
-                    scene_id: Some(scene.id.clone()),
-                    book_number: scene.book_number,
-                    chapter_number: scene.chapter_number,
-                    scene_order: scene.scene_order,
+                    scene_id: scene_id.clone(),
+                    book_number,
+                    chapter_number,
+                    scene_order,
                     patch: merged,
                 })?;
 
@@ -195,12 +243,12 @@ impl SqliteSpindleService {
                     overlay_id: None,
                     kind: "character_state_commit".to_string(),
                     delta_json: progression_delta,
-                    source_scene_id: Some(scene.id.clone()),
+                    source_scene_id: scene_id.clone(),
                     placement: Some(StoryPlacement {
-                        book_number: scene.book_number,
-                        chapter_number: scene.chapter_number,
-                        scene_order: Some(scene.scene_order),
-                        note: None,
+                        book_number,
+                        chapter_number,
+                        scene_order: Some(scene_order),
+                        note: story_start.then(|| "story start".to_string()),
                     }),
                     created_at: chrono::Utc::now(),
                 })?;
@@ -211,7 +259,7 @@ impl SqliteSpindleService {
                     &character.project_id,
                     &target_branch_id,
                     &mirror_revision_id,
-                    Some(&scene.id),
+                    scene_id.as_deref(),
                     &mirror_placement,
                     &character.id,
                     format!("legacy.character_state.snapshot.{}", state.id),
@@ -242,7 +290,7 @@ impl SqliteSpindleService {
                             &character.project_id,
                             &target_branch_id,
                             &mirror_revision_id,
-                            Some(&scene.id),
+                            scene_id.as_deref(),
                             &mirror_placement,
                             ClaimEntity::Resolved {
                                 id: character.id.clone(),
@@ -263,7 +311,7 @@ impl SqliteSpindleService {
                         &character.project_id,
                         &target_branch_id,
                         &mirror_revision_id,
-                        Some(&scene.id),
+                        scene_id.as_deref(),
                         &mirror_placement,
                         ClaimEntity::Resolved {
                             id: character.id.clone(),
@@ -282,7 +330,7 @@ impl SqliteSpindleService {
                     &character.project_id,
                     &target_branch_id,
                     &mirror_revision_id,
-                    Some(&scene.id),
+                    scene_id.as_deref(),
                     mirror_claims,
                 )?;
                 if mirrored.is_some() {
