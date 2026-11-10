@@ -6892,8 +6892,43 @@ mod claim_validation_lanes {
         );
     }
 
+    async fn register_dead_life_status(
+        svc: &SqliteSpindleService,
+        project_id: &str,
+        character_id: &str,
+        valid_from: Option<spindle_core::models::StoryPlacement>,
+    ) {
+        svc.register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project_id.to_string(),
+            scene_id: None,
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: Some("life_status".into()),
+            key: Some("Ada Ward:life_status".into()),
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(character_id.to_string()),
+            predicate: Some("life_status".into()),
+            value_kind: Some("text".into()),
+            value_text: Some("dead".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: None,
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
-    async fn scene_less_chapter_one_life_status_fact_flags_first_scene_action() {
+    async fn explicit_story_start_life_status_fact_flags_first_scene_action() {
         let (_tmp, svc) = fresh_service().await;
         let project = svc
             .create_project(CreateProjectInput {
@@ -6909,40 +6944,64 @@ mod claim_validation_lanes {
             .await
             .unwrap();
         let character_id = create_character_named(&svc, &project.project_id, "Ada Ward").await;
-        svc.register_canonical_fact(RegisterCanonicalFactInput {
-            project_id: project.project_id.clone(),
-            scene_id: None,
-            book_number: 1,
-            chapter_number: 1,
-            fact_type: Some("life_status".into()),
-            key: Some("Ada Ward:life_status".into()),
-            value: None,
-            context: None,
-            subject_table: Some("character".into()),
-            subject_id: Some(character_id.clone()),
-            predicate: Some("life_status".into()),
-            value_kind: Some("text".into()),
-            value_text: Some("dead".into()),
-            value_number: None,
-            value_unit: None,
-            value_json: None,
-            aliases: Vec::new(),
-            scope: None,
-            valid_from: None,
-            valid_until: None,
-            legacy_untyped: None,
-            supersedes_fact_id: None,
-            secrecy: None,
-        })
-        .await
-        .unwrap();
+        register_dead_life_status(
+            &svc,
+            &project.project_id,
+            &character_id,
+            Some(spindle_core::models::StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(0),
+                note: Some("pre-story death".into()),
+            }),
+        )
+        .await;
         save_scene(&svc, &project.project_id, 1, "Ada Ward opened the door.").await;
         let issues = run_checks(&svc, &project.project_id, "retcon_reachability").await;
         assert!(
             issues
                 .iter()
                 .any(|issue| issue.message.contains("Ada Ward") && issue.message.contains("dead")),
-            "scene-less chapter-one life_status must count from story start: {issues:?}"
+            "explicit (1,1,0) life_status must count from story start: {issues:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_chapter_one_life_status_fact_does_not_flag_opening_scene() {
+        let (_tmp, svc) = fresh_service().await;
+        let project = svc
+            .create_project(CreateProjectInput {
+                name: "ordinary-chapter-one-death".into(),
+                project_type: "novel".into(),
+                genre: "fantasy".into(),
+                reader_contract: ReaderContract {
+                    promise: "the dead stay dead".into(),
+                    style_notes: Vec::new(),
+                    boundaries: Vec::new(),
+                },
+            })
+            .await
+            .unwrap();
+        let character_id = create_character_named(&svc, &project.project_id, "Ada Ward").await;
+        register_dead_life_status(
+            &svc,
+            &project.project_id,
+            &character_id,
+            Some(spindle_core::models::StoryPlacement {
+                book_number: 1,
+                chapter_number: 1,
+                scene_order: Some(1),
+                note: None,
+            }),
+        )
+        .await;
+        save_scene(&svc, &project.project_id, 1, "Ada Ward opened the door.").await;
+        let issues = run_checks(&svc, &project.project_id, "retcon_reachability").await;
+        assert!(
+            !issues
+                .iter()
+                .any(|issue| issue.message.contains("Ada Ward") && issue.message.contains("dead")),
+            "an ordinary chapter-1 fact must not apply before its scene: {issues:?}"
         );
     }
 
