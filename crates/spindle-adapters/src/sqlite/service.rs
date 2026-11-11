@@ -2185,6 +2185,12 @@ fn phase_four_context_hashes(
                 serde_json::json!({ "style_directive": context.style_directive })
             }
         };
+        // Bump when the serialized finding/issue shape changes so old cache
+        // rows without structured entity ids are recomputed.
+        let payload = serde_json::json!({
+            "validator_output_version": 2,
+            "payload": payload,
+        });
         let serialized = serde_json::to_vec(&payload)?;
         hashes.insert(check.as_str(), generation_sha256_hex(&serialized));
     }

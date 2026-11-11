@@ -7273,6 +7273,7 @@ mod claim_validation_lanes {
         let (_tmp, svc) = fresh_service().await;
         let (project, seed_scene_id, _) = project_with_scene(&svc, "Unkeyed Attribute").await;
         let character_id = create_character_named(&svc, &project.project_id, "Mara Vance").await;
+        let character_for_assert = character_id.clone();
         svc.register_canonical_fact(RegisterCanonicalFactInput {
             project_id: project.project_id.clone(),
             scene_id: Some(seed_scene_id),
@@ -7308,15 +7309,28 @@ mod claim_validation_lanes {
         )
         .await;
 
-        let issues = run_checks(&svc, &project.project_id, "canonical_fact_prose_drift").await;
-        assert!(
-            issues.iter().any(|issue| {
+        for pass in 0..2 {
+            let issues = run_checks(&svc, &project.project_id, "canonical_fact_prose_drift").await;
+            let matching = issues.iter().find(|issue| {
                 issue.check_type == "canonical_fact_prose_drift"
                     && issue.message.contains("chapter 11")
                     && (issue.message.contains("prosthetic") || issue.message.contains("gauntlet"))
-            }),
-            "expected unkeyed attribute drift, got {issues:?}"
-        );
+            });
+            let matching = matching.unwrap_or_else(|| {
+                panic!("expected unkeyed attribute drift on pass {pass}, got {issues:?}")
+            });
+            assert!(
+                matching.entity_ids.contains(&character_for_assert),
+                "attribute finding must retain its subject id on pass {pass}: {matching:?}"
+            );
+            assert!(
+                matching
+                    .entity_ids
+                    .iter()
+                    .any(|id| id.starts_with("scene:")),
+                "attribute finding must retain its scene id on pass {pass}: {matching:?}"
+            );
+        }
     }
 
     #[tokio::test]
