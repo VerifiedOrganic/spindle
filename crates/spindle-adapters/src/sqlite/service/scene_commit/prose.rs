@@ -231,8 +231,7 @@ mod tests {
         let expected = root.canonicalize().unwrap();
         let relative = workspace_root_from_data_dir(Path::new(".spindle"), &root);
         assert_eq!(relative.as_deref(), Some(expected.as_path()));
-        let absolute =
-            workspace_root_from_data_dir(&root.join(".spindle"), &temp.path().to_path_buf());
+        let absolute = workspace_root_from_data_dir(&root.join(".spindle"), temp.path());
         assert_eq!(absolute.as_deref(), Some(expected.as_path()));
         assert!(workspace_root_from_data_dir(Path::new("data"), &root).is_none());
     }
