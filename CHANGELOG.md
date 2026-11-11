@@ -13,6 +13,13 @@
   `semantic_mode` off/shadow/on plumbing (default off; no findings yet), and the
   read-only `prepare_semantic_continuity` host-request surface. No model calls
   are made in any mode.
+- Tightened the semantic judge against control false positives: quantity
+  contradictions require balance/stock evidence, dead-character state uses only
+  strictly prior scenes, and memory/flashback framing is rejected. The evaluator
+  now shares one fresh on execution with shadow, eliminating on-pass repair
+  inflation and shadow/on parity drift. Control warnings no longer rise; on-mode
+  repair is <=6.4%; held-out-3 gains +3 localized/+2 type-present. Baseline/#72/
+  held-out-2 still show no semantic lift, so activation remains off.
 - Added a compact semantic judge wire format with server-side evidence-span
   resolution, general family evidence gates, a fail-closed contradiction
   verifier, and evidence-identity dedupe. Public held-out-3 improves by +3

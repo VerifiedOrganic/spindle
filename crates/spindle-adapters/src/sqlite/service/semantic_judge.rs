@@ -665,6 +665,37 @@ fn normalized_quote_span(scene: &str, quote: &str) -> Option<(usize, usize)> {
     Some((start_byte, end_byte))
 }
 
+fn dead_context_is_non_present(scene: &str, start: usize, end: usize) -> bool {
+    let lower = scene.to_ascii_lowercase();
+    let start = start.saturating_sub(240);
+    let end = (end + 240).min(lower.len());
+    let window = &lower[start..end];
+    const MARKERS: &[&str] = &[
+        "remember",
+        "memory",
+        "memories",
+        "flashback",
+        "years earlier",
+        "years before",
+        "dream",
+        "ghost",
+        "recording",
+        "journal",
+        "letter",
+        "legend",
+        "corpse",
+        "grave",
+        "funeral",
+        "vision",
+        "hallucin",
+        "imagined",
+        "imagines",
+        "in those days",
+        "back then",
+    ];
+    MARKERS.iter().any(|marker| window.contains(marker))
+}
+
 fn has_temporal_anchor(quote: &str) -> bool {
     if quote.chars().any(|ch| ch.is_ascii_digit()) {
         return true;
@@ -773,36 +804,6 @@ fn has_world_rule_subject(constraint: &str, quote: &str) -> bool {
         })
         .filter(|word| word.len() >= 4 && !STOP.contains(&word.as_str()))
         .any(|word| quote_lower.contains(&word))
-}
-
-fn has_transaction_language(quote: &str) -> bool {
-    const WORDS: &[&str] = &[
-        "paid",
-        "pay",
-        "pays",
-        "spent",
-        "spend",
-        "bought",
-        "buy",
-        "sold",
-        "sell",
-        "counted",
-        "counts",
-        "tipped",
-        "settled",
-        "cost",
-        "price",
-        "purchase",
-        "purchased",
-    ];
-    let words: Vec<String> = quote
-        .split_whitespace()
-        .map(|word| {
-            word.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '\'')
-                .to_ascii_lowercase()
-        })
-        .collect();
-    words.iter().any(|word| WORDS.contains(&word.as_str()))
 }
 
 fn has_balance_language(quote: &str) -> bool {
@@ -954,8 +955,18 @@ fn expand_compact_report(
         }
         if verdict == SemanticVerdict::Contradiction
             && candidate.check_type == "quantity_drift"
-            && compact.evidence_quote.as_deref().is_some_and(|quote| {
-                has_transaction_language(quote) && !has_balance_language(quote)
+            && compact
+                .evidence_quote
+                .as_deref()
+                .is_some_and(|quote| !has_balance_language(quote))
+        {
+            verdict = SemanticVerdict::Insufficient;
+            evidence = None;
+        }
+        if verdict == SemanticVerdict::Contradiction
+            && candidate.check_type == "dead_character_acting"
+            && evidence.as_ref().is_some_and(|span| {
+                dead_context_is_non_present(scene_text, span.start_byte, span.end_byte)
             })
         {
             verdict = SemanticVerdict::Insufficient;

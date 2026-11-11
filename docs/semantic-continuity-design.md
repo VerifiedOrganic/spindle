@@ -661,30 +661,38 @@ server-side evidence-span resolution, general family evidence gates, a
 contradiction-only verifier that fails closed, and canon/subject-aware evidence
 dedupe.
 
-Public-set measurement on the fix head (`ollama:gemma4:31b`, shadow/on):
+The precision round then removed the remaining control false positives by
+requiring quantity evidence to be a balance/stock statement (not a price or
+transaction), selecting character death only from states strictly before the
+scene, and rejecting dead-character actions framed as memory/flashback/vision.
+The evaluator now runs one fresh on pass and derives shadow from the same
+validated reports; a cache-only shadow pass measures cache hits. This removes
+the on-pass repair inflation caused by retrying only shadow failures and makes
+shadow/on would-be counts identical.
 
-| Set | Deterministic | Semantic on | Warning precision | Control warnings | Repair shadow/on | p95 prompt/output/latency (shadow) |
+Public-set measurement on this head (`ollama:gemma4:31b`, shadow/on):
+
+| Set | Deterministic | Semantic on | Warning precision | Control warnings | Repair (both modes) | p95 prompt/output/latency |
 | --- | --- | --- | ---: | --- | ---: | --- |
-| Baseline | 28/28 | 28/28 | 0.25 | +2 quantity | 1.1% / 50.0% | 2,209 / 626 / 1,831 ms |
-| #72 | 54/56 | 54/56 | 1.00 | 0 | 2.6% / 33.3% | 2,850 / 981 / 2,768 ms |
-| held-out-2 | 55/56, 56/56 type | 55/56, 56/56 | 0.00 | +1 dead acting | 1.5% / 50.0% | 2,038 / 663 / 1,886 ms |
-| held-out-3 | 26/56, 28/56 type | 29/56, 30/56 | 1.00 | 0 | 4.2% / 50.0% | 3,138 / 951 / 2,671 ms |
+| Baseline | 28/28 | 28/28 | n/a (0 warnings) | 0 | 1.2% | 2,160 / 620 / 1,750 ms |
+| #72 | 54/56 | 54/56 | 1.00 | 0 | 1.4% | 2,849 / 979 / 2,418 ms |
+| held-out-2 | 55/56, 56/56 type | 55/56, 56/56 | n/a (0 warnings) | 0 | 1.5% | 2,032 / 657 / 1,781 ms |
+| held-out-3 | 26/56, 28/56 type | 29/56, 30/56 | 1.00 | 0 | 6.4% | 3,210 / 961 / 2,874 ms |
 
-Held-out-3 improves by +3 localized/+2 type-present with perfect warning
-precision, no control rise, and 4.2% shadow repair rate. #72's warnings are all
-true positives but duplicate already-detected plants, so they add no recall;
-baseline and held-out-2 still emit false-positive control warnings. Aggregate
-public lift is +3 localized/+2 type-present. Shadow/on would-be counts match on
-baseline and held-out-3 but differ by one on #72 (8 vs 9) and held-out-2 (1 vs
-1 in favor of one mode); the strict parity gate is not met. **The activation
-gates are not met on this head; the lane remains off by default.**
+Control warnings do not rise anywhere; warning precision is 1.0 where warnings
+exist; anchor validity is 1.0; repair is <=6.4% per call in both modes; shadow/on
+would-be counts match on every set. The remaining gap is **recall**: baseline is
+already at 28/28, while #72 and held-out-2 still show no semantic lift (their
+correct warnings duplicate deterministic findings). Aggregate lift is +3
+localized/+2 type-present, all from held-out-3, so the four-set activation gate is
+**not met** and the lane remains off by default.
 
 The stronger-model check (`deepseek-v4.1-flash`) was not viable: it truncated
 111/120 #72 calls and 121/125 held-out-3 calls at the output cap, with zero
 findings and ~8-9 s p95 latency. Gemma remains the measured judge; the operator
 still chooses model/cost.
 
-### 4.3 Metrics on all five sets### 4.3 Metrics on all five sets
+### 4.3 Metrics on all five sets### 4.3 Metrics on all five sets### 4.3 Metrics on all five sets
 
 For baseline, #72, held-out-2, held-out-3, and held-out-4:
 

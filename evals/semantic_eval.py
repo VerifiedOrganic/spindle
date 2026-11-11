@@ -378,14 +378,43 @@ def run_semantic_set(
         client = McpClient(binary, Path(tmp), agent_config=agent_config)
         try:
             reports, chapters = _seed_reports(client, set_name)
+            # Run on first: shadow is the same validated judge output with
+            # semantic issues suppressed. This guarantees shadow/on would-be
+            # parity and avoids an on pass that only retries failed scenes,
+            # which would inflate the on repair rate.
             for report in reports:
-                report["control"] = {"shadow": _check(client, report["control_project"], "shadow")}
-                report["planted"] = {"shadow": _check(client, report["planted_project"], "shadow")}
+                report["control"] = {
+                    "on": _check(client, report["control_project"], "on")
+                }
+                report["planted"] = {
+                    "on": _check(client, report["planted_project"], "on")
+                }
+            # A cache-only shadow pass measures cache behavior without adding
+            # model dispatches (all validated reports are now cached).
             for report in reports:
-                report["control"]["on"] = _check(client, report["control_project"], "on")
-                report["planted"]["on"] = _check(client, report["planted_project"], "on")
+                report["control"]["shadow_cache"] = _check(
+                    client, report["control_project"], "shadow"
+                )
+                report["planted"]["shadow_cache"] = _check(
+                    client, report["planted_project"], "shadow"
+                )
         finally:
             client.close()
+
+    for report in reports:
+        for variant in ("control", "planted"):
+            on = report[variant]["on"]
+            shadow = {
+                **on,
+                "issues": _deterministic(on["issues"]),
+            }
+            cache = report[variant]["shadow_cache"].get("semantic_summary") or {}
+            shadow["semantic_summary"] = {
+                **(on.get("semantic_summary") or {}),
+                "cache_hits": cache.get("cache_hits", 0),
+                "cache_misses": cache.get("cache_misses", 0),
+            }
+            report[variant]["shadow"] = shadow
 
     result: dict[str, Any] = {
         "set": set_name,

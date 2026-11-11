@@ -265,7 +265,10 @@ impl SqliteSpindleService {
 
             for character_id in &mentioned {
                 let Some(state) = crate::sqlite::repository::select_latest_character_state(
-                    states.iter(),
+                    states.iter().filter(|state| {
+                        (state.book_number, state.chapter_number, state.scene_order)
+                            < scene_position
+                    }),
                     character_id,
                     scene_position,
                 ) else {
