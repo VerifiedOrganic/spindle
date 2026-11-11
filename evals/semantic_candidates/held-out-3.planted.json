@@ -1,67 +1,87 @@
 {
   "manuscripts": [
     {
-      "candidate_count": 43,
+      "candidate_count": 128,
       "candidate_scene_count": 16,
       "name": "The Salt Orchard",
-      "omitted_by_family": {},
+      "omitted_by_family": {
+        "timeline": 1,
+        "world_rule": 4
+      },
       "scene_count": 16,
       "scenes": [
         {
           "by_check_type": {
-            "canonical_fact_consistency": 2,
-            "temporal_coherence": 1,
-            "world_rule_semantic_drift": 1
+            "canonical_fact_prose_drift": 5,
+            "knowledge_timing": 4,
+            "secret_leak": 2,
+            "temporal_coherence": 1
           },
           "by_family": {
-            "attribute": 2,
-            "timeline": 1,
-            "world_rule": 1
+            "attribute": 5,
+            "knowledge": 4,
+            "secret": 2,
+            "timeline": 1
           },
-          "candidate_count": 4,
+          "candidate_count": 12,
           "canon_tables": [
             "canonical_fact",
-            "scene_clock",
-            "world_rule"
+            "knowledge_fact",
+            "scene_clock"
           ],
           "evidence_origins": [
             "canonical_fact",
-            "temporal_anchor",
-            "world_rule_scan"
+            "resolver",
+            "temporal_anchor"
           ],
           "scene_index": 0
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 1,
+            "secret_leak": 1,
             "world_rule_semantic_drift": 1
           },
           "by_family": {
+            "attribute": 2,
+            "knowledge": 1,
+            "secret": 1,
             "world_rule": 1
           },
-          "candidate_count": 1,
+          "candidate_count": 5,
           "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
             "world_rule"
           ],
           "evidence_origins": [
+            "canonical_fact",
+            "resolver",
             "world_rule_scan"
           ],
           "scene_index": 1
         },
         {
           "by_check_type": {
-            "canonical_fact_consistency": 1,
+            "canonical_fact_prose_drift": 1,
             "dead_character_acting": 1,
+            "knowledge_timing": 3,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
             "attribute": 1,
             "death": 1,
+            "knowledge": 3,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 3,
+          "candidate_count": 8,
           "canon_tables": [
             "canonical_fact",
             "character_state",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
@@ -73,125 +93,157 @@
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 1,
+            "knowledge_timing": 1,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
+            "attribute": 1,
+            "knowledge": 1,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 1,
+          "candidate_count": 5,
           "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
+            "canonical_fact",
+            "resolver",
             "temporal_anchor"
           ],
           "scene_index": 3
         },
         {
           "by_check_type": {
-            "canonical_fact_consistency": 1,
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
-            "attribute": 1,
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 2,
+          "candidate_count": 7,
           "canon_tables": [
             "canonical_fact",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
             "canonical_fact",
+            "resolver",
             "temporal_anchor"
           ],
           "scene_index": 4
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 3,
             "dead_character_acting": 2,
-            "secret_leak": 1,
-            "temporal_coherence": 1,
-            "world_rule_semantic_drift": 1
+            "knowledge_timing": 4,
+            "secret_leak": 2,
+            "temporal_coherence": 1
           },
           "by_family": {
+            "attribute": 3,
             "death": 2,
-            "secret": 1,
-            "timeline": 1,
-            "world_rule": 1
+            "knowledge": 4,
+            "secret": 2,
+            "timeline": 1
           },
-          "candidate_count": 5,
+          "candidate_count": 12,
           "canon_tables": [
             "canonical_fact",
             "character_state",
-            "scene_clock",
-            "world_rule"
+            "knowledge_fact",
+            "scene_clock"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "resolver",
-            "temporal_anchor",
-            "world_rule_scan"
+            "temporal_anchor"
           ],
           "scene_index": 5
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 4,
             "dead_character_acting": 2,
-            "secret_leak": 1,
-            "temporal_coherence": 1,
-            "world_rule_semantic_drift": 1
+            "knowledge_timing": 4,
+            "secret_leak": 2
           },
           "by_family": {
+            "attribute": 4,
             "death": 2,
-            "secret": 1,
-            "timeline": 1,
-            "world_rule": 1
+            "knowledge": 4,
+            "secret": 2
           },
-          "candidate_count": 5,
+          "candidate_count": 12,
           "canon_tables": [
             "canonical_fact",
             "character_state",
-            "scene_clock",
-            "world_rule"
+            "knowledge_fact"
           ],
           "evidence_origins": [
-            "resolver",
-            "temporal_anchor",
-            "world_rule_scan"
+            "canonical_fact",
+            "resolver"
           ],
           "scene_index": 6
         },
         {
           "by_check_type": {
+            "knowledge_timing": 2,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
+            "knowledge": 2,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 1,
+          "candidate_count": 5,
           "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
+            "resolver",
             "temporal_anchor"
           ],
           "scene_index": 7
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 3,
             "dead_character_acting": 2,
+            "knowledge_timing": 3,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
+            "attribute": 3,
             "death": 2,
+            "knowledge": 3,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 3,
+          "candidate_count": 11,
           "canon_tables": [
+            "canonical_fact",
             "character_state",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "resolver",
             "temporal_anchor"
           ],
@@ -200,15 +252,21 @@
         {
           "by_check_type": {
             "dead_character_acting": 1,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
             "death": 1,
+            "knowledge": 2,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 2,
+          "candidate_count": 6,
           "canon_tables": [
+            "canonical_fact",
             "character_state",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
@@ -219,50 +277,61 @@
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 3,
             "dead_character_acting": 2,
+            "knowledge_timing": 3,
             "quantity_drift": 1,
-            "temporal_coherence": 1,
-            "world_rule_semantic_drift": 1
+            "secret_leak": 2,
+            "temporal_coherence": 1
           },
           "by_family": {
+            "attribute": 3,
             "death": 2,
+            "knowledge": 3,
             "quantity": 1,
-            "timeline": 1,
-            "world_rule": 1
+            "secret": 2,
+            "timeline": 1
           },
-          "candidate_count": 5,
+          "candidate_count": 12,
           "canon_tables": [
+            "canonical_fact",
             "character_state",
+            "knowledge_fact",
             "quantity_state",
-            "scene_clock",
-            "world_rule"
+            "scene_clock"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "price_scan",
             "resolver",
-            "temporal_anchor",
-            "world_rule_scan"
+            "temporal_anchor"
           ],
           "scene_index": 10
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 2,
             "dead_character_acting": 1,
-            "secret_leak": 1,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
+            "attribute": 2,
             "death": 1,
-            "secret": 1,
+            "knowledge": 2,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 3,
+          "candidate_count": 8,
           "canon_tables": [
             "canonical_fact",
             "character_state",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "resolver",
             "temporal_anchor"
           ],
@@ -271,15 +340,21 @@
         {
           "by_check_type": {
             "dead_character_acting": 1,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
             "death": 1,
+            "knowledge": 2,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 2,
+          "candidate_count": 6,
           "canon_tables": [
+            "canonical_fact",
             "character_state",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
@@ -290,38 +365,52 @@
         },
         {
           "by_check_type": {
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 1,
+          "candidate_count": 3,
           "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
+            "resolver",
             "temporal_anchor"
           ],
           "scene_index": 13
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 3,
             "dead_character_acting": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
             "temporal_coherence": 1,
             "world_rule_semantic_drift": 1
           },
           "by_family": {
+            "attribute": 3,
             "death": 2,
+            "knowledge": 2,
+            "secret": 2,
             "timeline": 1,
             "world_rule": 1
           },
-          "candidate_count": 4,
+          "candidate_count": 11,
           "canon_tables": [
+            "canonical_fact",
             "character_state",
+            "knowledge_fact",
             "scene_clock",
             "world_rule"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "resolver",
             "temporal_anchor",
             "world_rule_scan"
@@ -330,16 +419,23 @@
         },
         {
           "by_check_type": {
+            "knowledge_timing": 2,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
+            "knowledge": 2,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 1,
+          "candidate_count": 5,
           "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
+            "resolver",
             "temporal_anchor"
           ],
           "scene_index": 15
@@ -347,83 +443,116 @@
       ]
     },
     {
-      "candidate_count": 43,
+      "candidate_count": 164,
       "candidate_scene_count": 16,
       "name": "The Glass Meridian",
-      "omitted_by_family": {},
+      "omitted_by_family": {
+        "attribute": 4,
+        "knowledge": 1,
+        "quantity": 5,
+        "timeline": 3
+      },
       "scene_count": 16,
       "scenes": [
         {
           "by_check_type": {
-            "canonical_fact_consistency": 1,
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 1,
             "temporal_coherence": 1
           },
           "by_family": {
-            "attribute": 1,
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 1,
             "timeline": 1
           },
-          "candidate_count": 2,
+          "candidate_count": 6,
           "canon_tables": [
             "canonical_fact",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
             "canonical_fact",
+            "resolver",
             "temporal_anchor"
           ],
           "scene_index": 0
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 4,
+            "knowledge_timing": 4,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
+            "attribute": 4,
+            "knowledge": 4,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 1,
+          "candidate_count": 11,
           "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
+            "canonical_fact",
+            "resolver",
             "temporal_anchor"
           ],
           "scene_index": 1
         },
         {
           "by_check_type": {
-            "canonical_fact_consistency": 1,
+            "canonical_fact_prose_drift": 3,
+            "knowledge_timing": 4,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
-            "attribute": 1,
+            "attribute": 3,
+            "knowledge": 4,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 2,
+          "candidate_count": 10,
           "canon_tables": [
             "canonical_fact",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
             "canonical_fact",
+            "resolver",
             "temporal_anchor"
           ],
           "scene_index": 2
         },
         {
           "by_check_type": {
-            "secret_leak": 1,
+            "canonical_fact_prose_drift": 3,
+            "knowledge_timing": 4,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
-            "secret": 1,
+            "attribute": 3,
+            "knowledge": 4,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 2,
+          "candidate_count": 10,
           "canon_tables": [
             "canonical_fact",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "resolver",
             "temporal_anchor"
           ],
@@ -431,50 +560,56 @@
         },
         {
           "by_check_type": {
-            "canonical_fact_consistency": 1,
+            "canonical_fact_prose_drift": 3,
             "dead_character_acting": 1,
-            "quantity_drift": 1,
-            "temporal_coherence": 1
+            "knowledge_timing": 6,
+            "secret_leak": 2
           },
           "by_family": {
-            "attribute": 1,
+            "attribute": 3,
             "death": 1,
-            "quantity": 1,
-            "timeline": 1
+            "knowledge": 6,
+            "secret": 2
           },
-          "candidate_count": 4,
+          "candidate_count": 12,
           "canon_tables": [
             "canonical_fact",
             "character_state",
-            "quantity_state",
-            "scene_clock"
+            "knowledge_fact"
           ],
           "evidence_origins": [
             "canonical_fact",
-            "price_scan",
-            "resolver",
-            "temporal_anchor"
+            "resolver"
           ],
           "scene_index": 4
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 3,
             "dead_character_acting": 1,
+            "knowledge_timing": 3,
+            "secret_leak": 2,
             "temporal_coherence": 1,
             "world_rule_semantic_drift": 1
           },
           "by_family": {
+            "attribute": 3,
             "death": 1,
+            "knowledge": 3,
+            "secret": 2,
             "timeline": 1,
             "world_rule": 1
           },
-          "candidate_count": 3,
+          "candidate_count": 11,
           "canon_tables": [
+            "canonical_fact",
             "character_state",
+            "knowledge_fact",
             "scene_clock",
             "world_rule"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "resolver",
             "temporal_anchor",
             "world_rule_scan"
@@ -483,22 +618,28 @@
         },
         {
           "by_check_type": {
-            "quantity_drift": 2,
-            "secret_leak": 1,
+            "canonical_fact_prose_drift": 4,
+            "knowledge_timing": 4,
+            "quantity_drift": 1,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
-            "quantity": 2,
-            "secret": 1,
+            "attribute": 4,
+            "knowledge": 4,
+            "quantity": 1,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 4,
+          "candidate_count": 12,
           "canon_tables": [
             "canonical_fact",
+            "knowledge_fact",
             "quantity_state",
             "scene_clock"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "price_scan",
             "resolver",
             "temporal_anchor"
@@ -507,55 +648,56 @@
         },
         {
           "by_check_type": {
-            "canonical_fact_consistency": 1,
+            "canonical_fact_prose_drift": 4,
             "dead_character_acting": 1,
-            "quantity_drift": 1,
-            "secret_leak": 1,
-            "temporal_coherence": 1
+            "knowledge_timing": 5,
+            "secret_leak": 2
           },
           "by_family": {
-            "attribute": 1,
+            "attribute": 4,
             "death": 1,
-            "quantity": 1,
-            "secret": 1,
-            "timeline": 1
+            "knowledge": 5,
+            "secret": 2
           },
-          "candidate_count": 5,
+          "candidate_count": 12,
           "canon_tables": [
             "canonical_fact",
             "character_state",
-            "quantity_state",
-            "scene_clock"
+            "knowledge_fact"
           ],
           "evidence_origins": [
             "canonical_fact",
-            "price_scan",
-            "resolver",
-            "temporal_anchor"
+            "resolver"
           ],
           "scene_index": 7
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 4,
             "dead_character_acting": 1,
+            "knowledge_timing": 3,
             "quantity_drift": 1,
-            "secret_leak": 1,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
+            "attribute": 4,
             "death": 1,
+            "knowledge": 3,
             "quantity": 1,
-            "secret": 1,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 4,
+          "candidate_count": 12,
           "canon_tables": [
             "canonical_fact",
             "character_state",
+            "knowledge_fact",
             "quantity_state",
             "scene_clock"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "price_scan",
             "resolver",
             "temporal_anchor"
@@ -564,65 +706,81 @@
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 4,
             "dead_character_acting": 2,
-            "secret_leak": 1
+            "knowledge_timing": 4,
+            "secret_leak": 2
           },
           "by_family": {
+            "attribute": 4,
             "death": 2,
-            "secret": 1
+            "knowledge": 4,
+            "secret": 2
           },
-          "candidate_count": 3,
+          "candidate_count": 12,
           "canon_tables": [
             "canonical_fact",
-            "character_state"
+            "character_state",
+            "knowledge_fact"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "resolver"
           ],
           "scene_index": 9
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 4,
             "dead_character_acting": 1,
-            "quantity_drift": 1,
-            "temporal_coherence": 1
+            "knowledge_timing": 5,
+            "secret_leak": 2
           },
           "by_family": {
+            "attribute": 4,
             "death": 1,
-            "quantity": 1,
-            "timeline": 1
+            "knowledge": 5,
+            "secret": 2
           },
-          "candidate_count": 3,
+          "candidate_count": 12,
           "canon_tables": [
+            "canonical_fact",
             "character_state",
-            "quantity_state",
-            "scene_clock"
+            "knowledge_fact"
           ],
           "evidence_origins": [
-            "price_scan",
-            "resolver",
-            "temporal_anchor"
+            "canonical_fact",
+            "resolver"
           ],
           "scene_index": 10
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 4,
             "dead_character_acting": 1,
+            "knowledge_timing": 2,
             "quantity_drift": 1,
+            "secret_leak": 2,
             "world_rule_semantic_drift": 1
           },
           "by_family": {
+            "attribute": 4,
             "death": 1,
+            "knowledge": 2,
             "quantity": 1,
+            "secret": 2,
             "world_rule": 1
           },
-          "candidate_count": 3,
+          "candidate_count": 11,
           "canon_tables": [
+            "canonical_fact",
             "character_state",
+            "knowledge_fact",
             "quantity_state",
             "world_rule"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "price_scan",
             "resolver",
             "world_rule_scan"
@@ -631,35 +789,51 @@
         },
         {
           "by_check_type": {
-            "canonical_fact_consistency": 1
+            "canonical_fact_prose_drift": 3,
+            "knowledge_timing": 2,
+            "secret_leak": 1
           },
           "by_family": {
-            "attribute": 1
+            "attribute": 3,
+            "knowledge": 2,
+            "secret": 1
           },
-          "candidate_count": 1,
+          "candidate_count": 6,
           "canon_tables": [
-            "canonical_fact"
+            "canonical_fact",
+            "knowledge_fact"
           ],
           "evidence_origins": [
-            "canonical_fact"
+            "canonical_fact",
+            "resolver"
           ],
           "scene_index": 12
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 1,
+            "secret_leak": 1,
             "temporal_coherence": 1,
             "world_rule_semantic_drift": 1
           },
           "by_family": {
+            "attribute": 2,
+            "knowledge": 1,
+            "secret": 1,
             "timeline": 1,
             "world_rule": 1
           },
-          "candidate_count": 2,
+          "candidate_count": 6,
           "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
             "scene_clock",
             "world_rule"
           ],
           "evidence_origins": [
+            "canonical_fact",
+            "resolver",
             "temporal_anchor",
             "world_rule_scan"
           ],
@@ -667,19 +841,28 @@
         },
         {
           "by_check_type": {
+            "canonical_fact_prose_drift": 3,
             "dead_character_acting": 1,
-            "quantity_drift": 1
+            "knowledge_timing": 2,
+            "quantity_drift": 1,
+            "secret_leak": 2
           },
           "by_family": {
+            "attribute": 3,
             "death": 1,
-            "quantity": 1
+            "knowledge": 2,
+            "quantity": 1,
+            "secret": 2
           },
-          "candidate_count": 2,
+          "candidate_count": 9,
           "canon_tables": [
+            "canonical_fact",
             "character_state",
+            "knowledge_fact",
             "quantity_state"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "price_scan",
             "resolver"
           ],
@@ -687,20 +870,26 @@
         },
         {
           "by_check_type": {
-            "quantity_drift": 1,
+            "canonical_fact_prose_drift": 6,
+            "knowledge_timing": 3,
+            "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
-            "quantity": 1,
+            "attribute": 6,
+            "knowledge": 3,
+            "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 2,
+          "candidate_count": 12,
           "canon_tables": [
-            "quantity_state",
+            "canonical_fact",
+            "knowledge_fact",
             "scene_clock"
           ],
           "evidence_origins": [
-            "price_scan",
+            "canonical_fact",
+            "resolver",
             "temporal_anchor"
           ],
           "scene_index": 15

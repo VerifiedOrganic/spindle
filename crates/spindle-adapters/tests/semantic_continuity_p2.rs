@@ -158,8 +158,154 @@ async fn secret_candidates_require_an_out_of_circle_character() {
             .candidate_set
             .candidates
             .iter()
-            .all(|candidate| candidate.family != SemanticCandidateFamily::Secret),
-        "holder-only scene must not emit a secret candidate"
+            .all(
+                |candidate| candidate.family != SemanticCandidateFamily::Secret
+                    && candidate.family != SemanticCandidateFamily::Attribute
+            ),
+        "holder-only secret must not emit a secret or attribute candidate"
+    );
+}
+
+#[tokio::test]
+async fn late_secret_holders_and_paraphrase_candidates_are_scene_relative() {
+    use spindle_core::models::{RecordKnowledgeInput, StoryPlacement};
+
+    let (_tmp, svc) = fresh_service().await;
+    let project_id = project(&svc, "Paraphrase candidates").await;
+    let mara = character(&svc, &project_id, "Mara").await;
+    let scene_id = scene(
+        &svc,
+        &project_id,
+        1,
+        "Mara's eyes were green. Mara warned them the span was trapped.",
+    )
+    .await;
+
+    // Attribute contradiction: the canonical value never appears in prose.
+    svc.register_canonical_fact(RegisterCanonicalFactInput {
+        project_id: project_id.clone(),
+        scene_id: Some(scene_id.clone()),
+        book_number: 1,
+        chapter_number: 1,
+        fact_type: None,
+        key: None,
+        value: None,
+        context: None,
+        subject_table: Some("character".into()),
+        subject_id: Some(mara.clone()),
+        predicate: Some("eye_color".into()),
+        value_kind: Some("string".into()),
+        value_text: Some("blue".into()),
+        value_number: None,
+        value_unit: None,
+        value_json: None,
+        aliases: Vec::new(),
+        scope: None,
+        valid_from: None,
+        valid_until: None,
+        legacy_untyped: None,
+        supersedes_fact_id: None,
+        secrecy: None,
+    })
+    .await
+    .unwrap();
+
+    // Late secret holder: the character is out of the circle at this scene.
+    let secret = svc
+        .register_canonical_fact(RegisterCanonicalFactInput {
+            project_id: project_id.clone(),
+            scene_id: Some(scene_id.clone()),
+            book_number: 1,
+            chapter_number: 1,
+            fact_type: None,
+            key: None,
+            value: None,
+            context: None,
+            subject_table: Some("character".into()),
+            subject_id: Some(mara.clone()),
+            predicate: Some("access_code".into()),
+            value_kind: Some("string".into()),
+            value_text: Some("silver key".into()),
+            value_number: None,
+            value_unit: None,
+            value_json: None,
+            aliases: Vec::new(),
+            scope: None,
+            valid_from: None,
+            valid_until: None,
+            legacy_untyped: None,
+            supersedes_fact_id: None,
+            secrecy: Some(SecrecyScope {
+                holder_ids: Vec::new(),
+                concealment_note: None,
+            }),
+        })
+        .await
+        .unwrap();
+    svc.record_knowledge(RecordKnowledgeInput {
+        project_id: project_id.clone(),
+        branch_id: None,
+        character_id: mara.clone(),
+        fact: "the silver key opens the east door".into(),
+        source_summary: "learned late".into(),
+        learned_at: Some(StoryPlacement {
+            book_number: 1,
+            chapter_number: 2,
+            scene_order: Some(1),
+            note: None,
+        }),
+        confidence: None,
+        tags: Vec::new(),
+        reader_visible: true,
+        secret_of_fact_id: Some(secret.canonical_fact_id),
+    })
+    .await
+    .unwrap();
+
+    svc.record_knowledge(RecordKnowledgeInput {
+        project_id: project_id.clone(),
+        branch_id: None,
+        character_id: mara.clone(),
+        fact: "the bridge is rigged".into(),
+        source_summary: "learned later".into(),
+        learned_at: Some(StoryPlacement {
+            book_number: 1,
+            chapter_number: 2,
+            scene_order: Some(1),
+            note: None,
+        }),
+        confidence: None,
+        tags: Vec::new(),
+        reader_visible: true,
+        secret_of_fact_id: None,
+    })
+    .await
+    .unwrap();
+
+    let prepared = svc
+        .prepare_semantic_continuity(PrepareSemanticContinuityInput {
+            project_id,
+            scope: ConsistencyScopeInput::full(),
+            subjects: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let candidates = &prepared.requests[0].candidate_set.candidates;
+    let attribute = candidates
+        .iter()
+        .find(|candidate| candidate.family == SemanticCandidateFamily::Attribute)
+        .expect("attribute contradiction without the canonical value");
+    assert_eq!(attribute.check_type, "canonical_fact_prose_drift");
+    let secret = candidates
+        .iter()
+        .find(|candidate| candidate.family == SemanticCandidateFamily::Secret)
+        .expect("late holder is out of the circle at this scene");
+    assert!(secret.subject_ids.contains(&mara));
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.family == SemanticCandidateFamily::Knowledge),
+        "paraphrased future knowledge must still produce a knowledge candidate"
     );
 }
 

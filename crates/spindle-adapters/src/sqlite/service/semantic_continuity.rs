@@ -149,8 +149,6 @@ impl SqliteSpindleService {
             .repository
             .list_timeline_events_by_project_and_branch(project_id, branch_id)
             .await?;
-        let holders_by_secret = secret_holders(&knowledge);
-
         let mut requests = Vec::with_capacity(scenes.len());
         let mut audit = SemanticCandidateAudit {
             scene_count: scenes.len(),
@@ -160,20 +158,25 @@ impl SqliteSpindleService {
         for scene in scenes {
             let mentioned = resolver.mentioned_ids(&scene.full_text);
             let scene_position = (scene.book_number, scene.chapter_number, scene.scene_order);
+            let holders_by_secret = secret_holders_at(&knowledge, scene_position);
             let mut drafts = Vec::new();
 
             for fact in &facts {
-                if fact.secret
-                    && let Some(draft) = secret_draft(
+                if fact.secret {
+                    if let Some(draft) = secret_draft(
                         scene,
                         fact,
                         &mentioned,
                         &holders_by_secret,
                         &character_by_id,
-                    )
-                {
-                    drafts.push(draft);
-                } else if let Some(subject_id) = fact.subject_id.as_deref()
+                        &knowledge,
+                    ) {
+                        drafts.push(draft);
+                    }
+                    // A secret fact is only ever selected by the secret family.
+                    continue;
+                }
+                if let Some(subject_id) = fact.subject_id.as_deref()
                     && mentioned.contains(subject_id)
                     && !is_non_attribute_predicate(&fact.predicate)
                     && position_lte(
@@ -181,10 +184,11 @@ impl SqliteSpindleService {
                         scene_position,
                     )
                     && let Some(range) = fact_hint_range(scene, fact)
+                        .or_else(|| subject_range(scene, subject_id, &character_by_id))
                 {
                     drafts.push(CandidateDraft::new(
                         SemanticCandidateFamily::Attribute,
-                        "canonical_fact_consistency",
+                        "canonical_fact_prose_drift",
                         vec![fact_ref(fact)],
                         vec![subject_id.to_string()],
                         fact_constraint(fact),
@@ -214,10 +218,12 @@ impl SqliteSpindleService {
                 if !learned_later && fact.secret_of_fact_id.is_none() {
                     continue;
                 }
-                let Some(range) = first_phrase_range_str(
+                let range = first_phrase_range_str(
                     scene,
                     &[fact.normalized_fact.as_str(), fact.fact.as_str()],
-                ) else {
+                )
+                .or_else(|| subject_range(scene, &fact.character_id, &character_by_id));
+                let Some(range) = range else {
                     continue;
                 };
                 drafts.push(CandidateDraft::new(
@@ -554,12 +560,23 @@ fn fact_hint_range(scene: &Scene, fact: &CanonicalFact) -> Option<(usize, usize)
     first_phrase_range(scene, &phrases)
 }
 
-fn secret_holders(
+fn secret_holders_at(
     knowledge: &[crate::sqlite::records::KnowledgeFact],
+    scene_position: (i32, i32, i32),
 ) -> BTreeMap<String, BTreeSet<String>> {
     let mut holders: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for fact in knowledge {
-        if let Some(secret_id) = fact.secret_of_fact_id.as_deref() {
+        let Some(secret_id) = fact.secret_of_fact_id.as_deref() else {
+            continue;
+        };
+        let known_by_scene = fact.learned_at.as_ref().is_none_or(|placement| {
+            (
+                placement.book_number,
+                placement.chapter_number,
+                placement.scene_order.unwrap_or(0),
+            ) <= scene_position
+        });
+        if known_by_scene {
             holders
                 .entry(secret_id.to_string())
                 .or_default()
@@ -569,12 +586,59 @@ fn secret_holders(
     holders
 }
 
+fn secret_knowledge_refs(
+    knowledge: &[crate::sqlite::records::KnowledgeFact],
+    secret_id: &str,
+) -> Vec<SemanticCanonRefV1> {
+    let mut refs: Vec<SemanticCanonRefV1> = knowledge
+        .iter()
+        .filter(|fact| fact.secret_of_fact_id.as_deref() == Some(secret_id))
+        .map(|fact| {
+            let learned_at = fact
+                .learned_at
+                .as_ref()
+                .map(|placement| {
+                    format!(
+                        "{}:{}:{}",
+                        placement.book_number,
+                        placement.chapter_number,
+                        placement.scene_order.unwrap_or(0)
+                    )
+                })
+                .unwrap_or_else(|| "start".to_string());
+            canon_ref(
+                "knowledge_fact",
+                &fact.id,
+                hash_parts(&[
+                    fact.id.clone(),
+                    fact.character_id.clone(),
+                    fact.secret_of_fact_id.clone().unwrap_or_default(),
+                    learned_at,
+                ]),
+            )
+        })
+        .collect();
+    refs.sort();
+    refs
+}
+
+fn subject_range(
+    scene: &Scene,
+    subject_id: &str,
+    characters: &BTreeMap<&str, &crate::sqlite::records::Character>,
+) -> Option<(usize, usize)> {
+    characters
+        .get(subject_id)
+        .and_then(|character| character_range(scene, character))
+}
+
 fn secret_draft(
     scene: &Scene,
     fact: &CanonicalFact,
     mentioned: &BTreeSet<String>,
     holders_by_secret: &BTreeMap<String, BTreeSet<String>>,
     characters: &BTreeMap<&str, &crate::sqlite::records::Character>,
+    knowledge: &[crate::sqlite::records::KnowledgeFact],
 ) -> Option<CandidateDraft> {
     let holders = holders_by_secret.get(&fact.id);
     let out_of_circle: Vec<String> = mentioned
@@ -591,11 +655,17 @@ fn secret_draft(
     let mut phrases = vec![fact_value(fact)];
     phrases.extend(fact.aliases.iter().cloned());
     phrases.push(fact.predicate.clone());
-    let range = first_phrase_range(scene, &phrases)?;
+    let range = first_phrase_range(scene, &phrases).or_else(|| {
+        out_of_circle
+            .iter()
+            .find_map(|id| subject_range(scene, id, characters))
+    })?;
+    let mut refs = vec![fact_ref(fact)];
+    refs.extend(secret_knowledge_refs(knowledge, &fact.id));
     Some(CandidateDraft::new(
         SemanticCandidateFamily::Secret,
         "secret_leak",
-        vec![fact_ref(fact)],
+        refs,
         out_of_circle,
         format!(
             "secret fact '{}' ({}): {}",
@@ -989,6 +1059,52 @@ mod tests {
             false,
             index as i64,
         )
+    }
+
+    fn secret_knowledge(learned_chapter: i32) -> crate::sqlite::records::KnowledgeFact {
+        crate::sqlite::records::KnowledgeFact {
+            id: "knowledge_fact:test".into(),
+            project_id: "project:test".into(),
+            branch_id: "branch:test".into(),
+            character_id: "character:test".into(),
+            fact: "the key is silver".into(),
+            normalized_fact: "the key is silver".into(),
+            source_summary: "test".into(),
+            learned_at: Some(crate::sqlite::records::StoredStoryPlacement {
+                book_number: 1,
+                chapter_number: learned_chapter,
+                scene_order: Some(1),
+                note: None,
+            }),
+            confidence: None,
+            tags: Vec::new(),
+            reader_visible: true,
+            source_import_session_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            secret_of_fact_id: Some("canonical_fact:secret".into()),
+        }
+    }
+
+    #[test]
+    fn secret_holder_timing_changes_membership_and_canon_version() {
+        let early = secret_knowledge(1);
+        let late = secret_knowledge(10);
+        let before_reveal = secret_holders_at(std::slice::from_ref(&late), (1, 1, 1));
+        assert!(
+            !before_reveal
+                .get("canonical_fact:secret")
+                .is_some_and(|holders| holders.contains("character:test"))
+        );
+        let after_reveal = secret_holders_at(&[late], (1, 10, 1));
+        assert!(
+            after_reveal
+                .get("canonical_fact:secret")
+                .is_some_and(|holders| holders.contains("character:test"))
+        );
+        let early_refs = secret_knowledge_refs(&[early], "canonical_fact:secret");
+        let late_refs = secret_knowledge_refs(&[secret_knowledge(10)], "canonical_fact:secret");
+        assert_ne!(early_refs, late_refs);
     }
 
     #[test]
