@@ -174,6 +174,21 @@ impl SqliteSpindleService {
                 context_packet_hash: None,
             }),
         };
+        let prompt_tokens = estimate_tokens(prompt);
+        if prompt_tokens > SEMANTIC_MAX_PROMPT_TOKENS {
+            return Err(SemanticJudgeErrorV1::new(
+                SemanticErrorKind::BudgetExceeded,
+                "semantic repair prompt exceeds the per-call token ceiling",
+            ));
+        }
+        if summary.input_tokens.saturating_add(prompt_tokens as u64)
+            > spindle_core::semantic_continuity::SEMANTIC_MAX_RUN_INPUT_TOKENS as u64
+        {
+            return Err(SemanticJudgeErrorV1::new(
+                SemanticErrorKind::BudgetExceeded,
+                "semantic run input-token budget exhausted",
+            ));
+        }
         let response = tokio::time::timeout(
             Duration::from_secs(spindle_core::semantic_continuity::SEMANTIC_CALL_TIMEOUT_SECONDS),
             self.repository.model_router().complete(&model_request),
@@ -184,6 +199,15 @@ impl SqliteSpindleService {
                 .retryable(true)
         })?
         .map_err(|error| map_route_error(error, &route.name, scene.content_rating.as_str()))?;
+        if let Some(usage) = response.usage.as_ref() {
+            summary.input_tokens += usage.input_tokens.unwrap_or(prompt_tokens as u64);
+            summary.output_tokens += usage
+                .output_tokens
+                .unwrap_or_else(|| estimate_tokens(&response.output) as u64);
+        } else {
+            summary.input_tokens += prompt_tokens as u64;
+            summary.output_tokens += estimate_tokens(&response.output) as u64;
+        }
         if response.adapter_kind == "local" {
             return Err(SemanticJudgeErrorV1::new(
                 SemanticErrorKind::RouteUnavailable,
@@ -197,9 +221,15 @@ impl SqliteSpindleService {
             )
             .retryable(true));
         }
-        if let Some(usage) = response.usage {
-            summary.input_tokens += usage.input_tokens.unwrap_or(0);
-            summary.output_tokens += usage.output_tokens.unwrap_or(0);
+        if summary
+            .output_tokens
+            .saturating_sub(estimate_tokens(prompt) as u64)
+            > spindle_core::semantic_continuity::SEMANTIC_MAX_OUTPUT_TOKENS as u64
+        {
+            return Err(SemanticJudgeErrorV1::new(
+                SemanticErrorKind::BudgetExceeded,
+                "semantic judge output exceeds the per-call ceiling",
+            ));
         }
         parse_semantic_report(&response.output, request, &scene.full_text).map_err(|error| {
             SemanticJudgeErrorV1 {
@@ -215,26 +245,32 @@ impl SqliteSpindleService {
         for name in ["continuity_semantic", "review"] {
             match router.check_route_clearance(name, Some(rating)) {
                 Ok(()) => {
-                    let model_identity = router
-                        .list_route_bindings()
-                        .ok()
-                        .and_then(|bindings| {
-                            bindings
-                                .into_iter()
-                                .filter(|binding| binding.route.route_name == name)
-                                .find(|binding| {
-                                    binding.rating.as_deref().is_none()
-                                        || binding
-                                            .rating
-                                            .as_deref()
-                                            .is_some_and(|bound| bound.eq_ignore_ascii_case(rating))
-                                })
-                                .map(|binding| binding.route.model_name)
+                    let bindings = router.list_route_bindings().unwrap_or_default();
+                    let exact = bindings.iter().find(|binding| {
+                        binding.route.route_name == name
+                            && binding
+                                .rating
+                                .as_deref()
+                                .is_some_and(|bound| bound.eq_ignore_ascii_case(rating))
+                    });
+                    let default = bindings.iter().find(|binding| {
+                        binding.route.route_name == name && binding.rating.is_none()
+                    });
+                    let identity = exact
+                        .or(default)
+                        .map(|binding| {
+                            format!(
+                                "{}|{}|{}|{}",
+                                binding.route.model_name,
+                                binding.route.adapter_kind,
+                                binding.route.purpose,
+                                binding.rating.as_deref().unwrap_or("default")
+                            )
                         })
                         .unwrap_or_else(|| name.to_string());
                     return Ok(SemanticRoute {
                         name: name.to_string(),
-                        model_identity,
+                        model_identity: identity,
                     });
                 }
                 Err(error) => last_error = Some(map_clearance_error(error, name, rating)),
@@ -379,10 +415,12 @@ pub(super) fn semantic_issue_from_report(
     report: &SemanticJudgeReportV1,
     request: &SemanticHostRequestV1,
     emit: bool,
+    existing: &[spindle_core::models::ConsistencyIssue],
 ) -> (usize, usize, Vec<spindle_core::models::ConsistencyIssue>) {
     use spindle_core::semantic_continuity::{
         SemanticDecisionReason, SemanticIssueSeverity, decide_semantic_severity,
     };
+    let scene_id = request.candidate_set.scene_id.clone();
     let candidates: std::collections::BTreeMap<_, _> = request
         .candidate_set
         .candidates
@@ -392,6 +430,15 @@ pub(super) fn semantic_issue_from_report(
     let mut warnings = 0;
     let mut infos = 0;
     let mut issues = Vec::new();
+    let mut seen: Vec<(String, std::collections::BTreeSet<String>)> = existing
+        .iter()
+        .map(|issue| {
+            (
+                issue.check_type.clone(),
+                issue.entity_ids.iter().cloned().collect(),
+            )
+        })
+        .collect();
     for judgment in &report.judgments {
         let Some(candidate) = candidates.get(judgment.candidate_id.as_str()) else {
             continue;
@@ -400,6 +447,16 @@ pub(super) fn semantic_issue_from_report(
         let Some(severity) = decision.severity else {
             continue;
         };
+        let mut identity: std::collections::BTreeSet<String> =
+            candidate.subject_ids.iter().cloned().collect();
+        identity.insert(scene_id.clone());
+        let duplicate = seen.iter().any(|(check_type, ids)| {
+            check_type == &candidate.check_type && !ids.is_disjoint(&identity)
+        });
+        if duplicate {
+            continue;
+        }
+        seen.push((candidate.check_type.clone(), identity.clone()));
         match severity {
             SemanticIssueSeverity::Warning => warnings += 1,
             SemanticIssueSeverity::Info => infos += 1,
@@ -425,6 +482,10 @@ pub(super) fn semantic_issue_from_report(
                 candidate.constraint
             )
         };
+        let mut entity_ids: Vec<String> = candidate.subject_ids.clone();
+        entity_ids.push(scene_id.clone());
+        entity_ids.sort();
+        entity_ids.dedup();
         issues.push(spindle_core::models::ConsistencyIssue {
             severity: match severity {
                 SemanticIssueSeverity::Warning => "warning".to_string(),
@@ -432,7 +493,7 @@ pub(super) fn semantic_issue_from_report(
             },
             check_type: candidate.check_type.clone(),
             message,
-            entity_ids: candidate.subject_ids.clone(),
+            entity_ids,
             suggested_action: Some(
                 "review the cited scene evidence and canon reference, then revise the prose or canon"
                     .to_string(),
@@ -581,6 +642,47 @@ agent = "review-local"
         assert_eq!(error.kind, SemanticErrorKind::RatingDenied);
     }
 
+    #[tokio::test]
+    async fn rating_override_identity_wins_over_default() {
+        let (_tmp, svc) = service_with_config(
+            r#"
+[[agents]]
+id = "review-default"
+name = "Review Default"
+provider = "local"
+endpoint = "local"
+model = "review-default"
+ratings = ["general"]
+
+[[agents]]
+id = "review-explicit"
+name = "Review Explicit"
+provider = "local"
+endpoint = "local"
+model = "review-explicit"
+ratings = ["explicit"]
+
+[[routing]]
+route = "review"
+agent = "review-default"
+
+[[routing]]
+route = "review"
+agent = "review-explicit"
+rating = "explicit"
+"#,
+        )
+        .await;
+        let route = svc
+            .resolve_semantic_route("explicit")
+            .expect("explicit review");
+        assert!(
+            route.model_identity.starts_with("review-explicit|"),
+            "rating override must key the cache, got {}",
+            route.model_identity
+        );
+    }
+
     #[test]
     fn strict_parser_accepts_fenced_json_and_rejects_bad_evidence() {
         let text = "the bell was silent";
@@ -601,10 +703,10 @@ agent = "review-local"
         let text = "the bell was silent";
         let request = request(text);
         let report: SemanticJudgeReportV1 = serde_json::from_str(&report(text)).expect("report");
-        let (warnings, infos, issues) = semantic_issue_from_report(&report, &request, true);
+        let (warnings, infos, issues) = semantic_issue_from_report(&report, &request, true, &[]);
         assert_eq!((warnings, infos, issues.len()), (1, 0, 1));
         assert_eq!(issues[0].severity, "warning");
-        let (warnings, infos, issues) = semantic_issue_from_report(&report, &request, false);
+        let (warnings, infos, issues) = semantic_issue_from_report(&report, &request, false, &[]);
         assert_eq!((warnings, infos, issues.len()), (1, 0, 0));
     }
 

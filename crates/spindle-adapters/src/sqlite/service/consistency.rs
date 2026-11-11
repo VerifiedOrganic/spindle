@@ -2765,10 +2765,6 @@ impl SqliteSpindleService {
             issues.retain(|issue| requested_severities.contains(issue.severity.as_str()));
         }
 
-        // Build per-validator scene groups for the Phase-4 issues so MCP
-        // callers can render them under their own headings.
-        let report_sections = build_consistency_report_sections(&issues, &scenes);
-
         let mut semantic_summary = None;
         if let Some(mode) = input.semantic_mode.filter(|mode| !mode.is_off()) {
             let started = std::time::Instant::now();
@@ -2789,6 +2785,9 @@ impl SqliteSpindleService {
             let mut coverage = spindle_core::models::AuditCoverage::new(
                 "semantic_continuity",
                 scenes.iter().map(|scene| scene.id.clone()),
+            );
+            let run_deadline = std::time::Duration::from_secs(
+                spindle_core::semantic_continuity::SEMANTIC_RUN_WALL_CLOCK_SECONDS,
             );
             let mut host_reports: std::collections::BTreeMap<
                 &str,
@@ -2821,7 +2820,38 @@ impl SqliteSpindleService {
                     );
                 }
             }
-            for request in &requests {
+            if requests.len() > spindle_core::semantic_continuity::SEMANTIC_MAX_SCENES_PER_RUN {
+                summary.errors.push(
+                    spindle_core::semantic_continuity::SemanticJudgeErrorV1::new(
+                        spindle_core::semantic_continuity::SemanticErrorKind::BudgetExceeded,
+                        "semantic run scene ceiling reached",
+                    ),
+                );
+                for request in requests
+                    .iter()
+                    .skip(spindle_core::semantic_continuity::SEMANTIC_MAX_SCENES_PER_RUN)
+                {
+                    coverage
+                        .not_evaluated_ids
+                        .push(request.candidate_set.scene_id.clone());
+                }
+            }
+            for request in requests
+                .iter()
+                .take(spindle_core::semantic_continuity::SEMANTIC_MAX_SCENES_PER_RUN)
+            {
+                if started.elapsed() >= run_deadline {
+                    summary.errors.push(
+                        spindle_core::semantic_continuity::SemanticJudgeErrorV1::new(
+                            spindle_core::semantic_continuity::SemanticErrorKind::BudgetExceeded,
+                            "semantic run wall-clock ceiling reached",
+                        ),
+                    );
+                    coverage
+                        .not_evaluated_ids
+                        .push(request.candidate_set.scene_id.clone());
+                    continue;
+                }
                 let Some(scene) = scene_by_id.get(request.candidate_set.scene_id.as_str()) else {
                     continue;
                 };
@@ -2851,6 +2881,7 @@ impl SqliteSpindleService {
                                 &report,
                                 request,
                                 mode == spindle_core::semantic_continuity::SemanticMode::On,
+                                &issues,
                             );
                         summary.warnings += warnings;
                         summary.infos += infos;
@@ -2895,6 +2926,11 @@ impl SqliteSpindleService {
             audit_coverage.push(coverage);
             semantic_summary = Some(summary);
         }
+
+        // Build per-validator scene groups from the final issue list so
+        // semantic findings are rendered under the same headings as
+        // deterministic findings.
+        let report_sections = build_consistency_report_sections(&issues, &scenes);
 
         let summary = ConsistencySummary {
             error_count: issues

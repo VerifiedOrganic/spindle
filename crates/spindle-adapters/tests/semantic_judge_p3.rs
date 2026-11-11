@@ -1,6 +1,6 @@
 use spindle_adapters::sqlite::{Repository, SqlitePool, SqliteSpindleService};
 use spindle_core::models::{
-    CheckConsistencyInput, ConsistencyScopeInput, ContentRating, CreateProjectInput,
+    CheckConsistencyInput, ConsistencyScopeInput, ContentRating, ContextFormat, CreateProjectInput,
     CreateWorldRuleInput, PrepareSemanticContinuityInput, ReaderContract, SaveSceneDraftInput,
 };
 use spindle_core::semantic_continuity::{
@@ -111,13 +111,13 @@ async fn host_report_emits_in_on_mode_and_shadow_counts_without_findings() {
             deep_scan_offset: None,
             project_id: project_id.clone(),
             scope: ConsistencyScopeInput::full(),
-            checks: Vec::new(),
+            checks: vec!["timeline_continuity".into()],
             severity_filter: Vec::new(),
             deep_check: Some(false),
             semantic_mode: Some(SemanticMode::On),
             semantic_host_reports: vec![report.clone()],
             subjects: Vec::new(),
-            format: None,
+            format: Some(ContextFormat::Markdown),
             budget_tokens: None,
         })
         .await
@@ -133,13 +133,29 @@ async fn host_report_emits_in_on_mode_and_shadow_counts_without_findings() {
     let summary = on.semantic_summary.expect("summary");
     assert_eq!(summary.warnings, 1);
     assert_eq!(summary.model_calls, 0);
+    let semantic_section = on
+        .report_sections
+        .iter()
+        .find(|section| section.validator_id == "world_rule_semantic_drift")
+        .expect("semantic issue must be in report_sections");
+    assert!(
+        semantic_section
+            .scenes
+            .iter()
+            .any(|scene| scene.scene_id.starts_with("scene:"))
+    );
+    assert!(
+        on.markdown
+            .as_deref()
+            .is_some_and(|text| text.contains("(semantic)"))
+    );
 
     let shadow = svc
         .check_consistency(CheckConsistencyInput {
             deep_scan_offset: None,
             project_id,
             scope: ConsistencyScopeInput::full(),
-            checks: Vec::new(),
+            checks: vec!["timeline_continuity".into()],
             severity_filter: Vec::new(),
             deep_check: Some(false),
             semantic_mode: Some(SemanticMode::Shadow),
@@ -285,6 +301,65 @@ async fn cache_key_is_scene_canon_candidate_route_and_model_specific() {
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn deterministic_warning_suppresses_matching_semantic_finding() {
+    let (_tmp, svc, project_id) = seeded_scene().await;
+    let deterministic = svc
+        .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
+            project_id: project_id.clone(),
+            scope: ConsistencyScopeInput::full(),
+            checks: Vec::new(),
+            severity_filter: Vec::new(),
+            deep_check: Some(false),
+            semantic_mode: None,
+            semantic_host_reports: Vec::new(),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        deterministic
+            .issues
+            .iter()
+            .any(|issue| issue.check_type == "world_rule_semantic_drift")
+    );
+    let prepared = svc
+        .prepare_semantic_continuity(PrepareSemanticContinuityInput {
+            project_id: project_id.clone(),
+            scope: ConsistencyScopeInput::full(),
+            subjects: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let report = host_report(&prepared.requests[0]);
+    let on = svc
+        .check_consistency(CheckConsistencyInput {
+            deep_scan_offset: None,
+            project_id,
+            scope: ConsistencyScopeInput::full(),
+            checks: Vec::new(),
+            severity_filter: Vec::new(),
+            deep_check: Some(false),
+            semantic_mode: Some(SemanticMode::On),
+            semantic_host_reports: vec![report],
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        on.issues
+            .iter()
+            .all(|issue| !issue.message.contains("(semantic)")),
+        "deterministic warning must suppress the semantic duplicate"
+    );
+    assert_eq!(on.semantic_summary.expect("summary").warnings, 0);
 }
 
 #[tokio::test]
