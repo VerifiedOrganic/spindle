@@ -1,6 +1,6 @@
 use std::path::{Component, Path};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use sha2::{Digest, Sha256};
 use spindle_core::models::{CommitSceneProseReceipt, CommitSceneProseSource};
 
@@ -14,7 +14,10 @@ pub(super) struct ResolvedProse {
 /// Resolve the book root from the repository data dir. Relative
 /// `SPINDLE_DATA_DIR=.spindle` is joined to the primary's cwd before taking the
 /// parent; canonicalizing avoids empty-parent and symlink surprises.
-pub(super) fn workspace_root_from_data_dir(data_dir: &Path, cwd: &Path) -> Option<std::path::PathBuf> {
+pub(super) fn workspace_root_from_data_dir(
+    data_dir: &Path,
+    cwd: &Path,
+) -> Option<std::path::PathBuf> {
     let absolute = if data_dir.is_absolute() {
         data_dir.to_path_buf()
     } else {
@@ -102,9 +105,9 @@ fn resolve_file(
         )
     })?;
     let relative = validate_relative_path(prose_path)?;
-    let root = root.canonicalize().map_err(|_| {
-        anyhow::anyhow!("commit_scene prose_path workspace root is not readable")
-    })?;
+    let root = root
+        .canonicalize()
+        .map_err(|_| anyhow::anyhow!("commit_scene prose_path workspace root is not readable"))?;
     let candidate = root.join(relative);
     let canonical = candidate.canonicalize().map_err(|_| {
         anyhow::anyhow!(
@@ -119,7 +122,9 @@ fn resolve_file(
         bail!("commit_scene prose_path must not reference .spindle internals");
     }
     let relative_canonical = canonical.strip_prefix(&root).map_err(|_| {
-        anyhow::anyhow!("commit_scene prose_path '{prose_path}' resolves outside the book workspace")
+        anyhow::anyhow!(
+            "commit_scene prose_path '{prose_path}' resolves outside the book workspace"
+        )
     })?;
     if relative_canonical
         .components()
@@ -130,9 +135,8 @@ fn resolve_file(
     {
         bail!("commit_scene prose_path must not reference dotfiles");
     }
-    let metadata = std::fs::metadata(&canonical).map_err(|_| {
-        anyhow::anyhow!("commit_scene prose_path '{prose_path}' is not readable")
-    })?;
+    let metadata = std::fs::metadata(&canonical)
+        .map_err(|_| anyhow::anyhow!("commit_scene prose_path '{prose_path}' is not readable"))?;
     if !metadata.file_type().is_file() {
         bail!("commit_scene prose_path '{prose_path}' is not a regular file");
     }
@@ -236,7 +240,12 @@ mod tests {
     #[test]
     fn requires_exactly_one_source() {
         let (_temp, root) = root();
-        let both = err_text(resolve_prose(Some(&root), "inline", Some("scenes/a.md"), None));
+        let both = err_text(resolve_prose(
+            Some(&root),
+            "inline",
+            Some("scenes/a.md"),
+            None,
+        ));
         assert!(both.contains("exactly one of full_text or prose_path"));
         let neither = err_text(resolve_prose(Some(&root), "", None, None));
         assert!(neither.contains("exactly one of full_text or prose_path"));
@@ -260,7 +269,12 @@ mod tests {
             None,
         ));
         assert!(error.contains("must be relative"), "{error}");
-        let error = err_text(resolve_prose(Some(&root), "", Some("scenes/missing.md"), None));
+        let error = err_text(resolve_prose(
+            Some(&root),
+            "",
+            Some("scenes/missing.md"),
+            None,
+        ));
         assert!(error.contains("does not exist"), "{error}");
         let error = err_text(resolve_prose(Some(&root), "", Some("scenes"), None));
         assert!(error.contains("not a regular file"), "{error}");
@@ -329,11 +343,7 @@ mod tests {
         fs::write(root.join("scenes/bad.md"), [0xff, 0xfe, b'\n']).unwrap();
         let error = err_text(resolve_prose(Some(&root), "", Some("scenes/bad.md"), None));
         assert!(error.contains("UTF-8"), "{error}");
-        fs::write(
-            root.join("scenes/huge.md"),
-            vec![b'a'; MAX_PROSE_BYTES + 1],
-        )
-        .unwrap();
+        fs::write(root.join("scenes/huge.md"), vec![b'a'; MAX_PROSE_BYTES + 1]).unwrap();
         let error = err_text(resolve_prose(Some(&root), "", Some("scenes/huge.md"), None));
         assert!(error.contains("limit"), "{error}");
         let inline = "a".repeat(MAX_PROSE_BYTES + 1);
@@ -344,6 +354,9 @@ mod tests {
     #[test]
     fn requires_workspace_root_for_file_mode() {
         let error = err_text(resolve_prose(None, "", Some("scenes/ch1.md"), None));
-        assert!(error.contains("project-local .spindle workspace"), "{error}");
+        assert!(
+            error.contains("project-local .spindle workspace"),
+            "{error}"
+        );
     }
 }

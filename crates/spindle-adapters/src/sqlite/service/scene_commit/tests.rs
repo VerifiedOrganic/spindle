@@ -7,11 +7,10 @@ use spindle_core::models::{
     CommitSceneCharacterStatePatch, CommitSceneContinuityPackage, CommitSceneInput,
     CommitSceneKnowledgeEntry, CommitSceneProseSource, CommitSceneQuantityStateEntry,
     CommitSceneRelationshipEntry, CommitSceneStoryPlacement, CommitSceneTimelineEventEntry,
-    ContentRating, CreateBranchInput,
-    CreateCharacterInput, CreateFutureKnowledgeInput, CreateLocationInput, CreateProjectInput,
-    CreateRelationshipInput, PrepareSceneInput, PrepareSceneIntent, ReaderContract,
-    RegisterCanonicalFactInput, SaveSceneDraftInput, SceneAuthorship, SceneBeatAnnotationInput,
-    SwitchBranchInput,
+    ContentRating, CreateBranchInput, CreateCharacterInput, CreateFutureKnowledgeInput,
+    CreateLocationInput, CreateProjectInput, CreateRelationshipInput, PrepareSceneInput,
+    PrepareSceneIntent, ReaderContract, RegisterCanonicalFactInput, SaveSceneDraftInput,
+    SceneAuthorship, SceneBeatAnnotationInput, SwitchBranchInput,
 };
 
 fn base_commit(project_id: &str, text: &str) -> CommitSceneInput {

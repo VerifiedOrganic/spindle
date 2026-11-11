@@ -303,7 +303,10 @@ pub(super) fn commit_scene_payload_hash(input: &CommitSceneInput) -> Result<Stri
         object.remove("idempotency_key");
         // Preserve pre-0.4 inline payload hashes: absent file-only fields were
         // not part of the old DTO and serialized as null in the new one.
-        if object.get("prose_path").is_some_and(|value| value.is_null()) {
+        if object
+            .get("prose_path")
+            .is_some_and(|value| value.is_null())
+        {
             object.remove("prose_path");
         }
         if object

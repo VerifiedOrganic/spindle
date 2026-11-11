@@ -1067,9 +1067,7 @@ impl ToolRouter {
 }
 
 fn commit_scene_payload_shape_error(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .any(|cause| cause.is::<serde_json::Error>())
+    error.chain().any(|cause| cause.is::<serde_json::Error>())
 }
 
 fn authoring_start_run_policy_rejection(
