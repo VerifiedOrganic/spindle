@@ -567,7 +567,7 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         ),
         tool::<CommitSceneInput, CommitSceneOutput>(
             "commit_scene",
-            "Atomically commit scene prose with its author-declared continuity package, beat annotations, optional chapter summary, and writer cursor; supports dry_run, stale-preparation checks, and idempotent retries",
+            "Atomically commit scene prose with its author-declared continuity package, beat annotations, optional chapter summary, and writer cursor; supports dry_run, stale-preparation checks, and idempotent retries. Pass exactly one of full_text or prose_path. For long or escape-heavy prose, write a UTF-8 file under the book workspace (outside .spindle and dotfiles) and pass its workspace-relative path with optional expected_sha256; HTTP/secondary calls resolve it on the primary's workspace",
         ),
         tool::<GetEntityInput, EntitySubjectSnapshot>(
             "get_entity",

@@ -13,6 +13,11 @@
   `semantic_mode` off/shadow/on plumbing (default off; no findings yet), and the
   read-only `prepare_semantic_continuity` host-request surface. No model calls
   are made in any mode.
+- `commit_scene` accepts `prose_path` as an alternative to inline `full_text`
+  (exactly one), reading long prose from a workspace-relative UTF-8 file with
+  path confinement, dotfile/`.spindle` rejection, a 2 MB cap, line-ending
+  normalization, optional `expected_sha256`, and a prose-source receipt. HTTP
+  and secondary clients resolve the file on the primary's workspace.
 
 ### Changed
 
@@ -24,6 +29,8 @@
   favor of `dry_run` on `refresh_style_profile` / `apply_style_profile` and
   `create_style_revision_patch`. Stored history, scene versions, save points,
   and record IDs remain readable.
+
+
 
 ## 0.3.1 — 2026-11-10
 

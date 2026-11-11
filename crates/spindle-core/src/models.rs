@@ -3074,8 +3074,20 @@ pub struct CommitSceneInput {
     /// Expected current scene version; a mismatch rejects the commit as stale.
     #[serde(default)]
     pub expected_scene_version: Option<i32>,
-    /// Full scene prose. This text is persisted and never echoed back in the receipt.
+    /// Full scene prose. Exactly one of `full_text` or `prose_path` is required.
+    /// This text is persisted and never echoed back in the receipt.
+    #[serde(default)]
     pub full_text: String,
+    /// Workspace-relative path to a UTF-8 scene prose file. Exactly one of
+    /// `full_text` or `prose_path` is required. The path is resolved by the
+    /// primary process against the folder containing `.spindle/`; dotfiles and
+    /// `.spindle/` internals are rejected.
+    #[serde(default)]
+    pub prose_path: Option<String>,
+    /// Optional SHA-256 of the source bytes (file bytes, or inline UTF-8) for
+    /// integrity checking before the commit.
+    #[serde(default)]
+    pub expected_sha256: Option<String>,
     /// Concise scene summary.
     pub summary: String,
     /// Scene content rating.
@@ -3174,6 +3186,25 @@ pub struct CommitSceneCursor {
     pub scene_order: i32,
 }
 
+/// Where `commit_scene` read the prose and its integrity receipt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CommitSceneProseSource {
+    Inline,
+    File,
+}
+
+/// Prose source, relative path (file mode), raw byte count, and SHA-256.
+/// File hashes cover the raw bytes before line-ending normalization.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneProseReceipt {
+    pub source: CommitSceneProseSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub byte_count: usize,
+    pub sha256: String,
+}
+
 /// Compact receipt returned by `commit_scene`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CommitSceneOutput {
@@ -3219,6 +3250,9 @@ pub struct CommitSceneOutput {
     /// Explanation when undo is limited or unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo_reason: Option<String>,
+    /// Prose source and integrity receipt; absent on pre-0.4 stored receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prose: Option<CommitSceneProseReceipt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
