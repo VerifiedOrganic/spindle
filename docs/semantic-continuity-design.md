@@ -652,6 +652,37 @@ default**.
 Cost: the provider exposes no configured price, so only token and latency
 inputs are reported. Held-out-4 was not accessed.
 
+### 4.2.2 P4 fix: compact judge, verifier, and evidence gates
+
+The pre-fix public reports showed zero contradiction verdicts: the verbose report
+contract truncated at 1,200 output tokens, and successful calls defaulted to
+compatible/insufficient. The fix adds a compact per-candidate wire format,
+server-side evidence-span resolution, general family evidence gates, a
+contradiction-only verifier that fails closed, and evidence-identity dedupe.
+
+Public-set measurement on the fix head (`ollama:gemma4:31b`, shadow/on):
+
+| Set | Deterministic | Semantic on | Warning precision | Control warnings | Repair shadow/on | p95 prompt/output/latency |
+| --- | --- | --- | ---: | --- | ---: | --- |
+| Baseline | 28/28 | 28/28 | 0.25 | +1 quantity | 0% / 0% | 2,195 / 629 / 1,760 ms |
+| #72 | 54/56 | 54/56 | 1.00 | 0 | 3.8% / 40.0% | 2,865 / 982 / 3,006 ms |
+| held-out-2 | 55/56, 56/56 type | 55/56, 56/56 | 0.33 | +1 dead acting | 2.9% / 50.0% | 2,023 / 677 / 1,973 ms |
+| held-out-3 | 26/56, 28/56 type | 29/56, 30/56 | 1.00 | 0 | 2.8% / 50.0% | 3,121 / 935 / 2,630 ms |
+
+The fix removes truncation and raises held-out-3 by +3 localized/+2 type-present
+with perfect warning precision and no control warning rise. Aggregate public
+lift is +3 localized/+2 type-present, but **baseline, #72, and held-out-2 show
+no semantic lift**, and baseline/held-out-2 still have one semantic control
+warning each. The activation gates are therefore **not met** on this head; the
+lane remains off by default. #72's semantic warnings are correct but duplicate
+already-detected plants; held-out-2's remaining warnings are one dead-acting
+confirmation and two false positives.
+
+The stronger-model check (`deepseek-v4.1-flash`) was not viable: it truncated
+111/120 #72 calls and 121/125 held-out-3 calls at the output cap, with zero
+findings and ~8-9 s p95 latency. Gemma remains the measured judge; the operator
+still chooses model/cost.
+
 ### 4.3 Metrics on all five sets
 
 For baseline, #72, held-out-2, held-out-3, and held-out-4:

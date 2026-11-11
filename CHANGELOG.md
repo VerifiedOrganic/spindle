@@ -13,6 +13,12 @@
   `semantic_mode` off/shadow/on plumbing (default off; no findings yet), and the
   read-only `prepare_semantic_continuity` host-request surface. No model calls
   are made in any mode.
+- Added a compact semantic judge wire format with server-side evidence-span
+  resolution, general family evidence gates, a fail-closed contradiction
+  verifier, and evidence-identity dedupe. Public held-out-3 improves by +3
+  localized/+2 type-present with perfect warning precision and no control rise;
+  baseline/#72/held-out-2 do not yet show lift, so activation gates remain unmet
+  and the lane stays off by default.
 - Added the P4 semantic evaluator: `continuity_recall.py --semantic off|shadow|on`
   runs the public continuity sets with an explicit judge config; reports
   deterministic-vs-semantic recall, warning precision/control counts, evidence

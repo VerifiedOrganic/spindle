@@ -1,0 +1,1291 @@
+{
+  "judge_identity": "ollama:gemma4:31b",
+  "modes": {
+    "on": {
+      "cache_hit_rate": 0.9844,
+      "calls_per_candidate_scene": 0.0312,
+      "candidate_scene_count": 64,
+      "confidence_buckets": [
+        0,
+        1,
+        0,
+        0,
+        560
+      ],
+      "control_warnings_by_check_type": {},
+      "deterministic": {
+        "control_count": 8,
+        "localized": 26,
+        "planted": 56,
+        "type_present": 28
+      },
+      "discard_reasons": {
+        "dedupe": 2,
+        "not_contradiction": 555
+      },
+      "errors_by_kind": {
+        "invalid_evidence": 1
+      },
+      "evidence_anchor_validity": 1.0,
+      "input_tokens": 6055,
+      "issues": [
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751N9F86K03J3M0DYEK1B25",
+            "scene:01M751N8BSH5RC7C7VD2FYFAZW"
+          ],
+          "message": "scene references world rule 'The tide bell's price' (no violation context detected) (bytes 713..722)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751N9F97AGF75NQHXE0AA5G",
+            "scene:01M751N8SNJA2C9HW0QD0MKYJ3"
+          ],
+          "message": "scene references world rule 'Iron in the orchard' (no violation context detected) (bytes 663..667)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751N9F97AGF75NQHXE0AA5G",
+            "scene:01M751N8VK9X2TYM18CKPD2F8Z"
+          ],
+          "message": "scene references world rule 'Iron in the orchard' (no violation context detected) (bytes 405..409)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751N9F98RW77NF1BE6BJCWY",
+            "scene:01M751N93B2Z6F511TVDP44CRY"
+          ],
+          "message": "scene references world rule 'The third bell' (no violation context detected) (bytes 198..208)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751N9FAPDGJGD21SFNGJF6Q",
+            "scene:01M751N9B38H3WYTSP058NM3G9"
+          ],
+          "message": "scene references world rule 'First frost' (no violation context detected) (bytes 4..15)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "temporal_coherence",
+          "entity_ids": [
+            "scene:01M751N9TBJYCQ5WSZVM0PBM1F"
+          ],
+          "message": "scene says 'a single day' since Seraphine Fen Calloway died, but the recorded clocks place the death 4 days before this scene",
+          "severity": "warning",
+          "suggested_action": "correct the elapsed-time phrase or the scene clock so the claimed gap matches the recorded timeline"
+        },
+        {
+          "check_type": "temporal_coherence",
+          "entity_ids": [
+            "scene:01M751NA23ZEF224G2KGGWAM6Y"
+          ],
+          "message": "scene says 'only that morning' since Bran Hollis died, but the recorded clocks place the death 3 days before this scene",
+          "severity": "warning",
+          "suggested_action": "correct the elapsed-time phrase or the scene clock so the claimed gap matches the recorded timeline"
+        },
+        {
+          "check_type": "temporal_coherence",
+          "entity_ids": [
+            "scene:01M751NABT4J3ERS7RRA7EXKKV"
+          ],
+          "message": "scene says 'three days' since Maren Calloway died, but the recorded clocks place the death 22 days before this scene",
+          "severity": "warning",
+          "suggested_action": "correct the elapsed-time phrase or the scene clock so the claimed gap matches the recorded timeline"
+        },
+        {
+          "check_type": "affordability",
+          "entity_ids": [
+            "scene:01M751NA9VWTEJ712KF72CDWGW",
+            "character:01M751N9FXB71VGS5E5Z265EXM"
+          ],
+          "message": "scene names purchases totalling 20 base units for Iris Calloway, above their tracked silver of 6 base units",
+          "severity": "warning",
+          "suggested_action": "confirm the character can afford this, or update their tracked amount"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "knowledge_fact:01M751NAG5WVMYP1XVDPQN2ZFF",
+            "character:01M751N9G1ZPEEV0N8S96SRT3Q",
+            "scene:01M751N9PCZT2WGJ4GVP79J1FG"
+          ],
+          "message": "book 1 chapter 4 scene 1: 'Tobin Sarrow' references 'The orchard ledger is under the chapel floor.' before learning it in book 1 chapter 6 (paraphrased: '\"The orchard ledger,\" Tobin says.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "knowledge_fact:01M751NAG50P74XEHDWQ08K95A",
+            "character:01M751N9G2YFFER9PS15N3XKW6",
+            "scene:01M751N9RCCFWEHW3BHZ098VB9"
+          ],
+          "message": "book 1 chapter 5 scene 1: 'Bran Hollis' references 'Maren scuttled her own boat.' before learning it in book 1 chapter 8 (paraphrased: '\"Maren scuttled the boat herself,\" Bran says.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751N9G1ZPEEV0N8S96SRT3Q",
+            "scene:01M751N9PCZT2WGJ4GVP79J1FG"
+          ],
+          "message": "book 1 chapter 4 scene 1: 'Tobin Sarrow' references 'The orchard ledger is under the chapel floor.' before learning it in book 1 chapter 6 (paraphrased: '\"The orchard ledger,\" Tobin says.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751N9G2YFFER9PS15N3XKW6",
+            "scene:01M751N9RCCFWEHW3BHZ098VB9"
+          ],
+          "message": "book 1 chapter 5 scene 1: 'Bran Hollis' references 'Maren scuttled her own boat.' before learning it in book 1 chapter 8 (paraphrased: '\"Maren scuttled the boat herself,\" Bran says.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751N9G01HFHB43YR6Z4YB2S",
+            "scene:01M751N9W862KPS9KTZPPE7WB6"
+          ],
+          "message": "book 1 chapter 7 scene 1 includes 'Seraphine Fen Calloway' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751N9G01HFHB43YR6Z4YB2S",
+            "scene:01M751N9W862KPS9KTZPPE7WB6"
+          ],
+          "message": "book 1 chapter 7 scene 1 includes 'Seraphine Fen Calloway' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751N9FZJXP6YATXYZ4A4WM4",
+            "scene:01M751NA04BZG1T8GFXW305NFS"
+          ],
+          "message": "book 1 chapter 9 scene 1 includes 'Maren Calloway' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751N9FZJXP6YATXYZ4A4WM4",
+            "scene:01M751NA04BZG1T8GFXW305NFS"
+          ],
+          "message": "book 1 chapter 9 scene 1 includes 'Maren Calloway' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751N9G1ZPEEV0N8S96SRT3Q",
+            "scene:01M751NABT4J3ERS7RRA7EXKKV"
+          ],
+          "message": "book 1 chapter 15 scene 1 includes 'Tobin Sarrow' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751N9G1ZPEEV0N8S96SRT3Q",
+            "scene:01M751NABT4J3ERS7RRA7EXKKV"
+          ],
+          "message": "book 1 chapter 15 scene 1 includes 'Tobin Sarrow' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NAFZDAKN3M9WQ7YZAK90",
+            "scene:01M751N9GG768YAWF1YFBRMJC7"
+          ],
+          "message": "scene references world rule 'The tide bell's price' (no violation context detected) (bytes 713..722)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NAG03PZ9M5K04WG7S169",
+            "scene:01M751N9TBJYCQ5WSZVM0PBM1F"
+          ],
+          "message": "scene references world rule 'Iron in the orchard' (no violation context detected) (bytes 666..670)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NAG03PZ9M5K04WG7S169",
+            "scene:01M751N9W862KPS9KTZPPE7WB6"
+          ],
+          "message": "scene references world rule 'Iron in the orchard' (no violation context detected) (bytes 573..577)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NAFTGFKXN8TH2BJ9M693",
+            "character:01M751N9G1ZPEEV0N8S96SRT3Q",
+            "scene:01M751N9W862KPS9KTZPPE7WB6"
+          ],
+          "message": "book 1 chapter 7 scene 1: 'left eye' conflicts with canonical value 'blind and milky' (prose says 'sighted': Tobin Sarrow stands by the door with his blind left eye clear and brown, his good eye on Silas.) (bytes 282..378)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NAG1AMSBJG2GD4W9BG8Q",
+            "scene:01M751NA425M51K4K9M3RW3V3S"
+          ],
+          "message": "scene references world rule 'The third bell' (no violation context detected) (bytes 198..208)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NAFSCA3692ESVS4ZMHQB",
+            "character:01M751N9FXB71VGS5E5Z265EXM",
+            "scene:01M751NA61GDZM58M42D1K34MT"
+          ],
+          "message": "book 1 chapter 12 scene 1: 'burn scar' conflicts with canonical value 'on her left forearm' (prose says 'right': I brace my right forearm on the table, and the burn scar shows pale against the wood.) (bytes 210..297)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NAG26G3XP3HGBQNRTGN8",
+            "scene:01M751NABT4J3ERS7RRA7EXKKV"
+          ],
+          "message": "scene references world rule 'First frost' (no violation context detected) (bytes 4..15)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NAFR6ZE7C18BCN13RDWV",
+            "character:01M751N9FXB71VGS5E5Z265EXM",
+            "scene:01M751NADS31XJQJYY5CP9DG05"
+          ],
+          "message": "book 1 chapter 16 scene 1: 'handedness' conflicts with canonical value 'left-handed' (prose says 'right': I sign the deed with my right hand and the registrar stamps it.) (bytes 54..118)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NAFSCA3692ESVS4ZMHQB",
+            "character:01M751N9FXB71VGS5E5Z265EXM",
+            "scene:01M751NADS31XJQJYY5CP9DG05"
+          ],
+          "message": "book 1 chapter 16 scene 1: 'burn scar' conflicts with canonical value 'on her left forearm' (prose says 'right': I sign the deed with my right hand and the registrar stamps it.) (bytes 54..118)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751N9G2YFFER9PS15N3XKW6",
+            "scene:01M751NA23ZEF224G2KGGWAM6Y"
+          ],
+          "evidence": {
+            "end_byte": 184,
+            "exact_quote": "Bran rows me out to the chapel rock, his flat stare on the horizon. \"You should not be doing this a",
+            "scene_id": "scene:01M751NA23ZEF224G2KGGWAM6Y",
+            "scene_sha256": "3af3547c18941c527c42393f5d8b763f383959889e526684c490a462ab9431b0",
+            "start_byte": 85
+          },
+          "message": "semantic contradiction: character is marked dead (dead) before this scene (semantic)",
+          "severity": "warning",
+          "suggested_action": "review the cited scene evidence and canon reference, then revise the prose or canon"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NB5ABC3AG0VG5B9TC9PV",
+            "scene:01M751NAQFW2FYN22B1SBQRRY0"
+          ],
+          "message": "scene references world rule 'The felt case' (no violation context detected) (bytes 223..236)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NB5ABC3AG0VG5B9TC9PV",
+            "scene:01M751NAYYK3YNWG1ZJN674W31"
+          ],
+          "message": "scene references world rule 'The felt case' (no violation context detected) (bytes 100..113)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NB5CDB37HHA2MN56VWPS",
+            "scene:01M751NB1CD25VYN42JNF1MQ34"
+          ],
+          "message": "scene references world rule 'The Meridian Stair' (no violation context detected) (bytes 19..33)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "affordability",
+          "entity_ids": [
+            "scene:01M751NBBMQBJWFPJMGBZ47674",
+            "character:01M751NB62BS7JGD1M8E8J4G7A"
+          ],
+          "message": "scene names purchases totalling 60 base units for Kestrel Avedon, above their tracked silver of 40 base units",
+          "severity": "warning",
+          "suggested_action": "confirm the character can afford this, or update their tracked amount"
+        },
+        {
+          "check_type": "affordability",
+          "entity_ids": [
+            "scene:01M751NBM4ARH75TQPZN7580FJ",
+            "character:01M751NB6559KSZWQ3WKSPDQ13"
+          ],
+          "message": "scene names purchases totalling 5 base units for Orin Tal, above their tracked copper of 2 base units",
+          "severity": "warning",
+          "suggested_action": "confirm the character can afford this, or update their tracked amount"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "knowledge_fact:01M751NBTHD8GRJPV1HFPR2TZP",
+            "character:01M751NB6559KSZWQ3WKSPDQ13",
+            "scene:01M751NB94R2WWXM7DSPE9Q6A5"
+          ],
+          "message": "book 1 chapter 3 scene 1: 'Orin Tal' references 'The lens formula is three parts salt to one part ash.' before learning it in book 1 chapter 6 (paraphrased: '\"The formula is three parts salt to one part ash,\" Orin said.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "knowledge_fact:01M751NBTJ3DJAK834P6KKXF4M",
+            "character:01M751NB6559KSZWQ3WKSPDQ13",
+            "scene:01M751NBF86BKEEYR72MNSQ12V"
+          ],
+          "message": "book 1 chapter 8 scene 1: 'Orin Tal' references 'Orin's father was Corin Tal, the lightwright who built the Meridian.' before learning it in book 1 chapter 11 (paraphrased: '\"Corin Tal built the Meridian,\" he said.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB6559KSZWQ3WKSPDQ13",
+            "scene:01M751NB94R2WWXM7DSPE9Q6A5"
+          ],
+          "message": "book 1 chapter 3 scene 1: 'Orin Tal' references 'The lens formula is three parts salt to one part ash.' before learning it in book 1 chapter 6 (paraphrased: '\"The formula is three parts salt to one part ash,\" Orin said.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB6559KSZWQ3WKSPDQ13",
+            "scene:01M751NBF86BKEEYR72MNSQ12V"
+          ],
+          "message": "book 1 chapter 8 scene 1: 'Orin Tal' references 'Orin's father was Corin Tal, the lightwright who built the Meridian.' before learning it in book 1 chapter 11 (paraphrased: '\"Corin Tal built the Meridian,\" he said.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB67403PSQVDHG4YA62S",
+            "scene:01M751NBGFS1RWYK88Y1WX17Z3"
+          ],
+          "message": "book 1 chapter 9 scene 1 includes 'Hessa Avedon' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751NB67403PSQVDHG4YA62S",
+            "scene:01M751NBGFS1RWYK88Y1WX17Z3"
+          ],
+          "message": "book 1 chapter 9 scene 1 includes 'Hessa Avedon' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB69CT6E97K70Q1PFJ24",
+            "scene:01M751NBJYH8N4DHWXRN7KH017"
+          ],
+          "message": "book 1 chapter 11 scene 1 includes 'Dax Nuru' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751NB69CT6E97K70Q1PFJ24",
+            "scene:01M751NBJYH8N4DHWXRN7KH017"
+          ],
+          "message": "book 1 chapter 11 scene 1 includes 'Dax Nuru' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB6AFBTPJC5C0K443C0A",
+            "scene:01M751NBM4ARH75TQPZN7580FJ"
+          ],
+          "message": "book 1 chapter 12 scene 1 includes 'Rill' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751NB6AFBTPJC5C0K443C0A",
+            "scene:01M751NBM4ARH75TQPZN7580FJ"
+          ],
+          "message": "book 1 chapter 12 scene 1 includes 'Rill' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB6BYWSJ10GEMTCAQAGA",
+            "scene:01M751NBQQCFHPJFCB5YBWPQP2"
+          ],
+          "message": "book 1 chapter 15 scene 1 includes 'Moth' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751NB6BYWSJ10GEMTCAQAGA",
+            "scene:01M751NBQQCFHPJFCB5YBWPQP2"
+          ],
+          "message": "book 1 chapter 15 scene 1 includes 'Moth' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NBT7HXMC9NRSY3PGTE5J",
+            "character:01M751NB6559KSZWQ3WKSPDQ13",
+            "scene:01M751NBBMQBJWFPJMGBZ47674"
+          ],
+          "message": "book 1 chapter 5 scene 1: 'hair color' conflicts with canonical value 'red' (prose says 'black': Orin Tal stood in the doorway with his black hair plastered to his forehead and his apprentice's satchel against his chest.) (bytes 464..589)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NBTCHRMR6802ZM0WA7SX",
+            "scene:01M751NBCVKWA14ZXMB4A93AQT"
+          ],
+          "message": "scene references world rule 'The felt case' (no violation context detected) (bytes 223..236)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NBTCHRMR6802ZM0WA7SX",
+            "scene:01M751NBM4ARH75TQPZN7580FJ"
+          ],
+          "message": "scene references world rule 'The felt case' (no violation context detected) (bytes 100..113)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NBT8YGGNY86Q7ER06EVZ",
+            "character:01M751NB66F850TMZW8S5F2FMZ",
+            "scene:01M751NBNBX0CVNAW643NB70H2"
+          ],
+          "message": "book 1 chapter 13 scene 1: 'glass eye' conflicts with canonical value 'his left eye' (prose says 'right': Magistrate Vey stood at the edge of the garden with his right eye gleaming.) (bytes 235..312)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NBTEBK95NJV0E261NVAV",
+            "scene:01M751NBPH95P9Z7PZB423QJSA"
+          ],
+          "message": "scene references world rule 'The Meridian Stair' (no violation context detected) (bytes 19..33)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "character:01M751NB631QSJ3B6T86BKG10H",
+            "scene:01M751NB7X996DTB7G50412J5Q"
+          ],
+          "evidence": {
+            "end_byte": 157,
+            "exact_quote": "a scar through her right eyebrow",
+            "scene_id": "scene:01M751NB7X996DTB7G50412J5Q",
+            "scene_sha256": "9999fcbc1ebc63db57ad3b7fc9197251b25cf44fe603b4c1e1c7b00df534bff3",
+            "start_byte": 125
+          },
+          "message": "semantic contradiction: eyebrow scar: through her left eyebrow (semantic)",
+          "severity": "warning",
+          "suggested_action": "review the cited scene evidence and canon reference, then revise the prose or canon"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "scene:01M751NBCVKWA14ZXMB4A93AQT"
+          ],
+          "evidence": {
+            "end_byte": 364,
+            "exact_quote": "the frost came, and it did not touch her hands",
+            "scene_id": "scene:01M751NBCVKWA14ZXMB4A93AQT",
+            "scene_sha256": "990ce61fcb7a3cb4acbffdb2fc1d6d798f3eeaef400645794a07a2b8e7c5a450",
+            "start_byte": 318
+          },
+          "message": "semantic contradiction: world rule 'The felt case': A meridian lens carried across the salt flats must travel in a felt-lined wooden case. Bare glass draws the frost, and the frost takes the carrier's hands. (semantic)",
+          "severity": "warning",
+          "suggested_action": "review the cited scene evidence and canon reference, then revise the prose or canon"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751NB69CT6E97K70Q1PFJ24",
+            "scene:01M751NBJYH8N4DHWXRN7KH017"
+          ],
+          "evidence": {
+            "end_byte": 79,
+            "exact_quote": "Dax Nuru came back on the twenty-ninth day",
+            "scene_id": "scene:01M751NBJYH8N4DHWXRN7KH017",
+            "scene_sha256": "0d2385ffd8894cc2c4fd7f49d1984f71031047bdc1355f32993e17f2df909331",
+            "start_byte": 37
+          },
+          "message": "semantic contradiction: character is marked dead (dead) before this scene (semantic)",
+          "severity": "warning",
+          "suggested_action": "review the cited scene evidence and canon reference, then revise the prose or canon"
+        }
+      ],
+      "judgments": 561,
+      "model_calls": 2,
+      "output_tokens": 1772,
+      "p95_latency_ms": 2320.0,
+      "p95_output_chars": 1657.0,
+      "p95_output_tokens": 886.0,
+      "p95_prompt_tokens": 3041.0,
+      "per_call_receipts": 2,
+      "repair_rate": 0.5,
+      "repaired_scene_rate": 0.0156,
+      "semantic_control_warnings": 0,
+      "semantic_issues": [
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751N9G2YFFER9PS15N3XKW6",
+            "scene:01M751NA23ZEF224G2KGGWAM6Y"
+          ],
+          "evidence": {
+            "end_byte": 184,
+            "exact_quote": "Bran rows me out to the chapel rock, his flat stare on the horizon. \"You should not be doing this a",
+            "scene_id": "scene:01M751NA23ZEF224G2KGGWAM6Y",
+            "scene_sha256": "3af3547c18941c527c42393f5d8b763f383959889e526684c490a462ab9431b0",
+            "start_byte": 85
+          },
+          "message": "semantic contradiction: character is marked dead (dead) before this scene (semantic)",
+          "severity": "warning",
+          "suggested_action": "review the cited scene evidence and canon reference, then revise the prose or canon"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "character:01M751NB631QSJ3B6T86BKG10H",
+            "scene:01M751NB7X996DTB7G50412J5Q"
+          ],
+          "evidence": {
+            "end_byte": 157,
+            "exact_quote": "a scar through her right eyebrow",
+            "scene_id": "scene:01M751NB7X996DTB7G50412J5Q",
+            "scene_sha256": "9999fcbc1ebc63db57ad3b7fc9197251b25cf44fe603b4c1e1c7b00df534bff3",
+            "start_byte": 125
+          },
+          "message": "semantic contradiction: eyebrow scar: through her left eyebrow (semantic)",
+          "severity": "warning",
+          "suggested_action": "review the cited scene evidence and canon reference, then revise the prose or canon"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "scene:01M751NBCVKWA14ZXMB4A93AQT"
+          ],
+          "evidence": {
+            "end_byte": 364,
+            "exact_quote": "the frost came, and it did not touch her hands",
+            "scene_id": "scene:01M751NBCVKWA14ZXMB4A93AQT",
+            "scene_sha256": "990ce61fcb7a3cb4acbffdb2fc1d6d798f3eeaef400645794a07a2b8e7c5a450",
+            "start_byte": 318
+          },
+          "message": "semantic contradiction: world rule 'The felt case': A meridian lens carried across the salt flats must travel in a felt-lined wooden case. Bare glass draws the frost, and the frost takes the carrier's hands. (semantic)",
+          "severity": "warning",
+          "suggested_action": "review the cited scene evidence and canon reference, then revise the prose or canon"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751NB69CT6E97K70Q1PFJ24",
+            "scene:01M751NBJYH8N4DHWXRN7KH017"
+          ],
+          "evidence": {
+            "end_byte": 79,
+            "exact_quote": "Dax Nuru came back on the twenty-ninth day",
+            "scene_id": "scene:01M751NBJYH8N4DHWXRN7KH017",
+            "scene_sha256": "0d2385ffd8894cc2c4fd7f49d1984f71031047bdc1355f32993e17f2df909331",
+            "start_byte": 37
+          },
+          "message": "semantic contradiction: character is marked dead (dead) before this scene (semantic)",
+          "severity": "warning",
+          "suggested_action": "review the cited scene evidence and canon reference, then revise the prose or canon"
+        }
+      ],
+      "semantic_on": {
+        "control_count": 8,
+        "localized": 29,
+        "planted": 56,
+        "type_present": 30
+      },
+      "semantic_only": {
+        "control_count": 0,
+        "localized": 4,
+        "planted": 56,
+        "type_present": 4
+      },
+      "semantic_warning_count": 4,
+      "semantic_warning_precision": 1.0,
+      "stop_reasons": {
+        "success": 2
+      },
+      "tokens_per_chapter": 244.59,
+      "tokens_per_scene": 122.3,
+      "verdicts": {
+        "compatible": 497,
+        "contradiction": 6,
+        "insufficient": 58
+      },
+      "would_be_infos": 0,
+      "would_be_warnings": 4
+    },
+    "shadow": {
+      "cache_hit_rate": 0.0,
+      "calls_per_candidate_scene": 1.125,
+      "candidate_scene_count": 64,
+      "confidence_buckets": [
+        0,
+        1,
+        0,
+        0,
+        560
+      ],
+      "control_warnings_by_check_type": {},
+      "deterministic": {
+        "control_count": 8,
+        "localized": 26,
+        "planted": 56,
+        "type_present": 28
+      },
+      "discard_reasons": {
+        "dedupe": 2,
+        "not_contradiction": 555
+      },
+      "errors_by_kind": {
+        "invalid_evidence": 1
+      },
+      "evidence_anchor_validity": 1.0,
+      "input_tokens": 163180,
+      "issues": [
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751N9F86K03J3M0DYEK1B25",
+            "scene:01M751N8BSH5RC7C7VD2FYFAZW"
+          ],
+          "message": "scene references world rule 'The tide bell's price' (no violation context detected) (bytes 713..722)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751N9F97AGF75NQHXE0AA5G",
+            "scene:01M751N8SNJA2C9HW0QD0MKYJ3"
+          ],
+          "message": "scene references world rule 'Iron in the orchard' (no violation context detected) (bytes 663..667)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751N9F97AGF75NQHXE0AA5G",
+            "scene:01M751N8VK9X2TYM18CKPD2F8Z"
+          ],
+          "message": "scene references world rule 'Iron in the orchard' (no violation context detected) (bytes 405..409)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751N9F98RW77NF1BE6BJCWY",
+            "scene:01M751N93B2Z6F511TVDP44CRY"
+          ],
+          "message": "scene references world rule 'The third bell' (no violation context detected) (bytes 198..208)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751N9FAPDGJGD21SFNGJF6Q",
+            "scene:01M751N9B38H3WYTSP058NM3G9"
+          ],
+          "message": "scene references world rule 'First frost' (no violation context detected) (bytes 4..15)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "temporal_coherence",
+          "entity_ids": [
+            "scene:01M751N9TBJYCQ5WSZVM0PBM1F"
+          ],
+          "message": "scene says 'a single day' since Seraphine Fen Calloway died, but the recorded clocks place the death 4 days before this scene",
+          "severity": "warning",
+          "suggested_action": "correct the elapsed-time phrase or the scene clock so the claimed gap matches the recorded timeline"
+        },
+        {
+          "check_type": "temporal_coherence",
+          "entity_ids": [
+            "scene:01M751NA23ZEF224G2KGGWAM6Y"
+          ],
+          "message": "scene says 'only that morning' since Bran Hollis died, but the recorded clocks place the death 3 days before this scene",
+          "severity": "warning",
+          "suggested_action": "correct the elapsed-time phrase or the scene clock so the claimed gap matches the recorded timeline"
+        },
+        {
+          "check_type": "temporal_coherence",
+          "entity_ids": [
+            "scene:01M751NABT4J3ERS7RRA7EXKKV"
+          ],
+          "message": "scene says 'three days' since Maren Calloway died, but the recorded clocks place the death 22 days before this scene",
+          "severity": "warning",
+          "suggested_action": "correct the elapsed-time phrase or the scene clock so the claimed gap matches the recorded timeline"
+        },
+        {
+          "check_type": "affordability",
+          "entity_ids": [
+            "scene:01M751NA9VWTEJ712KF72CDWGW",
+            "character:01M751N9FXB71VGS5E5Z265EXM"
+          ],
+          "message": "scene names purchases totalling 20 base units for Iris Calloway, above their tracked silver of 6 base units",
+          "severity": "warning",
+          "suggested_action": "confirm the character can afford this, or update their tracked amount"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "knowledge_fact:01M751NAG5WVMYP1XVDPQN2ZFF",
+            "character:01M751N9G1ZPEEV0N8S96SRT3Q",
+            "scene:01M751N9PCZT2WGJ4GVP79J1FG"
+          ],
+          "message": "book 1 chapter 4 scene 1: 'Tobin Sarrow' references 'The orchard ledger is under the chapel floor.' before learning it in book 1 chapter 6 (paraphrased: '\"The orchard ledger,\" Tobin says.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "knowledge_fact:01M751NAG50P74XEHDWQ08K95A",
+            "character:01M751N9G2YFFER9PS15N3XKW6",
+            "scene:01M751N9RCCFWEHW3BHZ098VB9"
+          ],
+          "message": "book 1 chapter 5 scene 1: 'Bran Hollis' references 'Maren scuttled her own boat.' before learning it in book 1 chapter 8 (paraphrased: '\"Maren scuttled the boat herself,\" Bran says.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751N9G1ZPEEV0N8S96SRT3Q",
+            "scene:01M751N9PCZT2WGJ4GVP79J1FG"
+          ],
+          "message": "book 1 chapter 4 scene 1: 'Tobin Sarrow' references 'The orchard ledger is under the chapel floor.' before learning it in book 1 chapter 6 (paraphrased: '\"The orchard ledger,\" Tobin says.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751N9G2YFFER9PS15N3XKW6",
+            "scene:01M751N9RCCFWEHW3BHZ098VB9"
+          ],
+          "message": "book 1 chapter 5 scene 1: 'Bran Hollis' references 'Maren scuttled her own boat.' before learning it in book 1 chapter 8 (paraphrased: '\"Maren scuttled the boat herself,\" Bran says.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751N9G01HFHB43YR6Z4YB2S",
+            "scene:01M751N9W862KPS9KTZPPE7WB6"
+          ],
+          "message": "book 1 chapter 7 scene 1 includes 'Seraphine Fen Calloway' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751N9G01HFHB43YR6Z4YB2S",
+            "scene:01M751N9W862KPS9KTZPPE7WB6"
+          ],
+          "message": "book 1 chapter 7 scene 1 includes 'Seraphine Fen Calloway' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751N9FZJXP6YATXYZ4A4WM4",
+            "scene:01M751NA04BZG1T8GFXW305NFS"
+          ],
+          "message": "book 1 chapter 9 scene 1 includes 'Maren Calloway' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751N9FZJXP6YATXYZ4A4WM4",
+            "scene:01M751NA04BZG1T8GFXW305NFS"
+          ],
+          "message": "book 1 chapter 9 scene 1 includes 'Maren Calloway' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751N9G1ZPEEV0N8S96SRT3Q",
+            "scene:01M751NABT4J3ERS7RRA7EXKKV"
+          ],
+          "message": "book 1 chapter 15 scene 1 includes 'Tobin Sarrow' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751N9G1ZPEEV0N8S96SRT3Q",
+            "scene:01M751NABT4J3ERS7RRA7EXKKV"
+          ],
+          "message": "book 1 chapter 15 scene 1 includes 'Tobin Sarrow' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NAFZDAKN3M9WQ7YZAK90",
+            "scene:01M751N9GG768YAWF1YFBRMJC7"
+          ],
+          "message": "scene references world rule 'The tide bell's price' (no violation context detected) (bytes 713..722)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NAG03PZ9M5K04WG7S169",
+            "scene:01M751N9TBJYCQ5WSZVM0PBM1F"
+          ],
+          "message": "scene references world rule 'Iron in the orchard' (no violation context detected) (bytes 666..670)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NAFTGFKXN8TH2BJ9M693",
+            "character:01M751N9G1ZPEEV0N8S96SRT3Q",
+            "scene:01M751N9W862KPS9KTZPPE7WB6"
+          ],
+          "message": "book 1 chapter 7 scene 1: 'left eye' conflicts with canonical value 'blind and milky' (prose says 'sighted': Tobin Sarrow stands by the door with his blind left eye clear and brown, his good eye on Silas.) (bytes 282..378)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NAG03PZ9M5K04WG7S169",
+            "scene:01M751N9W862KPS9KTZPPE7WB6"
+          ],
+          "message": "scene references world rule 'Iron in the orchard' (no violation context detected) (bytes 573..577)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NAG1AMSBJG2GD4W9BG8Q",
+            "scene:01M751NA425M51K4K9M3RW3V3S"
+          ],
+          "message": "scene references world rule 'The third bell' (no violation context detected) (bytes 198..208)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NAFSCA3692ESVS4ZMHQB",
+            "character:01M751N9FXB71VGS5E5Z265EXM",
+            "scene:01M751NA61GDZM58M42D1K34MT"
+          ],
+          "message": "book 1 chapter 12 scene 1: 'burn scar' conflicts with canonical value 'on her left forearm' (prose says 'right': I brace my right forearm on the table, and the burn scar shows pale against the wood.) (bytes 210..297)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NAG26G3XP3HGBQNRTGN8",
+            "scene:01M751NABT4J3ERS7RRA7EXKKV"
+          ],
+          "message": "scene references world rule 'First frost' (no violation context detected) (bytes 4..15)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NAFR6ZE7C18BCN13RDWV",
+            "character:01M751N9FXB71VGS5E5Z265EXM",
+            "scene:01M751NADS31XJQJYY5CP9DG05"
+          ],
+          "message": "book 1 chapter 16 scene 1: 'handedness' conflicts with canonical value 'left-handed' (prose says 'right': I sign the deed with my right hand and the registrar stamps it.) (bytes 54..118)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NAFSCA3692ESVS4ZMHQB",
+            "character:01M751N9FXB71VGS5E5Z265EXM",
+            "scene:01M751NADS31XJQJYY5CP9DG05"
+          ],
+          "message": "book 1 chapter 16 scene 1: 'burn scar' conflicts with canonical value 'on her left forearm' (prose says 'right': I sign the deed with my right hand and the registrar stamps it.) (bytes 54..118)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NB5ABC3AG0VG5B9TC9PV",
+            "scene:01M751NAQFW2FYN22B1SBQRRY0"
+          ],
+          "message": "scene references world rule 'The felt case' (no violation context detected) (bytes 223..236)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NB5ABC3AG0VG5B9TC9PV",
+            "scene:01M751NAYYK3YNWG1ZJN674W31"
+          ],
+          "message": "scene references world rule 'The felt case' (no violation context detected) (bytes 100..113)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NB5CDB37HHA2MN56VWPS",
+            "scene:01M751NB1CD25VYN42JNF1MQ34"
+          ],
+          "message": "scene references world rule 'The Meridian Stair' (no violation context detected) (bytes 19..33)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "affordability",
+          "entity_ids": [
+            "scene:01M751NBBMQBJWFPJMGBZ47674",
+            "character:01M751NB62BS7JGD1M8E8J4G7A"
+          ],
+          "message": "scene names purchases totalling 60 base units for Kestrel Avedon, above their tracked silver of 40 base units",
+          "severity": "warning",
+          "suggested_action": "confirm the character can afford this, or update their tracked amount"
+        },
+        {
+          "check_type": "affordability",
+          "entity_ids": [
+            "scene:01M751NBM4ARH75TQPZN7580FJ",
+            "character:01M751NB6559KSZWQ3WKSPDQ13"
+          ],
+          "message": "scene names purchases totalling 5 base units for Orin Tal, above their tracked copper of 2 base units",
+          "severity": "warning",
+          "suggested_action": "confirm the character can afford this, or update their tracked amount"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "knowledge_fact:01M751NBTHD8GRJPV1HFPR2TZP",
+            "character:01M751NB6559KSZWQ3WKSPDQ13",
+            "scene:01M751NB94R2WWXM7DSPE9Q6A5"
+          ],
+          "message": "book 1 chapter 3 scene 1: 'Orin Tal' references 'The lens formula is three parts salt to one part ash.' before learning it in book 1 chapter 6 (paraphrased: '\"The formula is three parts salt to one part ash,\" Orin said.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "knowledge_fact:01M751NBTJ3DJAK834P6KKXF4M",
+            "character:01M751NB6559KSZWQ3WKSPDQ13",
+            "scene:01M751NBF86BKEEYR72MNSQ12V"
+          ],
+          "message": "book 1 chapter 8 scene 1: 'Orin Tal' references 'Orin's father was Corin Tal, the lightwright who built the Meridian.' before learning it in book 1 chapter 11 (paraphrased: '\"Corin Tal built the Meridian,\" he said.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB6559KSZWQ3WKSPDQ13",
+            "scene:01M751NB94R2WWXM7DSPE9Q6A5"
+          ],
+          "message": "book 1 chapter 3 scene 1: 'Orin Tal' references 'The lens formula is three parts salt to one part ash.' before learning it in book 1 chapter 6 (paraphrased: '\"The formula is three parts salt to one part ash,\" Orin said.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB6559KSZWQ3WKSPDQ13",
+            "scene:01M751NBF86BKEEYR72MNSQ12V"
+          ],
+          "message": "book 1 chapter 8 scene 1: 'Orin Tal' references 'Orin's father was Corin Tal, the lightwright who built the Meridian.' before learning it in book 1 chapter 11 (paraphrased: '\"Corin Tal built the Meridian,\" he said.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB67403PSQVDHG4YA62S",
+            "scene:01M751NBGFS1RWYK88Y1WX17Z3"
+          ],
+          "message": "book 1 chapter 9 scene 1 includes 'Hessa Avedon' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751NB67403PSQVDHG4YA62S",
+            "scene:01M751NBGFS1RWYK88Y1WX17Z3"
+          ],
+          "message": "book 1 chapter 9 scene 1 includes 'Hessa Avedon' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB69CT6E97K70Q1PFJ24",
+            "scene:01M751NBJYH8N4DHWXRN7KH017"
+          ],
+          "message": "book 1 chapter 11 scene 1 includes 'Dax Nuru' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751NB69CT6E97K70Q1PFJ24",
+            "scene:01M751NBJYH8N4DHWXRN7KH017"
+          ],
+          "message": "book 1 chapter 11 scene 1 includes 'Dax Nuru' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB6AFBTPJC5C0K443C0A",
+            "scene:01M751NBM4ARH75TQPZN7580FJ"
+          ],
+          "message": "book 1 chapter 12 scene 1 includes 'Rill' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751NB6AFBTPJC5C0K443C0A",
+            "scene:01M751NBM4ARH75TQPZN7580FJ"
+          ],
+          "message": "book 1 chapter 12 scene 1 includes 'Rill' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M751NB6BYWSJ10GEMTCAQAGA",
+            "scene:01M751NBQQCFHPJFCB5YBWPQP2"
+          ],
+          "message": "book 1 chapter 15 scene 1 includes 'Moth' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M751NB6BYWSJ10GEMTCAQAGA",
+            "scene:01M751NBQQCFHPJFCB5YBWPQP2"
+          ],
+          "message": "book 1 chapter 15 scene 1 includes 'Moth' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NBT7HXMC9NRSY3PGTE5J",
+            "character:01M751NB6559KSZWQ3WKSPDQ13",
+            "scene:01M751NBBMQBJWFPJMGBZ47674"
+          ],
+          "message": "book 1 chapter 5 scene 1: 'hair color' conflicts with canonical value 'red' (prose says 'black': Orin Tal stood in the doorway with his black hair plastered to his forehead and his apprentice's satchel against his chest.) (bytes 464..589)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NBTCHRMR6802ZM0WA7SX",
+            "scene:01M751NBCVKWA14ZXMB4A93AQT"
+          ],
+          "message": "scene references world rule 'The felt case' (no violation context detected) (bytes 223..236)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NBTCHRMR6802ZM0WA7SX",
+            "scene:01M751NBM4ARH75TQPZN7580FJ"
+          ],
+          "message": "scene references world rule 'The felt case' (no violation context detected) (bytes 100..113)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M751NBT8YGGNY86Q7ER06EVZ",
+            "character:01M751NB66F850TMZW8S5F2FMZ",
+            "scene:01M751NBNBX0CVNAW643NB70H2"
+          ],
+          "message": "book 1 chapter 13 scene 1: 'glass eye' conflicts with canonical value 'his left eye' (prose says 'right': Magistrate Vey stood at the edge of the garden with his right eye gleaming.) (bytes 235..312)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M751NBTEBK95NJV0E261NVAV",
+            "scene:01M751NBPH95P9Z7PZB423QJSA"
+          ],
+          "message": "scene references world rule 'The Meridian Stair' (no violation context detected) (bytes 19..33)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        }
+      ],
+      "judgments": 561,
+      "model_calls": 72,
+      "output_tokens": 46601,
+      "p95_latency_ms": 2630.0,
+      "p95_output_chars": 1657.0,
+      "p95_output_tokens": 935.0,
+      "p95_prompt_tokens": 3121.0,
+      "per_call_receipts": 72,
+      "repair_rate": 0.0278,
+      "repaired_scene_rate": 0.125,
+      "semantic_control_warnings": 0,
+      "semantic_issues": [],
+      "semantic_on": {
+        "control_count": 8,
+        "localized": 26,
+        "planted": 56,
+        "type_present": 28
+      },
+      "semantic_only": {
+        "control_count": 0,
+        "localized": 0,
+        "planted": 56,
+        "type_present": 0
+      },
+      "semantic_warning_count": 0,
+      "semantic_warning_precision": null,
+      "stop_reasons": {
+        "success": 72
+      },
+      "tokens_per_chapter": 6555.66,
+      "tokens_per_scene": 3277.83,
+      "verdicts": {
+        "compatible": 497,
+        "contradiction": 6,
+        "insufficient": 58
+      },
+      "would_be_infos": 0,
+      "would_be_warnings": 4
+    }
+  },
+  "set": "held-out-3"
+}
