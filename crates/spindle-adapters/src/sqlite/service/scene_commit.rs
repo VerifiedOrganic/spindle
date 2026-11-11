@@ -296,11 +296,22 @@ fn apply_continuity_in_tx(
 /// Canonical payload hash for idempotency comparison. `dry_run` and the key
 /// itself are excluded so a preview followed by the live call does not claim
 /// or collide with the key, while every content-bearing field is included.
-fn commit_scene_payload_hash(input: &CommitSceneInput) -> Result<String> {
+pub(super) fn commit_scene_payload_hash(input: &CommitSceneInput) -> Result<String> {
     let mut value = serde_json::to_value(input)?;
     if let Some(object) = value.as_object_mut() {
         object.remove("dry_run");
         object.remove("idempotency_key");
+        // Preserve pre-0.4 inline payload hashes: absent file-only fields were
+        // not part of the old DTO and serialized as null in the new one.
+        if object.get("prose_path").is_some_and(|value| value.is_null()) {
+            object.remove("prose_path");
+        }
+        if object
+            .get("expected_sha256")
+            .is_some_and(|value| value.is_null())
+        {
+            object.remove("expected_sha256");
+        }
     }
     Ok(generation_sha256_hex(&serde_json::to_vec(&value)?))
 }
@@ -341,10 +352,8 @@ fn commit_scene_issue_from_consistency(issue: ConsistencyIssue) -> CommitSceneIs
 
 impl SqliteSpindleService {
     fn commit_scene_workspace_root(&self) -> Option<std::path::PathBuf> {
-        let data_dir = self.repository.data_dir();
-        (data_dir.file_name().and_then(|name| name.to_str()) == Some(".spindle"))
-            .then(|| data_dir.parent().map(std::path::Path::to_path_buf))
-            .flatten()
+        let cwd = std::env::current_dir().ok()?;
+        prose::workspace_root_from_data_dir(self.repository.data_dir(), &cwd)
     }
 
     fn resolve_commit_scene_prose(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::sqlite::service::scene_commit::commit_scene_payload_hash;
 
 use spindle_core::models::{CharacterEmotionalProfileData, CharacterVoiceProfileData};
 use spindle_core::models::{
@@ -42,6 +43,20 @@ fn base_commit(project_id: &str, text: &str) -> CommitSceneInput {
         dry_run: false,
         idempotency_key: None,
     }
+}
+
+#[test]
+fn preserves_pre_0_4_inline_payload_hash() {
+    let input = base_commit("project:legacy", "Legacy inline prose.");
+    let mut legacy = serde_json::to_value(&input).unwrap();
+    if let Some(object) = legacy.as_object_mut() {
+        object.remove("dry_run");
+        object.remove("idempotency_key");
+        object.remove("prose_path");
+        object.remove("expected_sha256");
+    }
+    let legacy_hash = generation_sha256_hex(&serde_json::to_vec(&legacy).unwrap());
+    assert_eq!(commit_scene_payload_hash(&input).unwrap(), legacy_hash);
 }
 
 async fn fresh_workspace_service() -> (tempfile::TempDir, SqliteSpindleService) {

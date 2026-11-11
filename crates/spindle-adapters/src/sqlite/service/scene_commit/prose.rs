@@ -11,6 +11,22 @@ pub(super) struct ResolvedProse {
     pub receipt: CommitSceneProseReceipt,
 }
 
+/// Resolve the book root from the repository data dir. Relative
+/// `SPINDLE_DATA_DIR=.spindle` is joined to the primary's cwd before taking the
+/// parent; canonicalizing avoids empty-parent and symlink surprises.
+pub(super) fn workspace_root_from_data_dir(data_dir: &Path, cwd: &Path) -> Option<std::path::PathBuf> {
+    let absolute = if data_dir.is_absolute() {
+        data_dir.to_path_buf()
+    } else {
+        cwd.join(data_dir)
+    };
+    let canonical = absolute.canonicalize().ok()?;
+    if canonical.file_name().and_then(|name| name.to_str()) != Some(".spindle") {
+        return None;
+    }
+    canonical.parent().map(std::path::Path::to_path_buf)
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -203,6 +219,18 @@ mod tests {
 
     fn err_text(result: Result<ResolvedProse>) -> String {
         result.err().expect("expected error").to_string()
+    }
+
+    #[test]
+    fn resolves_relative_and_absolute_spindle_data_dirs() {
+        let (temp, root) = root();
+        let expected = root.canonicalize().unwrap();
+        let relative = workspace_root_from_data_dir(Path::new(".spindle"), &root);
+        assert_eq!(relative.as_deref(), Some(expected.as_path()));
+        let absolute =
+            workspace_root_from_data_dir(&root.join(".spindle"), &temp.path().to_path_buf());
+        assert_eq!(absolute.as_deref(), Some(expected.as_path()));
+        assert!(workspace_root_from_data_dir(Path::new("data"), &root).is_none());
     }
 
     #[test]
