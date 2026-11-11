@@ -14,6 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Version of the prompt/DTO contract. It participates in the semantic cache
 /// key and is checked on every candidate set, report, and host request.
 pub const SEMANTIC_CONTRACT_VERSION: &str = "semantic-continuity-v1";
+/// Internal judge-policy revision. Included in the cache identity so policy
+/// changes cannot reuse reports produced by an older judge path.
+pub const SEMANTIC_JUDGE_POLICY_VERSION: &str = "semantic-judge-policy-v2";
 
 /// Maximum number of candidates in one scene request.
 pub const SEMANTIC_MAX_CANDIDATES_PER_SCENE: usize = 12;

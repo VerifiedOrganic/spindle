@@ -8,11 +8,12 @@
 use super::*;
 use crate::ai::{ModelRequest, RouteClearanceError};
 use spindle_core::semantic_continuity::{
-    SEMANTIC_CONTRACT_VERSION, SEMANTIC_MAX_PROMPT_TOKENS, SemanticCacheKeyV1, SemanticDedupeKeyV1,
-    SemanticErrorKind, SemanticEvidenceSpanV1, SemanticHostReportV1, SemanticHostRequestV1,
-    SemanticJudgeErrorV1, SemanticJudgeReportV1, SemanticRunSummaryV1, SemanticVerdict,
-    semantic_candidate_set_hash, semantic_dedupe_key, semantic_findings_are_duplicates,
-    validate_semantic_host_report, validate_semantic_judge_report,
+    SEMANTIC_CONTRACT_VERSION, SEMANTIC_JUDGE_POLICY_VERSION, SEMANTIC_MAX_PROMPT_TOKENS,
+    SemanticCacheKeyV1, SemanticDedupeKeyV1, SemanticErrorKind, SemanticEvidenceSpanV1,
+    SemanticHostReportV1, SemanticHostRequestV1, SemanticJudgeErrorV1, SemanticJudgeReportV1,
+    SemanticRunSummaryV1, SemanticVerdict, semantic_candidate_set_hash, semantic_dedupe_key,
+    semantic_findings_are_duplicates, validate_semantic_host_report,
+    validate_semantic_judge_report,
 };
 use std::time::Duration;
 
@@ -44,7 +45,10 @@ impl SqliteSpindleService {
             scene_sha256: request.candidate_set.scene_sha256.clone(),
             canon_version: request.candidate_set.canon_version.clone(),
             candidate_set_hash: semantic_candidate_set_hash(&request.candidate_set),
-            contract_version: SEMANTIC_CONTRACT_VERSION.to_string(),
+            contract_version: format!(
+                "{}:{}",
+                SEMANTIC_CONTRACT_VERSION, SEMANTIC_JUDGE_POLICY_VERSION
+            ),
             route: "host".to_string(),
             model_identity: "host".to_string(),
         };
@@ -81,7 +85,10 @@ impl SqliteSpindleService {
             scene_sha256: request.candidate_set.scene_sha256.clone(),
             canon_version: request.candidate_set.canon_version.clone(),
             candidate_set_hash: semantic_candidate_set_hash(&request.candidate_set),
-            contract_version: SEMANTIC_CONTRACT_VERSION.to_string(),
+            contract_version: format!(
+                "{}:{}",
+                SEMANTIC_CONTRACT_VERSION, SEMANTIC_JUDGE_POLICY_VERSION
+            ),
             route: route.name.clone(),
             model_identity: route.model_identity.clone(),
         };
@@ -631,26 +638,31 @@ fn normalized_quote_span(scene: &str, quote: &str) -> Option<(usize, usize)> {
     }
     let normalized_quote: String = quote.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut normalized_scene = String::new();
-    let mut positions: Vec<(usize, usize)> = Vec::new();
+    // For every byte of the normalized scene, record the original byte range
+    // of the character that produced it. This keeps byte offsets correct for
+    // multibyte characters before or inside the match.
+    let mut byte_map: Vec<(usize, usize)> = Vec::new();
     let mut previous_space = false;
     for (offset, ch) in scene.char_indices() {
         if ch.is_whitespace() {
             if !previous_space && !normalized_scene.is_empty() {
                 normalized_scene.push(' ');
-                positions.push((offset, 1));
+                byte_map.push((offset, offset + ch.len_utf8()));
             }
             previous_space = true;
         } else {
             previous_space = false;
             normalized_scene.push(ch);
-            positions.push((offset, ch.len_utf8()));
+            for byte in 0..ch.len_utf8() {
+                byte_map.push((offset + byte, offset + byte + 1));
+            }
         }
     }
     let start = normalized_scene.find(&normalized_quote)?;
     let end = start + normalized_quote.len();
-    let (start_byte, _) = *positions.get(start)?;
-    let (last_offset, last_len) = *positions.get(end - 1)?;
-    Some((start_byte, last_offset + last_len))
+    let start_byte = byte_map.get(start)?.0;
+    let end_byte = byte_map.get(end - 1)?.1;
+    Some((start_byte, end_byte))
 }
 
 fn has_temporal_anchor(quote: &str) -> bool {
@@ -1112,7 +1124,8 @@ pub(super) fn semantic_issue_from_report(
     let mut infos = 0;
     let mut issues = Vec::new();
     let mut outcome = SemanticPolicyOutcome::default();
-    let mut seen_evidence: Vec<(String, String, usize, usize)> = Vec::new();
+    type EvidenceIdentity = (String, String, Vec<String>, Vec<String>, usize, usize);
+    let mut seen_evidence: Vec<EvidenceIdentity> = Vec::new();
     let mut semantic_keys: Vec<SemanticDedupeKeyV1> = Vec::new();
     for judgment in &report.judgments {
         let Some(candidate) = candidates.get(judgment.candidate_id.as_str()) else {
@@ -1174,9 +1187,19 @@ pub(super) fn semantic_issue_from_report(
             continue;
         }
         if let Some(evidence) = judgment.evidence.as_ref() {
+            let mut canon_refs: Vec<String> = candidate
+                .canon_refs
+                .iter()
+                .map(|canon| format!("{}:{}:{}", canon.table, canon.id, canon.version))
+                .collect();
+            canon_refs.sort();
+            let mut subject_ids = candidate.subject_ids.clone();
+            subject_ids.sort();
             let key = (
                 evidence.scene_id.clone(),
                 candidate.check_type.clone(),
+                canon_refs,
+                subject_ids,
                 evidence.start_byte,
                 evidence.end_byte,
             );
@@ -1661,6 +1684,32 @@ agent = "judge"
     }
 
     #[test]
+    fn compact_parser_maps_unicode_prefix_offsets_to_original_bytes() {
+        let text = "é the café bell was not silent";
+        let request = request(text);
+        assert_eq!(request.candidate_set.scene_sha256, scene_sha256(text));
+        let start = text.find("the café").unwrap();
+        let quote = &text[start..];
+        let compact = serde_json::json!({
+            "judgments": [{
+                "candidate_id": "candidate:1",
+                "verdict": "contradiction",
+                "confidence": 0.95,
+                "conflict": "canon says ringing; excerpt says silent",
+                "evidence_quote": quote
+            }]
+        })
+        .to_string();
+        let report = parse_semantic_report(&compact, &request, text).expect("unicode report");
+        let evidence = report.judgments[0].evidence.as_ref().expect("evidence");
+        assert_eq!(
+            (evidence.start_byte, evidence.end_byte),
+            (start, text.len())
+        );
+        assert_eq!(evidence.exact_quote, quote);
+    }
+
+    #[test]
     fn compact_parser_rejects_unknown_candidates_and_missing_quotes() {
         let text = "the bell was silent";
         let request = request(text);
@@ -1684,6 +1733,26 @@ agent = "judge"
                 .kind,
             SemanticErrorKind::InvalidEvidence
         );
+    }
+
+    #[test]
+    fn dedupe_preserves_distinct_canon_refs_sharing_evidence() {
+        let text = "the bell was not silent";
+        let mut request = request(text);
+        let mut second = request.candidate_set.candidates[0].clone();
+        second.candidate_id = "candidate:2".into();
+        second.canon_refs[0].id = "rule:2".into();
+        request.candidate_set.candidates.push(second);
+        let compact = serde_json::json!({
+            "judgments": [
+                {"candidate_id":"candidate:1","verdict":"contradiction","confidence":0.95,"conflict":"rule one","evidence_quote":text},
+                {"candidate_id":"candidate:2","verdict":"contradiction","confidence":0.95,"conflict":"rule two","evidence_quote":text}
+            ]
+        })
+        .to_string();
+        let report = parse_semantic_report(&compact, &request, text).expect("two reports");
+        let (_, _, issues, _) = semantic_issue_from_report(&report, &request, true, &[]);
+        assert_eq!(issues.len(), 2);
     }
 
     #[test]
