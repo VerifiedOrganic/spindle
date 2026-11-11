@@ -2690,6 +2690,9 @@ def run_self_test() -> None:
     held_out_self_test()
     held_out_2_self_test()
     held_out_3_self_test()
+    from semantic_eval import semantic_eval_self_test
+
+    semantic_eval_self_test()
     """Offline unit test of scoring, matching, and manuscript invariants."""
     assert len(ASHFALL_CHAPTERS) >= 20
     assert len(VERIDIAN_CHAPTERS) >= 20

@@ -116,7 +116,7 @@ impl SqliteSpindleService {
             ));
         }
         let first = self
-            .complete_semantic_prompt(&route, &prompt, request, scene, summary, deadline)
+            .complete_semantic_prompt(&route, &prompt, request, scene, summary, deadline, false)
             .await;
         let report = match first {
             Ok(report) => report,
@@ -142,6 +142,7 @@ impl SqliteSpindleService {
                     scene,
                     summary,
                     deadline,
+                    true,
                 )
                 .await?
             }
@@ -159,6 +160,7 @@ impl SqliteSpindleService {
         Ok(report)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn complete_semantic_prompt(
         &self,
         route: &SemanticRoute,
@@ -167,8 +169,10 @@ impl SqliteSpindleService {
         scene: &crate::sqlite::records::Scene,
         summary: &mut SemanticRunSummaryV1,
         deadline: std::time::Instant,
+        repaired: bool,
     ) -> Result<SemanticJudgeReportV1, SemanticJudgeErrorV1> {
         summary.model_calls += 1;
+        let call_started = std::time::Instant::now();
         let model_request = ModelRequest {
             route: route.name.clone(),
             prompt: prompt.to_string(),
@@ -235,6 +239,19 @@ impl SqliteSpindleService {
                 .saturating_add(actual_input - prompt_tokens as u64);
         }
         summary.output_tokens = summary.output_tokens.saturating_add(response_output_tokens);
+        summary
+            .calls
+            .push(spindle_core::semantic_continuity::SemanticCallSummaryV1 {
+                scene_id: scene.id.clone(),
+                input_tokens: response
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.input_tokens)
+                    .unwrap_or(prompt_tokens as u64),
+                output_tokens: response_output_tokens,
+                elapsed_ms: call_started.elapsed().as_millis() as u64,
+                repaired,
+            });
         if response.adapter_kind == "local" {
             return Err(SemanticJudgeErrorV1::new(
                 SemanticErrorKind::RouteUnavailable,

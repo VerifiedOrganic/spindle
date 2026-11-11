@@ -309,6 +309,22 @@ pub struct SemanticCacheKeyV1 {
     pub model_identity: String,
 }
 
+/// One actual judge dispatch receipt (initial or repair).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticCallSummaryV1 {
+    /// Scene on whose behalf the call was made.
+    pub scene_id: String,
+    /// Prompt tokens attributable to this call.
+    pub input_tokens: u64,
+    /// Output tokens attributable to this call.
+    pub output_tokens: u64,
+    /// Wall time for this call.
+    pub elapsed_ms: u64,
+    /// True when this was the one allowed repair call.
+    pub repaired: bool,
+}
+
 /// Per-scene semantic accounting for the evaluator. Present only when the
 /// semantic lane runs in shadow or on mode.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -376,6 +392,9 @@ pub struct SemanticRunSummaryV1 {
     /// Typed route/parse/host errors, never containing scene prose.
     #[serde(default)]
     pub errors: Vec<SemanticJudgeErrorV1>,
+    /// Individual dispatch receipts for per-call percentiles.
+    #[serde(default)]
+    pub calls: Vec<SemanticCallSummaryV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

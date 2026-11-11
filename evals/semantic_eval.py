@@ -15,6 +15,7 @@ from typing import Any
 
 from continuity_recall import (
     McpClient,
+    issue_matches_contradiction,
     score_manuscript,
     seed_ashfall_manuscript,
     seed_veridian_manuscript,
@@ -92,10 +93,19 @@ def _metrics(
     output_tokens = sum(int(summary.get("output_tokens", 0)) for summary in summaries)
     cache_hits = sum(int(summary.get("cache_hits", 0)) for summary in summaries)
     cache_misses = sum(int(summary.get("cache_misses", 0)) for summary in summaries)
-    calls = sum(int(summary.get("model_calls", 0)) for summary in summaries)
+    call_receipts = [
+        call
+        for summary in summaries
+        for call in summary.get("calls", [])
+    ]
+    calls = len(call_receipts)
     judgments = sum(int(summary.get("judgments", 0)) for summary in summaries)
     candidate_scenes = sum(1 for scene in scenes if scene.get("candidates", 0) > 0)
-    repairs = sum(1 for scene in scenes if scene.get("repaired"))
+    repairs = sum(1 for call in call_receipts if call.get("repaired"))
+    if not call_receipts:
+        # Backward-compatible fallback for older reports without receipts.
+        calls = sum(int(summary.get("model_calls", 0)) for summary in summaries)
+        repairs = sum(1 for scene in scenes if scene.get("repaired"))
     evidence_valid = sum(
         1
         for issue in semantic
@@ -131,9 +141,20 @@ def _metrics(
         if cache_hits + cache_misses
         else 0.0,
         "repair_rate": round(repairs / candidate_scenes, 4) if candidate_scenes else 0.0,
-        "p95_prompt_tokens": _p95([scene.get("input_tokens", 0) for scene in scenes]),
-        "p95_output_tokens": _p95([scene.get("output_tokens", 0) for scene in scenes]),
-        "p95_latency_ms": _p95([scene.get("elapsed_ms", 0) for scene in scenes]),
+        "per_call_receipts": len(call_receipts),
+        "p95_prompt_tokens": _p95(
+            [call.get("input_tokens", 0) for call in call_receipts]
+        )
+        if call_receipts
+        else _p95([scene.get("input_tokens", 0) for scene in scenes]),
+        "p95_output_tokens": _p95(
+            [call.get("output_tokens", 0) for call in call_receipts]
+        )
+        if call_receipts
+        else _p95([scene.get("output_tokens", 0) for scene in scenes]),
+        "p95_latency_ms": _p95([call.get("elapsed_ms", 0) for call in call_receipts])
+        if call_receipts
+        else _p95([scene.get("elapsed_ms", 0) for scene in scenes]),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "tokens_per_scene": round((input_tokens + output_tokens) / len(scenes), 2) if scenes else 0.0,
@@ -238,6 +259,63 @@ def _seed_reports(client: McpClient, set_name: str) -> tuple[list[dict[str, Any]
     return reports, 32
 
 
+def _precision_from_warning_matches(matches: list[bool]) -> float | None:
+    """Precision over warning instances; empty means undefined (None)."""
+    if not matches:
+        return None
+    return round(sum(1 for match in matches if match) / len(matches), 4)
+
+
+def semantic_eval_self_test() -> None:
+    assert _precision_from_warning_matches([]) is None
+    assert _precision_from_warning_matches([True]) == 1.0
+    assert _precision_from_warning_matches([True, True]) == 1.0
+    assert _precision_from_warning_matches([True, False]) == 0.5
+    # Info findings never enter this list, and one warning matching several
+    # plants contributes exactly one boolean match.
+    assert _precision_from_warning_matches([True, True, False]) == 0.6667
+
+
+def _warning_precision(
+    set_name: str,
+    reports: list[dict[str, Any]],
+    mode: str,
+) -> float | None:
+    """TP/FP over semantic warning instances; info findings never count."""
+    true_positive = 0
+    false_positive = 0
+    for report in reports:
+        control_warnings = [
+            issue
+            for issue in report["control"][mode]["issues"]
+            if issue.get("severity") == "warning" and "(semantic)" in issue.get("message", "")
+        ]
+        planted_warnings = [
+            issue
+            for issue in report["planted"][mode]["issues"]
+            if issue.get("severity") == "warning" and "(semantic)" in issue.get("message", "")
+        ]
+        false_positive += len(control_warnings)
+        for warning in planted_warnings:
+            if set_name in ("baseline", "held-out-72"):
+                matched = any(issue_matches_contradiction(warning, item) for item in report["items"])
+            elif set_name == "held-out-2":
+                matched = h2_score([warning], report["items"])["localized_detected"] > 0
+            else:
+                matched = (
+                    _score_planted(report["spec"], report["scene_ids"], [], [warning])[
+                        "localized_total"
+                    ]
+                    > 0
+                )
+            if matched:
+                true_positive += 1
+            else:
+                false_positive += 1
+    matches = [True] * true_positive + [False] * false_positive
+    return _precision_from_warning_matches(matches)
+
+
 def run_semantic_set(
     binary: Path,
     set_name: str,
@@ -297,9 +375,7 @@ def run_semantic_set(
             "deterministic": deterministic_scores,
             "semantic_on": semantic_scores,
             "semantic_only": semantic_only,
-            "semantic_warning_precision": round(
-                semantic_only["localized"] / max(1, metrics["semantic_warning_count"]), 4
-            ),
+            "semantic_warning_precision": _warning_precision(set_name, reports, mode),
             **metrics,
         }
     return result

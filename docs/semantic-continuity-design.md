@@ -626,21 +626,21 @@ with one judge config (`ollama:gemma4:31b`) held constant. The evaluator runs a
 shadow pass, then an on pass against the same projects; the on pass reuses the
 validated cache. Checked-in reports: `evals/results/semantic_p4_*.json`.
 
-| Set | Deterministic recall | Semantic-on recall | Semantic warnings | Control warnings | Cache hit (on) | Repair rate | p95 prompt | p95 output | p95 latency | Tokens/scene (on) |
+| Set | Deterministic recall | Semantic-on recall | Semantic warnings | Control warnings | Cache hit (on) | Repair rate | p95 prompt/call | p95 output/call | p95 latency/call | Tokens/scene (on) |
 | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Baseline | 28/28 | 28/28 | 0 | unchanged (2 warnings + 1 info) | 77.5% | 21.3% | 8,807 | 2,321 | 5,662 ms | 1,889 |
-| #72 | 54/56 | 54/56 | 0 | unchanged (0) | 48.4% | 51.6% | 13,001 | 2,400 | 6,587 ms | 6,808 |
-| held-out-2 | 55/56 localized, 56/56 type | 55/56, 56/56 | 0 | unchanged (0) | 62.7% | 37.3% | 9,365 | 2,400 | 6,381 ms | 3,204 |
-| held-out-3 | 26/56 localized, 28/56 type | 26/56, 28/56 | 0 | unchanged (0) | 32.8% | 67.2% | 13,749 | 2,400 | 11,424 ms | 9,763 |
+| Baseline | 28/28 | 28/28 | 0 | unchanged (2 warnings + 1 info) | 80.0% | 20.0% | 5,162 | 1,200 | 3,281 ms | 1,815 |
+| #72 | 54/56 | 54/56 | 0 | unchanged (0) | 48.4% | 51.6% | 6,594 | 1,200 | 4,267 ms | 6,843 |
+| held-out-2 | 55/56 localized, 56/56 type | 55/56, 56/56 | 0 | unchanged (0) | 61.0% | 39.0% | 4,749 | 1,200 | 5,385 ms | 3,367 |
+| held-out-3 | 26/56 localized, 28/56 type | 26/56, 28/56 | 0 | unchanged (0) | 32.8% | 67.2% | 6,854 | 1,200 | 4,307 ms | 9,706 |
 
 The semantic lane added no recall on these public sets with this judge config.
 No semantic warning reached the output, so warning precision is undefined
-(`0/0`), evidence-anchor validity is vacuous (1.0 over zero issues), and the
-control-warning gate is unchanged. Shadow and on both recorded zero would-be
-warnings. The measured **repair rate (21-67%) and p95 prompt/output totals exceed
-the activation gates** (repair <=10%, prompt p95 <=8,000, output p95 <=1,200
-provider tokens). The lane therefore remains **off by default**; these are
-honest failure measurements, not activation.
+(`null`, zero denominator), evidence-anchor validity is vacuous (1.0 over zero
+issues), and the control-warning gate is unchanged. Shadow and on both recorded
+zero would-be warnings. The measured **repair rate (20-67%) exceeds the <=10%
+activation gate**; per-call prompt/output/latency ceilings pass. The lane
+therefore remains **off by default**; these are honest failure measurements,
+not activation.
 
 Cost: the provider exposes no configured price, so only token and latency
 inputs are reported. Held-out-4 was not accessed.
