@@ -248,9 +248,7 @@ impl SqliteSpindleService {
             )
             .retryable(true));
         }
-        if summary
-            .output_tokens
-            .saturating_sub(estimate_tokens(prompt) as u64)
+        if response_output_tokens
             > spindle_core::semantic_continuity::SEMANTIC_MAX_OUTPUT_TOKENS as u64
         {
             return Err(SemanticJudgeErrorV1::new(
@@ -523,12 +521,15 @@ fn deterministic_issue_matches(
     {
         return false;
     }
-    if candidate
-        .subject_ids
-        .iter()
-        .any(|subject| issue.entity_ids.contains(subject))
-    {
-        return true;
+    if candidate.check_type == "canonical_fact_prose_drift" {
+        // Phase-4 attribute issues carry only the scene id, but their message
+        // names the canonical predicate and value. Require both so an eye-color
+        // warning cannot suppress a scar contradiction for the same character.
+        if let Some((predicate, value)) = candidate.constraint.split_once(": ") {
+            return issue.message.contains(&format!("'{predicate}'"))
+                && issue.message.contains(&format!("'{value}'"));
+        }
+        return false;
     }
     // World-rule deterministic messages name the rule; the semantic constraint
     // carries the same quoted rule name. This prevents a different rule in the
@@ -805,6 +806,61 @@ agent = "judge"
         ));
         assert!(!deterministic_issue_matches(
             &issue("info", "scene:1", "world rule 'alpha' mention"),
+            &candidate,
+            "scene:1"
+        ));
+    }
+
+    #[test]
+    fn attribute_dedupe_requires_same_predicate_and_value() {
+        use spindle_core::models::ConsistencyIssue;
+        use spindle_core::semantic_continuity::SemanticCandidateV1;
+        let candidate = SemanticCandidateV1 {
+            schema_version: SEMANTIC_CONTRACT_VERSION.into(),
+            candidate_id: "a".into(),
+            family: SemanticCandidateFamily::Attribute,
+            check_type: "canonical_fact_prose_drift".into(),
+            canon_refs: vec![SemanticCanonRefV1 {
+                table: "canonical_fact".into(),
+                id: "fact:eyes".into(),
+                version: "v".into(),
+            }],
+            subject_ids: vec!["character:mara".into()],
+            constraint: "eye_color: blue".into(),
+            excerpt: "x".into(),
+            excerpt_start_byte: 0,
+            excerpt_end_byte: 1,
+            evidence_hints: Vec::new(),
+        };
+        let issue = |message: &str, scene: &str| ConsistencyIssue {
+            severity: "warning".into(),
+            check_type: "canonical_fact_prose_drift".into(),
+            message: message.into(),
+            entity_ids: vec![scene.into()],
+            suggested_action: None,
+            evidence: None,
+        };
+        assert!(deterministic_issue_matches(
+            &issue(
+                "book 1 chapter 1 scene 1: 'eye_color' conflicts with canonical value 'blue' (prose says 'green')",
+                "scene:1"
+            ),
+            &candidate,
+            "scene:1"
+        ));
+        assert!(!deterministic_issue_matches(
+            &issue(
+                "book 1 chapter 1 scene 1: 'scar' conflicts with canonical value 'left cheek' (prose says 'right')",
+                "scene:1"
+            ),
+            &candidate,
+            "scene:1"
+        ));
+        assert!(!deterministic_issue_matches(
+            &issue(
+                "book 1 chapter 1 scene 2: 'eye_color' conflicts with canonical value 'blue' (prose says 'green')",
+                "scene:2"
+            ),
             &candidate,
             "scene:1"
         ));
