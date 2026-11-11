@@ -213,19 +213,49 @@ impl SqliteSpindleService {
         let per_call =
             Duration::from_secs(spindle_core::semantic_continuity::SEMANTIC_CALL_TIMEOUT_SECONDS);
         summary.input_tokens = summary.input_tokens.saturating_add(prompt_tokens as u64);
-        let response = tokio::time::timeout(
+        let dispatched = tokio::time::timeout(
             remaining.min(per_call),
             self.repository.model_router().complete_bounded(
                 &model_request,
                 spindle_core::semantic_continuity::SEMANTIC_MAX_OUTPUT_TOKENS as u32,
             ),
         )
-        .await
-        .map_err(|_| {
-            SemanticJudgeErrorV1::new(SemanticErrorKind::Timeout, "semantic judge timed out")
-                .retryable(true)
-        })?
-        .map_err(|error| map_route_error(error, &route.name, scene.content_rating.as_str()))?;
+        .await;
+        let response = match dispatched {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                summary
+                    .calls
+                    .push(spindle_core::semantic_continuity::SemanticCallSummaryV1 {
+                        scene_id: scene.id.clone(),
+                        input_tokens: prompt_tokens as u64,
+                        output_tokens: 0,
+                        elapsed_ms: call_started.elapsed().as_millis() as u64,
+                        repaired,
+                    });
+                return Err(map_route_error(
+                    error,
+                    &route.name,
+                    scene.content_rating.as_str(),
+                ));
+            }
+            Err(_) => {
+                summary
+                    .calls
+                    .push(spindle_core::semantic_continuity::SemanticCallSummaryV1 {
+                        scene_id: scene.id.clone(),
+                        input_tokens: prompt_tokens as u64,
+                        output_tokens: 0,
+                        elapsed_ms: call_started.elapsed().as_millis() as u64,
+                        repaired,
+                    });
+                return Err(SemanticJudgeErrorV1::new(
+                    SemanticErrorKind::Timeout,
+                    "semantic judge timed out",
+                )
+                .retryable(true));
+            }
+        };
         let response_output_tokens = response
             .usage
             .as_ref()

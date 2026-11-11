@@ -140,7 +140,12 @@ def _metrics(
         "cache_hit_rate": round(cache_hits / (cache_hits + cache_misses), 4)
         if cache_hits + cache_misses
         else 0.0,
-        "repair_rate": round(repairs / candidate_scenes, 4) if candidate_scenes else 0.0,
+        "repair_rate": round(repairs / calls, 4) if calls else 0.0,
+        "repaired_scene_rate": round(
+            sum(1 for scene in scenes if scene.get("repaired")) / candidate_scenes, 4
+        )
+        if candidate_scenes
+        else 0.0,
         "per_call_receipts": len(call_receipts),
         "p95_prompt_tokens": _p95(
             [call.get("input_tokens", 0) for call in call_receipts]
@@ -267,6 +272,32 @@ def _precision_from_warning_matches(matches: list[bool]) -> float | None:
 
 
 def semantic_eval_self_test() -> None:
+    fake = {
+        "semantic_summary": {
+            "input_tokens": 3000,
+            "output_tokens": 500,
+            "cache_hits": 0,
+            "cache_misses": 2,
+            "model_calls": 2,
+            "judgments": 2,
+            "warnings": 0,
+            "infos": 0,
+            "calls": [
+                {"scene_id": "s1", "input_tokens": 1000, "output_tokens": 200, "elapsed_ms": 100, "repaired": False},
+                {"scene_id": "s1", "input_tokens": 1200, "output_tokens": 300, "elapsed_ms": 400, "repaired": True},
+            ],
+        },
+        "semantic_scene_summaries": [
+            {"scene_id": "s1", "candidates": 2, "repaired": True},
+            {"scene_id": "s2", "candidates": 1, "repaired": False},
+        ],
+        "issues": [],
+    }
+    metrics = _metrics([fake], 1, [fake])
+    assert metrics["per_call_receipts"] == 2
+    assert metrics["repair_rate"] == 0.5
+    assert metrics["p95_latency_ms"] == 400.0
+    assert metrics["p95_output_tokens"] == 300.0
     assert _precision_from_warning_matches([]) is None
     assert _precision_from_warning_matches([True]) == 1.0
     assert _precision_from_warning_matches([True, True]) == 1.0
