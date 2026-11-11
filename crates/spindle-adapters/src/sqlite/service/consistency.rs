@@ -2769,6 +2769,23 @@ impl SqliteSpindleService {
         // callers can render them under their own headings.
         let report_sections = build_consistency_report_sections(&issues, &scenes);
 
+        if input.semantic_mode.is_some_and(|mode| !mode.is_off()) {
+            let (requests, _audit) = self
+                .semantic_requests_for_scenes(&project_id, &active_branch.id, &scenes)
+                .await?;
+            let mut coverage = spindle_core::models::AuditCoverage::new(
+                "semantic_continuity",
+                scenes.iter().map(|scene| scene.id.clone()),
+            );
+            coverage.evaluated_ids = requests
+                .iter()
+                .filter(|request| !request.candidate_set.candidates.is_empty())
+                .map(|request| request.candidate_set.scene_id.clone())
+                .collect();
+            coverage.finish();
+            audit_coverage.push(coverage);
+        }
+
         let summary = ConsistencySummary {
             error_count: issues
                 .iter()

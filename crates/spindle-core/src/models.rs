@@ -6335,6 +6335,10 @@ pub struct CheckConsistencyInput {
     pub severity_filter: Vec<String>,
     #[serde(default)]
     pub deep_check: Option<bool>,
+    /// Additive semantic lane mode. Omitted means `off`; P2 builds candidate
+    /// requests/coverage only and never emits model findings.
+    #[serde(default)]
+    pub semantic_mode: Option<crate::semantic_continuity::SemanticMode>,
     /// Optional subject narrowing. Each entry is a record id of the form
     /// `<table>:<id>` (for example `character:abc123`). When non-empty, the
     /// check runs only against scenes that reference at least one listed
@@ -6416,6 +6420,42 @@ pub struct CheckConsistencyOutput {
     /// budget would be exceeded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markdown: Option<String>,
+}
+
+/// Read-only request for the deterministic semantic candidate sets of every
+/// scene in scope. Makes no model call and changes no state.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareSemanticContinuityInput {
+    /// Record id returned by `create_project`.
+    pub project_id: String,
+    /// Story scope to prepare candidate sets for.
+    pub scope: ConsistencyScopeInput,
+    /// Optional subject narrowing, matching `check_consistency`.
+    #[serde(default)]
+    pub subjects: Vec<String>,
+}
+
+/// Candidate coverage summary for one prepare call. Empty candidate sets are
+/// honest coverage, not a clean semantic review.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticCandidateAudit {
+    /// Scenes considered in scope.
+    pub scene_count: usize,
+    /// Scenes with at least one candidate.
+    pub candidate_scene_count: usize,
+    /// Total candidates after ranking and caps.
+    pub candidate_count: usize,
+    /// Counts of family candidates omitted by a cap.
+    #[serde(default)]
+    pub omitted_by_family: std::collections::BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareSemanticContinuityOutput {
+    /// One read-only request per scene in scope.
+    pub requests: Vec<crate::semantic_continuity::SemanticHostRequestV1>,
+    /// Candidate coverage summary.
+    pub coverage: SemanticCandidateAudit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

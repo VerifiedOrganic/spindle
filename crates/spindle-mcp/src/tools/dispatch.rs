@@ -521,6 +521,12 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.check_consistency(input))
                     .await
             }
+            "prepare_semantic_continuity" => {
+                self.invoke(arguments, |input| {
+                    self.service.prepare_semantic_continuity(input)
+                })
+                .await
+            }
             "register_canonical_fact" => {
                 self.invoke(arguments, |input| {
                     self.service.register_canonical_fact(input)

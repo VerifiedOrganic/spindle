@@ -71,7 +71,25 @@ impl Default for SemanticContinuityLimitsV1 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Execution mode for the additive semantic lane. Off is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticMode {
+    #[default]
+    Off,
+    Shadow,
+    On,
+}
+
+impl SemanticMode {
+    pub fn is_off(self) -> bool {
+        self == Self::Off
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticCandidateFamily {
     Attribute,
@@ -108,7 +126,9 @@ impl SemanticCandidateFamily {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticCanonRefV1 {
+    /// Canonical table name.
     pub table: String,
+    /// Canonical record id.
     pub id: String,
     /// Row/version hash, not a display value.
     pub version: String,
@@ -117,8 +137,11 @@ pub struct SemanticCanonRefV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticEvidenceHintV1 {
+    /// Inclusive scene byte where the hint starts.
     pub start_byte: usize,
+    /// Exclusive scene byte where the hint ends.
     pub end_byte: usize,
+    /// Exact scene substring at the hint span.
     pub exact_quote: String,
     /// `resolver`, `world_rule_scan`, `price_scan`, `temporal_anchor`, ...
     pub origin: String,
@@ -127,28 +150,44 @@ pub struct SemanticEvidenceHintV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticCandidateV1 {
+    /// Contract version used to build this candidate.
     pub schema_version: String,
+    /// Stable hash of family, canon refs, and excerpt.
     pub candidate_id: String,
+    /// Candidate family that selected this item.
     pub family: SemanticCandidateFamily,
     /// Existing deterministic check type, for compatibility and grouping.
     pub check_type: String,
+    /// Canon rows this candidate is judged against.
     pub canon_refs: Vec<SemanticCanonRefV1>,
+    /// Subjects involved in the candidate.
     pub subject_ids: Vec<String>,
+    /// Concise canonical constraint.
     pub constraint: String,
+    /// Bounded scene prose window.
     pub excerpt: String,
+    /// Inclusive byte where the excerpt starts.
     pub excerpt_start_byte: usize,
+    /// Exclusive byte where the excerpt ends.
     pub excerpt_end_byte: usize,
+    /// Scene-local anchors for the candidate.
     pub evidence_hints: Vec<SemanticEvidenceHintV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticCandidateSetV1 {
+    /// Contract version used to build the set.
     pub schema_version: String,
+    /// Scene the candidates belong to.
     pub scene_id: String,
+    /// SHA-256 of the scene prose.
     pub scene_sha256: String,
+    /// Stable hash of the relevant canon rows.
     pub canon_version: String,
+    /// Ranked, capped candidates for this scene.
     pub candidates: Vec<SemanticCandidateV1>,
+    /// Counts of family candidates omitted by a cap.
     #[serde(default)]
     pub omitted_by_family: BTreeMap<String, usize>,
 }
@@ -179,40 +218,58 @@ pub enum SemanticVerdict {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticJudgmentV1 {
+    /// Candidate being judged.
     pub candidate_id: String,
+    /// Model verdict; the server owns severity.
     pub verdict: SemanticVerdict,
+    /// Canon rows the judgment cites.
     #[serde(default)]
     pub canon_refs: Vec<SemanticCanonRefV1>,
+    /// Exact supporting scene evidence, when the judge supplied it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<SemanticEvidenceSpanV1>,
+    /// Judge confidence in 0.0..=1.0.
     pub confidence: f32,
+    /// Short machine-checkable explanation.
     pub rationale: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticJudgeReportV1 {
+    /// Contract version of this report.
     pub schema_version: String,
+    /// Scene the judgments target.
     pub scene_id: String,
+    /// SHA-256 of the judged scene prose.
     pub scene_sha256: String,
+    /// One judgment per candidate (missing means insufficient).
     pub judgments: Vec<SemanticJudgmentV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticHostRequestV1 {
+    /// Stable hash of the whole request.
     pub request_id: String,
+    /// Contract version for host/report compatibility.
     pub contract_version: String,
+    /// Ranked candidate set for one scene.
     pub candidate_set: SemanticCandidateSetV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticHostReportV1 {
+    /// Request this report answers.
     pub request_id: String,
+    /// Hash of the candidate set in the request.
     pub candidate_set_hash: String,
+    /// SHA-256 of the judged scene prose.
     pub scene_sha256: String,
+    /// Canon version in the request.
     pub canon_version: String,
+    /// Judgments returned by the host.
     pub judgments: Vec<SemanticJudgmentV1>,
 }
 
@@ -235,10 +292,14 @@ pub enum SemanticErrorKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticJudgeErrorV1 {
+    /// Stable error category.
     pub kind: SemanticErrorKind,
+    /// Whether the same request may be retried.
     pub retryable: bool,
+    /// Route name when the failure was route-specific.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
+    /// Content rating when the failure was rating-specific.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rating: Option<String>,
     /// Machine-readable detail only; never scene prose or secret values.

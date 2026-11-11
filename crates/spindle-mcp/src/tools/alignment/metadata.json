@@ -9,6 +9,7 @@
       "spindle"
     ],
     "tools": [
+      "prepare_semantic_continuity",
       "authoring_cancel_run",
       "authoring_execute_next",
       "authoring_prepare_run",
@@ -151,6 +152,7 @@
       "spindle"
     ],
     "tools": [
+      "prepare_semantic_continuity",
       "batch_set_character_voice_profiles",
       "check_consistency",
       "commit_character_state",
@@ -182,6 +184,7 @@
       "spindle"
     ],
     "tools": [
+      "prepare_semantic_continuity",
       "annotate_scene_beats",
       "bind_canonical_fact_to_scene",
       "check_consistency",
@@ -258,6 +261,7 @@
       "spindle"
     ],
     "tools": [
+      "prepare_semantic_continuity",
       "get_reference",
       "check_consistency",
       "export_bible",
@@ -337,6 +341,7 @@
       "spindle"
     ],
     "tools": [
+      "prepare_semantic_continuity",
       "annotate_scene_beats",
       "authoring_prepare_run",
       "batch_create_motifs",
@@ -406,6 +411,7 @@
       "spindle"
     ],
     "tools": [
+      "prepare_semantic_continuity",
       "check_consistency",
       "commit_scene_changes",
       "compare_alternatives",
@@ -531,6 +537,7 @@
       "spindle"
     ],
     "tools": [
+      "prepare_semantic_continuity",
       "annotate_scene_beats",
       "check_consistency",
       "commit_character_state",
@@ -624,6 +631,7 @@
       "spindle"
     ],
     "tools": [
+      "prepare_semantic_continuity",
       "batch_create_motifs",
       "batch_create_terms",
       "check_consistency",

@@ -129,3 +129,4 @@ When `authoring_status` reports `next_action: "await_checkpoint_review"` (or whe
 <!-- tool: set_project_calendar -->
 <!-- tool: set_scene_clock -->
 <!-- tool: update_entity -->
+<!-- tool: prepare_semantic_continuity -->

@@ -2,7 +2,7 @@ version = 1
 name = "scene-writer"
 profiles = ["default"]
 requires_skills = ["spindle"]
-tools = ["annotate_scene_beats", "check_consistency", "commit_character_state", "commit_scene", "commit_scene_changes", "create_character", "create_future_knowledge", "create_world_rule", "find_scenes_referencing", "get_chapter_briefing", "get_character_snapshot", "get_entity", "get_reference", "get_scene_context", "get_writer_state", "list_book_chapters", "list_chapter_scenes", "plan_chapter", "prepare_scene", "record_knowledge", "record_note", "register_canonical_fact", "run_dual_persona_review", "save_scene_draft", "save_summary", "set_active_project", "set_scene_clock", "update_character", "update_entity", "update_location", "update_promise_status", "update_relationship", "update_world_rule", "update_writer_position"]
+tools = ["prepare_semantic_continuity", "annotate_scene_beats", "check_consistency", "commit_character_state", "commit_scene", "commit_scene_changes", "create_character", "create_future_knowledge", "create_world_rule", "find_scenes_referencing", "get_chapter_briefing", "get_character_snapshot", "get_entity", "get_reference", "get_scene_context", "get_writer_state", "list_book_chapters", "list_chapter_scenes", "plan_chapter", "prepare_scene", "record_knowledge", "record_note", "register_canonical_fact", "run_dual_persona_review", "save_scene_draft", "save_summary", "set_active_project", "set_scene_clock", "update_character", "update_entity", "update_location", "update_promise_status", "update_relationship", "update_world_rule", "update_writer_position"]
 
 [[references]]
 name = "authoring-runs"

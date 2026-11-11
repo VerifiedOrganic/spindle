@@ -377,6 +377,7 @@ async fn context_hash_blocks_stale_world_rule_cache_when_invalidation_is_missed(
             ],
             severity_filter: Vec::new(),
             deep_check: Some(false),
+            semantic_mode: None,
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,

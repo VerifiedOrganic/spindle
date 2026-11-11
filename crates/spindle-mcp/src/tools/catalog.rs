@@ -389,6 +389,10 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "check_consistency",
             "Run a structured consistency audit (includes scene_divergence and canonical_fact_consistency checks)",
         ),
+        tool::<PrepareSemanticContinuityInput, PrepareSemanticContinuityOutput>(
+            "prepare_semantic_continuity",
+            "Prepare read-only ranked semantic candidate sets for every scene in scope. Makes no model call; P2 emits no findings",
+        ),
         tool::<RegisterCanonicalFactInput, RegisterCanonicalFactOutput>(
             "register_canonical_fact",
             "Register a canonical story fact (pull result, stat change, item, ability) for contradiction detection. scene_id is optional: omit it to register a fact decided during planning but not yet dramatised (placed by book_number/chapter_number only), then attach it later with bind_canonical_fact_to_scene",

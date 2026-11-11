@@ -1,0 +1,962 @@
+{
+  "manuscripts": [
+    {
+      "candidate_count": 113,
+      "candidate_scene_count": 20,
+      "name": "ashfall_expedition",
+      "omitted_by_family": {},
+      "scene_count": 20,
+      "scenes": [
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 1,
+            "knowledge_timing": 3,
+            "secret_leak": 2,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "attribute": 1,
+            "knowledge": 3,
+            "secret": 2,
+            "timeline": 1
+          },
+          "candidate_count": 7,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 0
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2
+          },
+          "candidate_count": 6,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 1
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 2,
+            "quantity_drift": 1,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "knowledge": 2,
+            "quantity": 1,
+            "secret": 2
+          },
+          "candidate_count": 5,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "quantity_state"
+          ],
+          "evidence_origins": [
+            "price_scan",
+            "resolver"
+          ],
+          "scene_index": 2
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2
+          },
+          "candidate_count": 6,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 3
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 1,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "knowledge": 1,
+            "secret": 2
+          },
+          "candidate_count": 3,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "resolver"
+          ],
+          "scene_index": 4
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "dead_character_acting": 1,
+            "knowledge_timing": 3,
+            "secret_leak": 2,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "death": 1,
+            "knowledge": 3,
+            "secret": 2,
+            "timeline": 1
+          },
+          "candidate_count": 9,
+          "canon_tables": [
+            "canonical_fact",
+            "character_state",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 5
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2
+          },
+          "candidate_count": 6,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 6
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 3,
+            "secret_leak": 2,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 3,
+            "secret": 2,
+            "timeline": 1
+          },
+          "candidate_count": 8,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 7
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
+            "temporal_coherence": 1,
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2,
+            "timeline": 1,
+            "world_rule": 1
+          },
+          "candidate_count": 8,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock",
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor",
+            "world_rule_scan"
+          ],
+          "scene_index": 8
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 1,
+            "quantity_drift": 1,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "knowledge": 1,
+            "quantity": 1,
+            "secret": 2
+          },
+          "candidate_count": 4,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "quantity_state"
+          ],
+          "evidence_origins": [
+            "price_scan",
+            "resolver"
+          ],
+          "scene_index": 9
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2,
+            "timeline": 1
+          },
+          "candidate_count": 7,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 10
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 1,
+            "quantity_drift": 1,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "knowledge": 1,
+            "quantity": 1,
+            "secret": 2
+          },
+          "candidate_count": 4,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "quantity_state"
+          ],
+          "evidence_origins": [
+            "price_scan",
+            "resolver"
+          ],
+          "scene_index": 11
+        },
+        {
+          "by_check_type": {
+            "secret_leak": 2
+          },
+          "by_family": {
+            "secret": 2
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "resolver"
+          ],
+          "scene_index": 12
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 3,
+            "secret_leak": 2,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 3,
+            "secret": 2,
+            "timeline": 1
+          },
+          "candidate_count": 8,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 13
+        },
+        {
+          "by_check_type": {
+            "secret_leak": 2
+          },
+          "by_family": {
+            "secret": 2
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "resolver"
+          ],
+          "scene_index": 14
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
+            "temporal_coherence": 1,
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2,
+            "timeline": 1,
+            "world_rule": 1
+          },
+          "candidate_count": 8,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock",
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor",
+            "world_rule_scan"
+          ],
+          "scene_index": 15
+        },
+        {
+          "by_check_type": {
+            "secret_leak": 2,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "secret": 2,
+            "timeline": 1
+          },
+          "candidate_count": 3,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 16
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "timeline": 1
+          },
+          "candidate_count": 5,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 17
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2
+          },
+          "candidate_count": 6,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 18
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2
+          },
+          "candidate_count": 6,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 19
+        }
+      ]
+    },
+    {
+      "candidate_count": 115,
+      "candidate_scene_count": 20,
+      "name": "veridian_station",
+      "omitted_by_family": {},
+      "scene_count": 20,
+      "scenes": [
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 1,
+            "knowledge_timing": 2,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 1,
+            "knowledge": 2,
+            "secret": 2
+          },
+          "candidate_count": 5,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 0
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2
+          },
+          "candidate_count": 6,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 1
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 2,
+            "quantity_drift": 1,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "knowledge": 2,
+            "quantity": 1,
+            "secret": 2
+          },
+          "candidate_count": 5,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "quantity_state"
+          ],
+          "evidence_origins": [
+            "price_scan",
+            "resolver"
+          ],
+          "scene_index": 2
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2,
+            "world_rule": 1
+          },
+          "candidate_count": 7,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 3
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 2,
+            "secret_leak": 2,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "knowledge": 2,
+            "secret": 2,
+            "timeline": 1
+          },
+          "candidate_count": 5,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 4
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 3,
+            "secret_leak": 2,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 3,
+            "secret": 2,
+            "timeline": 1
+          },
+          "candidate_count": 8,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 5
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "dead_character_acting": 1,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "death": 1,
+            "knowledge": 2,
+            "secret": 2,
+            "timeline": 1
+          },
+          "candidate_count": 8,
+          "canon_tables": [
+            "canonical_fact",
+            "character_state",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 6
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2
+          },
+          "candidate_count": 6,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 7
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2,
+            "world_rule": 1
+          },
+          "candidate_count": 7,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "world_rule_scan"
+          ],
+          "scene_index": 8
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 1,
+            "quantity_drift": 1,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "knowledge": 1,
+            "quantity": 1,
+            "secret": 2
+          },
+          "candidate_count": 4,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "quantity_state"
+          ],
+          "evidence_origins": [
+            "price_scan",
+            "resolver"
+          ],
+          "scene_index": 9
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2
+          },
+          "candidate_count": 6,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 10
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 1,
+            "quantity_drift": 1,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "knowledge": 1,
+            "quantity": 1,
+            "secret": 2
+          },
+          "candidate_count": 4,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "quantity_state"
+          ],
+          "evidence_origins": [
+            "price_scan",
+            "resolver"
+          ],
+          "scene_index": 11
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
+            "temporal_coherence": 1,
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2,
+            "timeline": 1,
+            "world_rule": 1
+          },
+          "candidate_count": 8,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock",
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 12
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 3,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 3,
+            "secret": 2
+          },
+          "candidate_count": 7,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 13
+        },
+        {
+          "by_check_type": {
+            "secret_leak": 2
+          },
+          "by_family": {
+            "secret": 2
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "resolver"
+          ],
+          "scene_index": 14
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2
+          },
+          "candidate_count": 6,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 15
+        },
+        {
+          "by_check_type": {
+            "secret_leak": 2
+          },
+          "by_family": {
+            "secret": 2
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "resolver"
+          ],
+          "scene_index": 16
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "temporal_coherence": 1,
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "timeline": 1,
+            "world_rule": 1
+          },
+          "candidate_count": 6,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock",
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 17
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2,
+            "timeline": 1
+          },
+          "candidate_count": 7,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 18
+        },
+        {
+          "by_check_type": {
+            "canonical_fact_prose_drift": 2,
+            "knowledge_timing": 2,
+            "secret_leak": 2
+          },
+          "by_family": {
+            "attribute": 2,
+            "knowledge": 2,
+            "secret": 2
+          },
+          "candidate_count": 6,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "canonical_fact",
+            "resolver"
+          ],
+          "scene_index": 19
+        }
+      ]
+    }
+  ],
+  "suite": "baseline",
+  "variant": "control"
+}
