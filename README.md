@@ -17,9 +17,9 @@ continuity, checkpoint review, recovery, and manuscript export. Run
 see [profile selection](docs/tool-profiles.md) for details.
 
 The legacy `authoring`, `write`, `minimal`, `import`, and `legacy-all` profile
-names still work in 0.3.1, but they are deprecated and will be removed in the
-next release. Host AI prose should declare `authorship: "assistant"`; optional
-style learning uses subsequent human edits.
+names were removed in 0.4.0. Select a generated workflow or specialist profile;
+unset defaults to `workflow-write`. Host AI prose should declare
+`authorship: "assistant"`; optional style learning uses subsequent human edits.
 
 **A story bible that keeps your novel consistent across hundreds of pages.**
 
