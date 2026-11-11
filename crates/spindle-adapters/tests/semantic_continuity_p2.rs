@@ -172,7 +172,7 @@ async fn late_secret_holders_and_paraphrase_candidates_are_scene_relative() {
 
     let (_tmp, svc) = fresh_service().await;
     let project_id = project(&svc, "Paraphrase candidates").await;
-    let mara = character(&svc, &project_id, "Mara").await;
+    let mara = character(&svc, &project_id, "Mara Voss").await;
     let scene_id = scene(
         &svc,
         &project_id,

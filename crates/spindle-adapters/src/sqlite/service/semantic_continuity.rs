@@ -169,6 +169,7 @@ impl SqliteSpindleService {
                         &mentioned,
                         &holders_by_secret,
                         &character_by_id,
+                        &resolver,
                         &knowledge,
                     ) {
                         drafts.push(draft);
@@ -184,7 +185,7 @@ impl SqliteSpindleService {
                         scene_position,
                     )
                     && let Some(range) = fact_hint_range(scene, fact)
-                        .or_else(|| subject_range(scene, subject_id, &character_by_id))
+                        .or_else(|| subject_range(scene, subject_id, &resolver))
                 {
                     drafts.push(CandidateDraft::new(
                         SemanticCandidateFamily::Attribute,
@@ -222,7 +223,7 @@ impl SqliteSpindleService {
                     scene,
                     &[fact.normalized_fact.as_str(), fact.fact.as_str()],
                 )
-                .or_else(|| subject_range(scene, &fact.character_id, &character_by_id));
+                .or_else(|| subject_range(scene, &fact.character_id, &resolver));
                 let Some(range) = range else {
                     continue;
                 };
@@ -274,10 +275,10 @@ impl SqliteSpindleService {
                 let Some(dead) = dead else {
                     continue;
                 };
-                let Some(character) = character_by_id.get(character_id.as_str()) else {
+                if character_by_id.get(character_id.as_str()).is_none() {
                     continue;
-                };
-                let Some(range) = character_range(scene, character) else {
+                }
+                let Some(range) = character_range(scene, resolver.aliases_for(character_id)) else {
                     continue;
                 };
                 drafts.push(CandidateDraft::new(
@@ -625,11 +626,9 @@ fn secret_knowledge_refs(
 fn subject_range(
     scene: &Scene,
     subject_id: &str,
-    characters: &BTreeMap<&str, &crate::sqlite::records::Character>,
+    resolver: &CharacterMentionResolver,
 ) -> Option<(usize, usize)> {
-    characters
-        .get(subject_id)
-        .and_then(|character| character_range(scene, character))
+    character_range(scene, resolver.aliases_for(subject_id))
 }
 
 fn secret_draft(
@@ -638,6 +637,7 @@ fn secret_draft(
     mentioned: &BTreeSet<String>,
     holders_by_secret: &BTreeMap<String, BTreeSet<String>>,
     characters: &BTreeMap<&str, &crate::sqlite::records::Character>,
+    resolver: &CharacterMentionResolver,
     knowledge: &[crate::sqlite::records::KnowledgeFact],
 ) -> Option<CandidateDraft> {
     let holders = holders_by_secret.get(&fact.id);
@@ -658,7 +658,7 @@ fn secret_draft(
     let range = first_phrase_range(scene, &phrases).or_else(|| {
         out_of_circle
             .iter()
-            .find_map(|id| subject_range(scene, id, characters))
+            .find_map(|id| subject_range(scene, id, resolver))
     })?;
     let mut refs = vec![fact_ref(fact)];
     refs.extend(secret_knowledge_refs(knowledge, &fact.id));
@@ -774,13 +774,9 @@ fn rule_hint_range(scene: &Scene, rule: &WorldRule) -> Option<(usize, usize)> {
     first_phrase_range(scene, &phrases)
 }
 
-fn character_range(
-    scene: &Scene,
-    character: &crate::sqlite::records::Character,
-) -> Option<(usize, usize)> {
-    let mut phrases = vec![character.name.clone()];
-    phrases.extend(character.aliases.iter().cloned());
-    first_phrase_range(scene, &phrases)
+fn character_range(scene: &Scene, aliases: &[String]) -> Option<(usize, usize)> {
+    let phrases: Vec<&str> = aliases.iter().map(String::as_str).collect();
+    first_phrase_range_str(scene, &phrases)
 }
 
 fn temporal_phrase_range(scene: &Scene) -> Option<(usize, usize)> {

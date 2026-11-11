@@ -1,11 +1,12 @@
 {
   "manuscripts": [
     {
-      "candidate_count": 128,
+      "candidate_count": 131,
       "candidate_scene_count": 16,
       "name": "The Salt Orchard",
       "omitted_by_family": {
-        "timeline": 1,
+        "quantity": 1,
+        "timeline": 2,
         "world_rule": 4
       },
       "scene_count": 16,
@@ -251,18 +252,20 @@
         },
         {
           "by_check_type": {
-            "dead_character_acting": 1,
+            "canonical_fact_prose_drift": 1,
+            "dead_character_acting": 2,
             "knowledge_timing": 2,
             "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
-            "death": 1,
+            "attribute": 1,
+            "death": 2,
             "knowledge": 2,
             "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 6,
+          "candidate_count": 8,
           "canon_tables": [
             "canonical_fact",
             "character_state",
@@ -270,6 +273,7 @@
             "scene_clock"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "resolver",
             "temporal_anchor"
           ],
@@ -277,34 +281,26 @@
         },
         {
           "by_check_type": {
-            "canonical_fact_prose_drift": 3,
-            "dead_character_acting": 2,
+            "canonical_fact_prose_drift": 4,
+            "dead_character_acting": 3,
             "knowledge_timing": 3,
-            "quantity_drift": 1,
-            "secret_leak": 2,
-            "temporal_coherence": 1
+            "secret_leak": 2
           },
           "by_family": {
-            "attribute": 3,
-            "death": 2,
+            "attribute": 4,
+            "death": 3,
             "knowledge": 3,
-            "quantity": 1,
-            "secret": 2,
-            "timeline": 1
+            "secret": 2
           },
           "candidate_count": 12,
           "canon_tables": [
             "canonical_fact",
             "character_state",
-            "knowledge_fact",
-            "quantity_state",
-            "scene_clock"
+            "knowledge_fact"
           ],
           "evidence_origins": [
             "canonical_fact",
-            "price_scan",
-            "resolver",
-            "temporal_anchor"
+            "resolver"
           ],
           "scene_index": 10
         },
@@ -365,14 +361,16 @@
         },
         {
           "by_check_type": {
+            "knowledge_timing": 1,
             "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
+            "knowledge": 1,
             "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 3,
+          "candidate_count": 4,
           "canon_tables": [
             "canonical_fact",
             "knowledge_fact",

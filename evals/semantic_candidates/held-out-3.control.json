@@ -1,7 +1,7 @@
 {
   "manuscripts": [
     {
-      "candidate_count": 114,
+      "candidate_count": 117,
       "candidate_scene_count": 16,
       "name": "The Salt Orchard",
       "omitted_by_family": {
@@ -252,22 +252,25 @@
         },
         {
           "by_check_type": {
-            "dead_character_acting": 1,
+            "canonical_fact_prose_drift": 1,
+            "dead_character_acting": 2,
             "knowledge_timing": 2,
             "secret_leak": 2
           },
           "by_family": {
-            "death": 1,
+            "attribute": 1,
+            "death": 2,
             "knowledge": 2,
             "secret": 2
           },
-          "candidate_count": 5,
+          "candidate_count": 7,
           "canon_tables": [
             "canonical_fact",
             "character_state",
             "knowledge_fact"
           ],
           "evidence_origins": [
+            "canonical_fact",
             "resolver"
           ],
           "scene_index": 9
@@ -356,14 +359,16 @@
         },
         {
           "by_check_type": {
+            "knowledge_timing": 1,
             "secret_leak": 2,
             "temporal_coherence": 1
           },
           "by_family": {
+            "knowledge": 1,
             "secret": 2,
             "timeline": 1
           },
-          "candidate_count": 3,
+          "candidate_count": 4,
           "canon_tables": [
             "canonical_fact",
             "knowledge_fact",
