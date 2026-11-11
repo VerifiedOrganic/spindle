@@ -3,8 +3,8 @@
   "compatibility": {
     "default": {
       "tools": 44,
-      "input_bytes": 57633,
-      "full_bytes": 115215
+      "input_bytes": 58416,
+      "full_bytes": 116723
     },
     "new-book": {
       "tools": 14,
@@ -43,8 +43,8 @@
     },
     "workflow-authoring": {
       "tools": 76,
-      "input_bytes": 90075,
-      "full_bytes": 189481
+      "input_bytes": 90858,
+      "full_bytes": 190989
     },
     "workflow-import": {
       "tools": 20,
@@ -53,8 +53,8 @@
     },
     "workflow-write": {
       "tools": 44,
-      "input_bytes": 57633,
-      "full_bytes": 115215
+      "input_bytes": 58416,
+      "full_bytes": 116723
     },
     "worldbuilding": {
       "tools": 50,

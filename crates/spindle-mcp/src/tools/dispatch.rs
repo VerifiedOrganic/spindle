@@ -886,10 +886,18 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.prepare_scene(input))
                     .await
             }
-            "commit_scene" => {
-                self.invoke(arguments, |input| self.handle_commit_scene(input))
-                    .await
-            }
+            "commit_scene" => match self
+                .invoke(arguments, |input| self.handle_commit_scene(input))
+                .await
+            {
+                Ok(result) => Ok(result),
+                Err(error) if commit_scene_payload_shape_error(&error) => {
+                    Ok(structured_error_result(&anyhow::anyhow!(
+                        "{error:#}\nHint: for long prose, write it to a workspace file and pass prose_path instead of full_text."
+                    )))
+                }
+                Err(error) => Err(error),
+            },
             "get_entity" => {
                 self.invoke(arguments, |input| self.service.get_entity(input))
                     .await
@@ -1056,6 +1064,10 @@ impl ToolRouter {
         let output = f(input).await?;
         structured_result(&output)
     }
+}
+
+fn commit_scene_payload_shape_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<serde_json::Error>())
 }
 
 fn authoring_start_run_policy_rejection(

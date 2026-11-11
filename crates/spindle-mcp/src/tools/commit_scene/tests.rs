@@ -17,6 +17,58 @@ async fn invoke_json(router: &ToolRouter, name: &str, args: Value) -> Value {
     structured_json(result)
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn commit_scene_requires_exactly_one_prose_source() {
+    let router = router().await;
+    let project = invoke_json(
+        &router,
+        "create_project",
+        json!({
+            "name": "Prose Source Novel",
+            "project_type": "novel",
+            "genre": "fantasy",
+            "reader_contract": {
+                "promise": "A testable commit payload",
+                "style_notes": [],
+                "boundaries": []
+            }
+        }),
+    )
+    .await;
+    let project_id = project["project_id"].as_str().unwrap().to_string();
+    let base = json!({
+        "project_id": project_id,
+        "book_number": 1,
+        "chapter_number": 1,
+        "scene_order": 1,
+        "summary": "A scene.",
+        "content_rating": "general",
+        "authorship": "human"
+    });
+
+    let call = |args: Value| {
+        let router = router.clone();
+        async move {
+            let result = router
+                .call_tool("commit_scene", args.as_object())
+                .await
+                .expect("commit_scene call");
+            assert_eq!(result.is_error, Some(true));
+            let text = format!("{:?}", result.content);
+            text
+        }
+    };
+
+    let neither = call(base.clone()).await;
+    assert!(neither.contains("prose_path"), "{neither}");
+    let mut both = base;
+    both["full_text"] = json!("Inline prose.");
+    both["prose_path"] = json!("scenes/ch1.md");
+    let both = call(both).await;
+    assert!(both.contains("exactly one"), "{both}");
+    assert!(both.contains("prose_path"), "{both}");
+}
+
 /// The P4 scene-loop contract: after one session project selection, an ordinary
 /// scene with complete supplied continuity is prepared and committed with
 /// exactly two calls. Setup happens before selection.

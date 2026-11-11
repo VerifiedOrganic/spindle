@@ -36,7 +36,13 @@ The ordinary loop is `prepare_scene` then `commit_scene`. `commit_scene` is the
 single atomic write for prose, author-declared continuity, beats, an optional
 chapter-completion summary, and the writer cursor, with `dry_run`, stale-token
 and stale-version checks, idempotent retries, and optional authoring-run phase
-integration. `save_scene_draft`, `revise_scene`, `authoring_save_scene_draft`,
+integration. Pass exactly one of `full_text` or `prose_path`. `prose_path` is a
+UTF-8 file relative to the folder containing `.spindle/`; absolute paths,
+`..`, dotfiles, `.spindle/` internals, non-regular files, non-UTF-8 files and
+files over 2 MB are rejected. An optional `expected_sha256` verifies the source
+bytes, and the receipt records the source, relative path, byte count and hash.
+For HTTP or secondary clients, the primary process resolves the path in its
+workspace. `save_scene_draft`, `revise_scene`, `authoring_save_scene_draft`,
 `commit_scene_changes`, and `annotate_scene_beats` keep their release-R
 save-only and branch semantics. Branch and revision tools are not removed.
 
