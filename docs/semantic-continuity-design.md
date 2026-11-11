@@ -624,30 +624,67 @@ twins contain no unintentional contradictions.
 Evaluator: `evals/continuity_recall.py <set> --semantic shadow --agent-config ...`
 with one judge config (`ollama:gemma4:31b`) held constant. The evaluator runs a
 shadow pass, then an on pass against the same projects; the on pass reuses the
-validated cache. Checked-in reports: `evals/results/semantic_p4_*.json`. All
-p95/repair figures are per actual dispatch receipt, including failed/timeout
-dispatches.
+validated cache. Checked-in reports: `evals/results/semantic_p4_*.json`. P95 and
+repair figures are per actual dispatch receipt, including failed/timeout
+dispatches; scene summaries remain the cost totals.
 
 | Set | Deterministic recall | Semantic-on recall | Semantic warnings | Control warnings | Cache hit (on) | Repair rate (shadow/on) | p95 prompt/call | p95 output/call | p95 latency/call | Tokens/scene (on) |
 | --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Baseline | 28/28 | 28/28 | 0 | unchanged (2 warnings + 1 info) | 81.3% | 19.2% / 50.0% | 5,141 | 1,200 | 5,637 ms | 1,655 |
-| #72 | 54/56 | 54/56 | 0 | unchanged (0) | 50.0% | 33.3% / 50.0% | 6,539 | 1,200 | 3,727 ms | 6,670 |
-| held-out-2 | 55/56 localized, 56/56 type | 55/56, 56/56 | 0 | unchanged (0) | 61.0% | 29.8% / 50.0% | 4,798 | 1,200 | 3,970 ms | 3,440 |
-| held-out-3 | 26/56 localized, 28/56 type | 26/56, 28/56 | 0 | unchanged (0) | 31.3% | 40.7% / 49.4% | 6,895 | 1,200 | 6,718 ms | 9,770 |
+| Baseline | 28/28 | 28/28 | 0 | unchanged (2 warnings + 1 info) | 78.8% | 19.2% / 48.5% | 5,148 | 1,200 | 5,870 ms | 1,887 |
+| #72 | 54/56 | 54/56 | 0 | unchanged (0) | 48.4% | 34.0% / 50.0% | 6,609 | 1,200 | 6,637 ms | 6,862 |
+| held-out-2 | 55/56 localized, 56/56 type | 55/56, 56/56 | 0 | unchanged (0) | 59.3% | 29.8% / 48.9% | 4,775 | 1,200 | 3,060 ms | 3,500 |
+| held-out-3 | 26/56 localized, 28/56 type | 26/56, 28/56 | 0 | unchanged (0) | 34.4% | 39.6% / 50.0% | 6,878 | 1,200 | 4,111 ms | 9,526 |
 
-The semantic lane added no recall on these public sets with this judge config.
-No semantic warning reached the output, so warning precision is undefined
-(`null`, zero denominator), evidence-anchor validity is vacuous (1.0 over zero
-issues), and the control-warning gate is unchanged. Shadow and on both recorded
-zero would-be warnings. The measured **repair rate (19-50%) exceeds the <=10%
-activation gate**; per-call prompt/output/latency ceilings pass. The lane
-therefore remains **off by default**; these are honest failure measurements,
-not activation.
+**Why zero semantic warnings reached even info:** the judge returned **no
+contradiction verdicts** on any public set. All validated judgments were
+`compatible` or `insufficient`, with every confidence in the highest bucket
+(>=0.85). The only discard reason recorded was `not_contradiction`; there were
+no evidence-anchor, canon-ref, threshold, or dedupe discards. Therefore nothing
+was discarded downstream: there was no contradiction to promote, downgrade, or
+emit. Truncation was common (shadow stop reasons: baseline 7, #72 52,
+held-out-2 10, held-out-3 75), and repair rates remain high, but successful calls
+also contained no contradiction. The public-set result fails the activation
+repair gate (<=10% of calls) and shows no semantic recall lift; warning precision
+is undefined (`null`, zero denominator) and evidence-anchor validity is vacuous
+(1.0 over zero issues). Control warnings did not rise. The lane stays **off by
+default**.
 
 Cost: the provider exposes no configured price, so only token and latency
 inputs are reported. Held-out-4 was not accessed.
 
-### 4.3 Metrics on all five sets
+### 4.2.2 P4 fix: compact judge, verifier, and evidence gates
+
+The pre-fix public reports showed zero contradiction verdicts: the verbose report
+contract truncated at 1,200 output tokens, and successful calls defaulted to
+compatible/insufficient. The fix adds a compact per-candidate wire format,
+server-side evidence-span resolution, general family evidence gates, a
+contradiction-only verifier that fails closed, and canon/subject-aware evidence
+dedupe.
+
+Public-set measurement on the fix head (`ollama:gemma4:31b`, shadow/on):
+
+| Set | Deterministic | Semantic on | Warning precision | Control warnings | Repair shadow/on | p95 prompt/output/latency (shadow) |
+| --- | --- | --- | ---: | --- | ---: | --- |
+| Baseline | 28/28 | 28/28 | 0.25 | +2 quantity | 1.1% / 50.0% | 2,209 / 626 / 1,831 ms |
+| #72 | 54/56 | 54/56 | 1.00 | 0 | 2.6% / 33.3% | 2,850 / 981 / 2,768 ms |
+| held-out-2 | 55/56, 56/56 type | 55/56, 56/56 | 0.00 | +1 dead acting | 1.5% / 50.0% | 2,038 / 663 / 1,886 ms |
+| held-out-3 | 26/56, 28/56 type | 29/56, 30/56 | 1.00 | 0 | 4.2% / 50.0% | 3,138 / 951 / 2,671 ms |
+
+Held-out-3 improves by +3 localized/+2 type-present with perfect warning
+precision, no control rise, and 4.2% shadow repair rate. #72's warnings are all
+true positives but duplicate already-detected plants, so they add no recall;
+baseline and held-out-2 still emit false-positive control warnings. Aggregate
+public lift is +3 localized/+2 type-present. Shadow/on would-be counts match on
+baseline and held-out-3 but differ by one on #72 (8 vs 9) and held-out-2 (1 vs
+1 in favor of one mode); the strict parity gate is not met. **The activation
+gates are not met on this head; the lane remains off by default.**
+
+The stronger-model check (`deepseek-v4.1-flash`) was not viable: it truncated
+111/120 #72 calls and 121/125 held-out-3 calls at the output cap, with zero
+findings and ~8-9 s p95 latency. Gemma remains the measured judge; the operator
+still chooses model/cost.
+
+### 4.3 Metrics on all five sets### 4.3 Metrics on all five sets
 
 For baseline, #72, held-out-2, held-out-3, and held-out-4:
 

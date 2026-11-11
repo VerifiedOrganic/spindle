@@ -2,9 +2,16 @@
   "judge_identity": "ollama:gemma4:31b",
   "modes": {
     "on": {
-      "cache_hit_rate": 0.5,
-      "calls_per_candidate_scene": 1.0,
+      "cache_hit_rate": 0.4844,
+      "calls_per_candidate_scene": 1.0312,
       "candidate_scene_count": 64,
+      "confidence_buckets": [
+        0,
+        0,
+        0,
+        0,
+        200
+      ],
       "control_warnings_by_check_type": {},
       "deterministic": {
         "control_count": 0,
@@ -12,18 +19,21 @@
         "planted": 56,
         "type_present": 54
       },
+      "discard_reasons": {
+        "not_contradiction": 200
+      },
       "errors_by_kind": {
-        "malformed_output": 5,
-        "truncated": 27
+        "malformed_output": 7,
+        "truncated": 26
       },
       "evidence_anchor_validity": 1.0,
-      "input_tokens": 351623,
+      "input_tokens": 362203,
       "issues": [
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSDQFG56G2M2SYZWCESR8",
-            "scene:01M74NSDXBN0PQGYHDRSWQ6GSR"
+            "scene:01M74S00Z9GJP41T4CZF3NC5RA",
+            "scene:01M74S014H2ABSFZFM868H44S2"
           ],
           "message": "scene is set earlier in story time (day 102) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -32,8 +42,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSE9JG138231MY1RDVGH5",
-            "scene:01M74NSEF2VYFQ0Z5580FEQ3D5"
+            "scene:01M74S01EYHJBV8RT64JN1HF4S",
+            "scene:01M74S01KTJNXCPGH9HSEMH15B"
           ],
           "message": "scene is set earlier in story time (day 111) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -42,8 +52,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSEZSXD5C890CAE50BMEQ",
-            "scene:01M74NSF4W0GR9FF1YC5AMF0HW"
+            "scene:01M74S023D3S1A3PY6MQ4DKJAD",
+            "scene:01M74S027ZCPNC0MZWZA78Y018"
           ],
           "message": "scene is set earlier in story time (day 123) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -52,8 +62,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSFFZRBBC70VTQHPT4MFV",
-            "scene:01M74NSFN7Z02EFH88DC7D6B9D"
+            "scene:01M74S02J8S5GCRHJMCQ14QDYY",
+            "scene:01M74S02Q3F4MCFANGRMBV3KJA"
           ],
           "message": "scene is set earlier in story time (day 132) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -62,43 +72,43 @@
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSD9EMG3NKBY1DFSYR19Z"
+            "character:01M74S00KB5GM3FPJH5YKX4ANP"
           ],
-          "message": "silver for 'character:01M74NSD9EMG3NKBY1DFSYR19Z' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S00KB5GM3FPJH5YKX4ANP' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSD9GZ0X9KWVCDEGRTC7W"
+            "character:01M74S00KCBW7QPJAZACRA1C8D"
           ],
-          "message": "silver for 'character:01M74NSD9GZ0X9KWVCDEGRTC7W' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S00KCBW7QPJAZACRA1C8D' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSD9JB9TF66J4W3ZF0RSS"
+            "character:01M74S00KECSXQHSWFDC880Q51"
           ],
-          "message": "silver for 'character:01M74NSD9JB9TF66J4W3ZF0RSS' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S00KECSXQHSWFDC880Q51' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSD9M6A7SKJT558SJ21S4"
+            "character:01M74S00KFYZ95ND0XKZ12J3FC"
           ],
-          "message": "silver for 'character:01M74NSD9M6A7SKJT558SJ21S4' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S00KFYZ95ND0XKZ12J3FC' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M74NSDHTCDFXZC8PKV1PM3KE"
+            "scene:01M74S00TF26WQ517KY4YYSCXE"
           ],
           "message": "scene names purchases totalling 2000 base units, but the spender is ambiguous",
           "severity": "info",
@@ -107,8 +117,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSDHTCDFXZC8PKV1PM3KE",
-            "character:01M74NSD9GZ0X9KWVCDEGRTC7W"
+            "scene:01M74S00TF26WQ517KY4YYSCXE",
+            "character:01M74S00KCBW7QPJAZACRA1C8D"
           ],
           "message": "scene has 'Sela Quill' reference knowledge they do not learn until book 1 chapter 8",
           "severity": "warning",
@@ -117,8 +127,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSE9JG138231MY1RDVGH5",
-            "character:01M74NSD9EMG3NKBY1DFSYR19Z"
+            "scene:01M74S01EYHJBV8RT64JN1HF4S",
+            "character:01M74S00KB5GM3FPJH5YKX4ANP"
           ],
           "message": "scene has 'Miro Voss' reference knowledge they do not learn until book 1 chapter 10",
           "severity": "warning",
@@ -127,8 +137,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSETVCG71BW87WZB0J4GQ",
-            "character:01M74NSD9JB9TF66J4W3ZF0RSS"
+            "scene:01M74S01YT5GVHWPC2ACYXF6V0",
+            "character:01M74S00KECSXQHSWFDC880Q51"
           ],
           "message": "scene has 'Brann Tallow' reference knowledge they do not learn until book 1 chapter 12",
           "severity": "warning",
@@ -137,8 +147,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSFFZRBBC70VTQHPT4MFV",
-            "character:01M74NSD9M6A7SKJT558SJ21S4"
+            "scene:01M74S02J8S5GCRHJMCQ14QDYY",
+            "character:01M74S00KFYZ95ND0XKZ12J3FC"
           ],
           "message": "scene has 'Orla Finch' reference knowledge they do not learn until book 1 chapter 14",
           "severity": "warning",
@@ -147,8 +157,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9GZ0X9KWVCDEGRTC7W",
-            "scene:01M74NSDHTCDFXZC8PKV1PM3KE"
+            "character:01M74S00KCBW7QPJAZACRA1C8D",
+            "scene:01M74S00TF26WQ517KY4YYSCXE"
           ],
           "message": "scene has 'Sela Quill' reference knowledge they do not learn until book 1 chapter 8",
           "severity": "warning",
@@ -157,8 +167,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9PTGKMYY3BD4QWHAET",
-            "scene:01M74NSDQFG56G2M2SYZWCESR8"
+            "character:01M74S00KGCWQ21GCT924EAGPA",
+            "scene:01M74S00Z9GJP41T4CZF3NC5RA"
           ],
           "message": "book 1 chapter 3 scene 1 includes 'Oren Pike' acting after status 'dead'",
           "severity": "warning",
@@ -167,8 +177,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSD9PTGKMYY3BD4QWHAET",
-            "scene:01M74NSDQFG56G2M2SYZWCESR8"
+            "character:01M74S00KGCWQ21GCT924EAGPA",
+            "scene:01M74S00Z9GJP41T4CZF3NC5RA"
           ],
           "message": "book 1 chapter 3 scene 1 includes 'Oren Pike' acting after status 'dead'",
           "severity": "warning",
@@ -177,8 +187,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9R4614R3KQ5NTPB76T",
-            "scene:01M74NSE9JG138231MY1RDVGH5"
+            "character:01M74S00KJ9R2ZQGS37GS7WH4A",
+            "scene:01M74S01EYHJBV8RT64JN1HF4S"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Lira Vane' acting after status 'dead'",
           "severity": "warning",
@@ -187,8 +197,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSD9R4614R3KQ5NTPB76T",
-            "scene:01M74NSE9JG138231MY1RDVGH5"
+            "character:01M74S00KJ9R2ZQGS37GS7WH4A",
+            "scene:01M74S01EYHJBV8RT64JN1HF4S"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Lira Vane' acting after status 'dead'",
           "severity": "warning",
@@ -197,8 +207,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9EMG3NKBY1DFSYR19Z",
-            "scene:01M74NSE9JG138231MY1RDVGH5"
+            "character:01M74S00KB5GM3FPJH5YKX4ANP",
+            "scene:01M74S01EYHJBV8RT64JN1HF4S"
           ],
           "message": "scene has 'Miro Voss' reference knowledge they do not learn until book 1 chapter 10",
           "severity": "warning",
@@ -207,8 +217,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9JB9TF66J4W3ZF0RSS",
-            "scene:01M74NSETVCG71BW87WZB0J4GQ"
+            "character:01M74S00KECSXQHSWFDC880Q51",
+            "scene:01M74S01YT5GVHWPC2ACYXF6V0"
           ],
           "message": "scene has 'Brann Tallow' reference knowledge they do not learn until book 1 chapter 12",
           "severity": "warning",
@@ -217,8 +227,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9S5KXJ1FD2W1QVK730",
-            "scene:01M74NSEZSXD5C890CAE50BMEQ"
+            "character:01M74S00KK5VM304NS6SB1HJNB",
+            "scene:01M74S023D3S1A3PY6MQ4DKJAD"
           ],
           "message": "book 1 chapter 10 scene 1 includes 'Piet Moss' acting after status 'dead'",
           "severity": "warning",
@@ -227,8 +237,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSD9S5KXJ1FD2W1QVK730",
-            "scene:01M74NSEZSXD5C890CAE50BMEQ"
+            "character:01M74S00KK5VM304NS6SB1HJNB",
+            "scene:01M74S023D3S1A3PY6MQ4DKJAD"
           ],
           "message": "book 1 chapter 10 scene 1 includes 'Piet Moss' acting after status 'dead'",
           "severity": "warning",
@@ -237,8 +247,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9V550YSZMA68GE2P0B",
-            "scene:01M74NSFFZRBBC70VTQHPT4MFV"
+            "character:01M74S00KMDSPDNGXMXXGJCXA4",
+            "scene:01M74S02J8S5GCRHJMCQ14QDYY"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Sera Bell' acting after status 'dead'",
           "severity": "warning",
@@ -247,8 +257,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSD9V550YSZMA68GE2P0B",
-            "scene:01M74NSFFZRBBC70VTQHPT4MFV"
+            "character:01M74S00KMDSPDNGXMXXGJCXA4",
+            "scene:01M74S02J8S5GCRHJMCQ14QDYY"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Sera Bell' acting after status 'dead'",
           "severity": "warning",
@@ -257,8 +267,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9M6A7SKJT558SJ21S4",
-            "scene:01M74NSFFZRBBC70VTQHPT4MFV"
+            "character:01M74S00KFYZ95ND0XKZ12J3FC",
+            "scene:01M74S02J8S5GCRHJMCQ14QDYY"
           ],
           "message": "scene has 'Orla Finch' reference knowledge they do not learn until book 1 chapter 14",
           "severity": "warning",
@@ -267,8 +277,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSDA33GS4VFYVSCY09D19",
-            "scene:01M74NSDAFAKF70EFKQ2WPXV26"
+            "world_rule:01M74S00KT0MQ5DTZYPWXDVGQM",
+            "scene:01M74S00M4HQTA7P49CXT3Y07R"
           ],
           "message": "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 366..377)",
           "severity": "info",
@@ -277,9 +287,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSDA4Z9CTK51SR2ACW9Z5",
-            "character:01M74NSD9EMG3NKBY1DFSYR19Z",
-            "scene:01M74NSDAFAKF70EFKQ2WPXV26"
+            "canonical_fact:01M74S00KVSB4Y34525Y8P4YYF",
+            "character:01M74S00KB5GM3FPJH5YKX4ANP",
+            "scene:01M74S00M4HQTA7P49CXT3Y07R"
           ],
           "message": "book 1 chapter 1 scene 1: 'handedness' conflicts with canonical value 'left' (prose says 'right': Miro signed the ledger with his right hand and blotted the ink.) (bytes 274..338)",
           "severity": "warning",
@@ -288,9 +298,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSDA5MJ3Y5PSKB276BQSY",
-            "character:01M74NSD9GZ0X9KWVCDEGRTC7W",
-            "scene:01M74NSDXBN0PQGYHDRSWQ6GSR"
+            "canonical_fact:01M74S00KWF5MCQZN0NC62E2HP",
+            "character:01M74S00KCBW7QPJAZACRA1C8D",
+            "scene:01M74S014H2ABSFZFM868H44S2"
           ],
           "message": "book 1 chapter 4 scene 1: 'eye_color' conflicts with canonical value 'grey' (prose says 'brown': Sela's brown eyes narrowed at the permit.) (bytes 178..220)",
           "severity": "warning",
@@ -299,8 +309,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSDA33GS4VFYVSCY09D19",
-            "scene:01M74NSE2V04YZYHTKS8JX9ZEX"
+            "world_rule:01M74S00KT0MQ5DTZYPWXDVGQM",
+            "scene:01M74S01957GTTKZYB7PF4RDM8"
           ],
           "message": "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 226..237)",
           "severity": "info",
@@ -309,8 +319,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSDA33GS4VFYVSCY09D19",
-            "scene:01M74NSEMDS2M0XKA00KRRJBKT"
+            "world_rule:01M74S00KT0MQ5DTZYPWXDVGQM",
+            "scene:01M74S01RSR98KK0J66K2PK8XP"
           ],
           "message": "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 263..274)",
           "severity": "info",
@@ -319,9 +329,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSDA76VXSGREG374229GV",
-            "character:01M74NSD9M6A7SKJT558SJ21S4",
-            "scene:01M74NSF4W0GR9FF1YC5AMF0HW"
+            "canonical_fact:01M74S00KX9Y5WN3CBMPWA1004",
+            "character:01M74S00KFYZ95ND0XKZ12J3FC",
+            "scene:01M74S027ZCPNC0MZWZA78Y018"
           ],
           "message": "book 1 chapter 11 scene 1: 'scar_location' conflicts with canonical value 'left cheek' (prose says 'right': Orla turned her right cheek to the candle, showing the scar.) (bytes 166..227)",
           "severity": "warning",
@@ -330,8 +340,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSDA33GS4VFYVSCY09D19",
-            "scene:01M74NSF9SDMWCW2WGN6T6J5MB"
+            "world_rule:01M74S00KT0MQ5DTZYPWXDVGQM",
+            "scene:01M74S02CHF9YF571HZVKTB3PP"
           ],
           "message": "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 240..251)",
           "severity": "info",
@@ -340,9 +350,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSDABJD4P2MJY6NZYZ02H",
-            "character:01M74NSD9X51D690S16HP090J4",
-            "scene:01M74NSDQFG56G2M2SYZWCESR8"
+            "canonical_fact:01M74S00M13Q38YRWBF04W8MBW",
+            "character:01M74S00KP0GVHN6YC6S2SZ0ZA",
+            "scene:01M74S00Z9GJP41T4CZF3NC5RA"
           ],
           "message": "scene (book 1, chapter 3 scene 1): Toma Reed speaks secret fact 'secret' ('The heir's name is written in the tide ledger.') \u2014 no recorded reveal to Toma Reed before this scene",
           "severity": "warning",
@@ -351,9 +361,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSDACHDW4E8QCM54CFE4X",
-            "character:01M74NSD9ZBKHWT53DMPWNTAAM",
-            "scene:01M74NSEF2VYFQ0Z5580FEQ3D5"
+            "canonical_fact:01M74S00M1HHW91BP3QWQ1V2TK",
+            "character:01M74S00KQKC8YVYBXYT8QED2C",
+            "scene:01M74S01KTJNXCPGH9HSEMH15B"
           ],
           "message": "scene (book 1, chapter 7 scene 1): Nessa Wren speaks secret fact 'secret' ('The harbor master sold the north channel.') \u2014 no recorded reveal to Nessa Wren before this scene",
           "severity": "warning",
@@ -362,9 +372,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSDACHDW4E8QCM54CFE4X",
-            "character:01M74NSD9JB9TF66J4W3ZF0RSS",
-            "scene:01M74NSETVCG71BW87WZB0J4GQ"
+            "canonical_fact:01M74S00M1HHW91BP3QWQ1V2TK",
+            "character:01M74S00KECSXQHSWFDC880Q51",
+            "scene:01M74S01YT5GVHWPC2ACYXF6V0"
           ],
           "message": "book 1 chapter 9 scene 1: Brann Tallow narrates secret fact 'secret' ('The harbor master sold the north channel.') outside dialogue \u2014 no recorded reveal to Brann Tallow before this scene",
           "severity": "warning",
@@ -373,9 +383,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSDADKEAMS5QAAV9H7CMX",
-            "character:01M74NSD9X51D690S16HP090J4",
-            "scene:01M74NSEZSXD5C890CAE50BMEQ"
+            "canonical_fact:01M74S00M25ZCXDAET887AFJVD",
+            "character:01M74S00KP0GVHN6YC6S2SZ0ZA",
+            "scene:01M74S023D3S1A3PY6MQ4DKJAD"
           ],
           "message": "scene (book 1, chapter 10 scene 1): Toma Reed speaks secret fact 'secret' ('The survey is a forgery.') \u2014 no recorded reveal to Toma Reed before this scene",
           "severity": "warning",
@@ -384,9 +394,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSDAED2H69EHE8Y3PA1KM",
-            "character:01M74NSD9ZBKHWT53DMPWNTAAM",
-            "scene:01M74NSFN7Z02EFH88DC7D6B9D"
+            "canonical_fact:01M74S00M3DQAZJYYJPHQMNXYG",
+            "character:01M74S00KQKC8YVYBXYT8QED2C",
+            "scene:01M74S02Q3F4MCFANGRMBV3KJA"
           ],
           "message": "scene (book 1, chapter 14 scene 1): Nessa Wren speaks secret fact 'secret' ('The archivist burned the original charter.') \u2014 no recorded reveal to Nessa Wren before this scene",
           "severity": "warning",
@@ -395,8 +405,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSK2NGSNF5MHEY9TZRNWS",
-            "scene:01M74NSK7PWEF8WJHEYX74K47V"
+            "scene:01M74S05XPXVQKXD332YBNQQE3",
+            "scene:01M74S062B8BNC26A7FSBN3NKP"
           ],
           "message": "scene is set earlier in story time (day 102) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -405,8 +415,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSKJR7M6SGYFR61Y7BT01",
-            "scene:01M74NSKQRHP9447CTYJ652Y9P"
+            "scene:01M74S06CGM3FX2H7M3G4K6X89",
+            "scene:01M74S06H3K08ZQR4M5AJGPFMF"
           ],
           "message": "scene is set earlier in story time (day 111) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -415,8 +425,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSMF88ZG3S3MGQNHWMZAS",
-            "scene:01M74NSMMB2ETYSDB2BW15NX6A"
+            "scene:01M74S06ZZQ6SZ45JTJDASRF61",
+            "scene:01M74S074MWAQC3N9B9D5DY6ST"
           ],
           "message": "scene is set earlier in story time (day 123) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -425,8 +435,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSN1DDMADYDDDXBVT6JAS",
-            "scene:01M74NSN6H83RZYKMRK9RJYM7A"
+            "scene:01M74S07F09V07YTVS92KX0VB0",
+            "scene:01M74S07KNV8YAWQH8098C4H3W"
           ],
           "message": "scene is set earlier in story time (day 132) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -435,43 +445,43 @@
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSJPBKG6DJFGZFFTZDSV2"
+            "character:01M74S05J9TC3K296D2GZQC4MB"
           ],
-          "message": "silver for 'character:01M74NSJPBKG6DJFGZFFTZDSV2' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S05J9TC3K296D2GZQC4MB' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSJPD92HW53BN8CBNV6N3"
+            "character:01M74S05JA5BXZM7JHAF1ZWBX5"
           ],
-          "message": "silver for 'character:01M74NSJPD92HW53BN8CBNV6N3' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S05JA5BXZM7JHAF1ZWBX5' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSJPEE6JPTSPCJ34HFSNK"
+            "character:01M74S05JCYW7957EZ17N8SE8Z"
           ],
-          "message": "silver for 'character:01M74NSJPEE6JPTSPCJ34HFSNK' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S05JCYW7957EZ17N8SE8Z' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSJPGJPX32MH8C409REN3"
+            "character:01M74S05JDCZPJ4BXVY3E2MBXQ"
           ],
-          "message": "silver for 'character:01M74NSJPGJPX32MH8C409REN3' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S05JDCZPJ4BXVY3E2MBXQ' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M74NSJX91BGYYKEX2EADMJSZ"
+            "scene:01M74S05RR1QBH89ZC5XNKSXBM"
           ],
           "message": "scene names purchases totalling 2000 base units, but the spender is ambiguous",
           "severity": "info",
@@ -480,8 +490,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSJX91BGYYKEX2EADMJSZ",
-            "character:01M74NSJPD92HW53BN8CBNV6N3"
+            "scene:01M74S05RR1QBH89ZC5XNKSXBM",
+            "character:01M74S05JA5BXZM7JHAF1ZWBX5"
           ],
           "message": "scene has 'Cade Morrow' reference knowledge they do not learn until book 1 chapter 8",
           "severity": "warning",
@@ -490,8 +500,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSKJR7M6SGYFR61Y7BT01",
-            "character:01M74NSJPBKG6DJFGZFFTZDSV2"
+            "scene:01M74S06CGM3FX2H7M3G4K6X89",
+            "character:01M74S05J9TC3K296D2GZQC4MB"
           ],
           "message": "scene has 'Anwen Rill' reference knowledge they do not learn until book 1 chapter 10",
           "severity": "warning",
@@ -500,8 +510,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSM626DVBH6F8XB95Y0RD",
-            "character:01M74NSJPEE6JPTSPCJ34HFSNK"
+            "scene:01M74S06V49B4NTQD8TER2356K",
+            "character:01M74S05JCYW7957EZ17N8SE8Z"
           ],
           "message": "scene has 'Mor Tarn' reference knowledge they do not learn until book 1 chapter 12",
           "severity": "warning",
@@ -510,8 +520,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSN1DDMADYDDDXBVT6JAS",
-            "character:01M74NSJPGJPX32MH8C409REN3"
+            "scene:01M74S07F09V07YTVS92KX0VB0",
+            "character:01M74S05JDCZPJ4BXVY3E2MBXQ"
           ],
           "message": "scene has 'Rhys Vell' reference knowledge they do not learn until book 1 chapter 14",
           "severity": "warning",
@@ -520,8 +530,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPD92HW53BN8CBNV6N3",
-            "scene:01M74NSJX91BGYYKEX2EADMJSZ"
+            "character:01M74S05JA5BXZM7JHAF1ZWBX5",
+            "scene:01M74S05RR1QBH89ZC5XNKSXBM"
           ],
           "message": "scene has 'Cade Morrow' reference knowledge they do not learn until book 1 chapter 8",
           "severity": "warning",
@@ -530,8 +540,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPK6V3B5FB7BPQMDR1C",
-            "scene:01M74NSK2NGSNF5MHEY9TZRNWS"
+            "character:01M74S05JHBA0EC95XDKPCJDPV",
+            "scene:01M74S05XPXVQKXD332YBNQQE3"
           ],
           "message": "book 1 chapter 3 scene 1 includes 'Ianto Gorse' acting after status 'dead'",
           "severity": "warning",
@@ -540,8 +550,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSJPK6V3B5FB7BPQMDR1C",
-            "scene:01M74NSK2NGSNF5MHEY9TZRNWS"
+            "character:01M74S05JHBA0EC95XDKPCJDPV",
+            "scene:01M74S05XPXVQKXD332YBNQQE3"
           ],
           "message": "book 1 chapter 3 scene 1 includes 'Ianto Gorse' acting after status 'dead'",
           "severity": "warning",
@@ -550,8 +560,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPMTKS5SRQC21Y1TXW0",
-            "scene:01M74NSKJR7M6SGYFR61Y7BT01"
+            "character:01M74S05JJWYPHAKKFVAD1TXNC",
+            "scene:01M74S06CGM3FX2H7M3G4K6X89"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Wynn Spar' acting after status 'dead'",
           "severity": "warning",
@@ -560,8 +570,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSJPMTKS5SRQC21Y1TXW0",
-            "scene:01M74NSKJR7M6SGYFR61Y7BT01"
+            "character:01M74S05JJWYPHAKKFVAD1TXNC",
+            "scene:01M74S06CGM3FX2H7M3G4K6X89"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Wynn Spar' acting after status 'dead'",
           "severity": "warning",
@@ -570,8 +580,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPBKG6DJFGZFFTZDSV2",
-            "scene:01M74NSKJR7M6SGYFR61Y7BT01"
+            "character:01M74S05J9TC3K296D2GZQC4MB",
+            "scene:01M74S06CGM3FX2H7M3G4K6X89"
           ],
           "message": "scene has 'Anwen Rill' reference knowledge they do not learn until book 1 chapter 10",
           "severity": "warning",
@@ -580,8 +590,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPEE6JPTSPCJ34HFSNK",
-            "scene:01M74NSM626DVBH6F8XB95Y0RD"
+            "character:01M74S05JCYW7957EZ17N8SE8Z",
+            "scene:01M74S06V49B4NTQD8TER2356K"
           ],
           "message": "scene has 'Mor Tarn' reference knowledge they do not learn until book 1 chapter 12",
           "severity": "warning",
@@ -590,8 +600,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPPDTJE8EMEMSAS0NN4",
-            "scene:01M74NSMF88ZG3S3MGQNHWMZAS"
+            "character:01M74S05JKWFEXWSSMNWY2TQFN",
+            "scene:01M74S06ZZQ6SZ45JTJDASRF61"
           ],
           "message": "book 1 chapter 10 scene 1 includes 'Eira Sow' acting after status 'dead'",
           "severity": "warning",
@@ -600,8 +610,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSJPPDTJE8EMEMSAS0NN4",
-            "scene:01M74NSMF88ZG3S3MGQNHWMZAS"
+            "character:01M74S05JKWFEXWSSMNWY2TQFN",
+            "scene:01M74S06ZZQ6SZ45JTJDASRF61"
           ],
           "message": "book 1 chapter 10 scene 1 includes 'Eira Sow' acting after status 'dead'",
           "severity": "warning",
@@ -610,8 +620,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPQ64VNSS8Q85WF9F44",
-            "scene:01M74NSN1DDMADYDDDXBVT6JAS"
+            "character:01M74S05JM2C74XYVDZTH7CN5G",
+            "scene:01M74S07F09V07YTVS92KX0VB0"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Gethin Mott' acting after status 'dead'",
           "severity": "warning",
@@ -620,8 +630,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSJPQ64VNSS8Q85WF9F44",
-            "scene:01M74NSN1DDMADYDDDXBVT6JAS"
+            "character:01M74S05JM2C74XYVDZTH7CN5G",
+            "scene:01M74S07F09V07YTVS92KX0VB0"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Gethin Mott' acting after status 'dead'",
           "severity": "warning",
@@ -630,8 +640,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPGJPX32MH8C409REN3",
-            "scene:01M74NSN1DDMADYDDDXBVT6JAS"
+            "character:01M74S05JDCZPJ4BXVY3E2MBXQ",
+            "scene:01M74S07F09V07YTVS92KX0VB0"
           ],
           "message": "scene has 'Rhys Vell' reference knowledge they do not learn until book 1 chapter 14",
           "severity": "warning",
@@ -640,8 +650,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSJPX8TJY0Z280T6VATHW",
-            "scene:01M74NSJQ746Q3Z0CMY42F600X"
+            "world_rule:01M74S05JTKPZKNA7W61K5PK4T",
+            "scene:01M74S05K4HGWA2DJTRY7PET88"
           ],
           "message": "scene references world rule 'Tide-song' (no violation context detected) (bytes 340..349)",
           "severity": "info",
@@ -650,9 +660,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSJPYHAAMVRAXNVAJ7JJ6",
-            "character:01M74NSJPBKG6DJFGZFFTZDSV2",
-            "scene:01M74NSJQ746Q3Z0CMY42F600X"
+            "canonical_fact:01M74S05JVMCGK8RWVEZ294QZX",
+            "character:01M74S05J9TC3K296D2GZQC4MB",
+            "scene:01M74S05K4HGWA2DJTRY7PET88"
           ],
           "message": "book 1 chapter 1 scene 1: 'handedness' conflicts with canonical value 'left' (prose says 'right': Anwen signed the hymnal with her right hand and closed the book.) (bytes 259..324)",
           "severity": "warning",
@@ -661,9 +671,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSJPZV4F4AV2Q2RMA9T4F",
-            "character:01M74NSJPD92HW53BN8CBNV6N3",
-            "scene:01M74NSK7PWEF8WJHEYX74K47V"
+            "canonical_fact:01M74S05JWAG40X8WMNB3EXPYB",
+            "character:01M74S05JA5BXZM7JHAF1ZWBX5",
+            "scene:01M74S062B8BNC26A7FSBN3NKP"
           ],
           "message": "book 1 chapter 4 scene 1: 'eye_color' conflicts with canonical value 'grey' (prose says 'brown': Cade's brown eyes narrowed at the lighthouse log.) (bytes 184..234)",
           "severity": "warning",
@@ -672,8 +682,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSJPX8TJY0Z280T6VATHW",
-            "scene:01M74NSKCTR8YXGDJSRD090NCS"
+            "world_rule:01M74S05JTKPZKNA7W61K5PK4T",
+            "scene:01M74S0673QVYMEBQ8FERVJDPJ"
           ],
           "message": "scene references world rule 'Tide-song' (no violation context detected) (bytes 197..206)",
           "severity": "info",
@@ -682,8 +692,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSJPX8TJY0Z280T6VATHW",
-            "scene:01M74NSKWTF4VSPK7J46HMZKM1"
+            "world_rule:01M74S05JTKPZKNA7W61K5PK4T",
+            "scene:01M74S06NPW48KQ99YGC7YK92T"
           ],
           "message": "scene references world rule 'Tide-song' (no violation context detected) (bytes 248..257)",
           "severity": "info",
@@ -692,9 +702,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ0SYZH8HKVP9P03JC3",
-            "character:01M74NSJPGJPX32MH8C409REN3",
-            "scene:01M74NSMMB2ETYSDB2BW15NX6A"
+            "canonical_fact:01M74S05JXBYA7Y65ZR7K61T01",
+            "character:01M74S05JDCZPJ4BXVY3E2MBXQ",
+            "scene:01M74S074MWAQC3N9B9D5DY6ST"
           ],
           "message": "book 1 chapter 11 scene 1: 'scar_location' conflicts with canonical value 'left cheek' (prose says 'right': Rhys turned his right cheek to the candle, showing the scar.) (bytes 186..247)",
           "severity": "warning",
@@ -703,8 +713,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSJPX8TJY0Z280T6VATHW",
-            "scene:01M74NSMSEWQSVZR330MHG6W73"
+            "world_rule:01M74S05JTKPZKNA7W61K5PK4T",
+            "scene:01M74S0797G6SBFGZ1KRYHPB0Y"
           ],
           "message": "scene references world rule 'Tide-song' (no violation context detected) (bytes 248..257)",
           "severity": "info",
@@ -713,9 +723,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ4S6W4WM4D0WM2DK8J",
-            "character:01M74NSJPK6V3B5FB7BPQMDR1C",
-            "scene:01M74NSK2NGSNF5MHEY9TZRNWS"
+            "canonical_fact:01M74S05K1CWQDDS4SC548DPQA",
+            "character:01M74S05JHBA0EC95XDKPCJDPV",
+            "scene:01M74S05XPXVQKXD332YBNQQE3"
           ],
           "message": "scene (book 1, chapter 3 scene 1): Ianto Gorse speaks secret fact 'secret' ('The chapel bell was cast from a drowned ship's bell.') \u2014 no recorded reveal to Ianto Gorse before this scene",
           "severity": "warning",
@@ -724,9 +734,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ4S6W4WM4D0WM2DK8J",
-            "character:01M74NSJPR9JKQ631QGQNQWFNT",
-            "scene:01M74NSK2NGSNF5MHEY9TZRNWS"
+            "canonical_fact:01M74S05K1CWQDDS4SC548DPQA",
+            "character:01M74S05JPC7VG7QK2EC97V7BD",
+            "scene:01M74S05XPXVQKXD332YBNQQE3"
           ],
           "message": "scene (book 1, chapter 3 scene 1): Briar Nook speaks secret fact 'secret' ('The chapel bell was cast from a drowned ship's bell.') \u2014 no recorded reveal to Briar Nook before this scene",
           "severity": "warning",
@@ -735,9 +745,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ5EJNT4HJS5F19BF47",
-            "character:01M74NSJPTDBAZFZG6AMTF31J1",
-            "scene:01M74NSKQRHP9447CTYJ652Y9P"
+            "canonical_fact:01M74S05K272QWSPQVTXDVJNP4",
+            "character:01M74S05JQRR8FX6FY7SHBQG8K",
+            "scene:01M74S06H3K08ZQR4M5AJGPFMF"
           ],
           "message": "scene (book 1, chapter 7 scene 1): Nell Cray speaks secret fact 'secret' ('The lighthouse keeper's log names the missing boat.') \u2014 no recorded reveal to Nell Cray before this scene",
           "severity": "warning",
@@ -746,9 +756,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ5M90KKAR4ZJ5VYE84",
-            "character:01M74NSJPR9JKQ631QGQNQWFNT",
-            "scene:01M74NSMF88ZG3S3MGQNHWMZAS"
+            "canonical_fact:01M74S05K2APMAKQ4K2KCRQG6R",
+            "character:01M74S05JPC7VG7QK2EC97V7BD",
+            "scene:01M74S06ZZQ6SZ45JTJDASRF61"
           ],
           "message": "scene (book 1, chapter 10 scene 1): Briar Nook speaks secret fact 'secret' ('The boatwright sawed the keel on purpose.') \u2014 no recorded reveal to Briar Nook before this scene",
           "severity": "warning",
@@ -757,24 +767,25 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ606Q4ZJJRADJ6P7YJ",
-            "character:01M74NSJPTDBAZFZG6AMTF31J1",
-            "scene:01M74NSN6H83RZYKMRK9RJYM7A"
+            "canonical_fact:01M74S05K3QTHKA8CRVF4HXCBT",
+            "character:01M74S05JQRR8FX6FY7SHBQG8K",
+            "scene:01M74S07KNV8YAWQH8098C4H3W"
           ],
           "message": "scene (book 1, chapter 14 scene 1): Nell Cray speaks secret fact 'secret' ('The singer's mother is buried under the chapel step.') \u2014 no recorded reveal to Nell Cray before this scene",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the dialogue"
         }
       ],
-      "judgments": 206,
-      "model_calls": 64,
-      "output_tokens": 75259,
-      "p95_latency_ms": 3727.0,
+      "judgments": 200,
+      "model_calls": 66,
+      "output_tokens": 76974,
+      "p95_latency_ms": 6637.0,
+      "p95_output_chars": 2778.0,
       "p95_output_tokens": 1200.0,
-      "p95_prompt_tokens": 6539.0,
-      "per_call_receipts": 64,
+      "p95_prompt_tokens": 6609.0,
+      "per_call_receipts": 66,
       "repair_rate": 0.5,
-      "repaired_scene_rate": 0.5,
+      "repaired_scene_rate": 0.5156,
       "semantic_control_warnings": 0,
       "semantic_issues": [],
       "semantic_on": {
@@ -791,15 +802,30 @@
       },
       "semantic_warning_count": 0,
       "semantic_warning_precision": null,
-      "tokens_per_chapter": 13340.06,
-      "tokens_per_scene": 6670.03,
+      "stop_reasons": {
+        "success": 14,
+        "truncated": 52
+      },
+      "tokens_per_chapter": 13724.28,
+      "tokens_per_scene": 6862.14,
+      "verdicts": {
+        "compatible": 162,
+        "insufficient": 38
+      },
       "would_be_infos": 0,
       "would_be_warnings": 0
     },
     "shadow": {
       "cache_hit_rate": 0.0,
-      "calls_per_candidate_scene": 1.5,
+      "calls_per_candidate_scene": 1.5156,
       "candidate_scene_count": 64,
+      "confidence_buckets": [
+        0,
+        0,
+        0,
+        0,
+        200
+      ],
       "control_warnings_by_check_type": {},
       "deterministic": {
         "control_count": 0,
@@ -807,18 +833,21 @@
         "planted": 56,
         "type_present": 54
       },
+      "discard_reasons": {
+        "not_contradiction": 200
+      },
       "errors_by_kind": {
-        "malformed_output": 6,
+        "malformed_output": 7,
         "truncated": 26
       },
       "evidence_anchor_validity": 1.0,
-      "input_tokens": 473613,
+      "input_tokens": 481272,
       "issues": [
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSDQFG56G2M2SYZWCESR8",
-            "scene:01M74NSDXBN0PQGYHDRSWQ6GSR"
+            "scene:01M74S00Z9GJP41T4CZF3NC5RA",
+            "scene:01M74S014H2ABSFZFM868H44S2"
           ],
           "message": "scene is set earlier in story time (day 102) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -827,8 +856,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSE9JG138231MY1RDVGH5",
-            "scene:01M74NSEF2VYFQ0Z5580FEQ3D5"
+            "scene:01M74S01EYHJBV8RT64JN1HF4S",
+            "scene:01M74S01KTJNXCPGH9HSEMH15B"
           ],
           "message": "scene is set earlier in story time (day 111) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -837,8 +866,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSEZSXD5C890CAE50BMEQ",
-            "scene:01M74NSF4W0GR9FF1YC5AMF0HW"
+            "scene:01M74S023D3S1A3PY6MQ4DKJAD",
+            "scene:01M74S027ZCPNC0MZWZA78Y018"
           ],
           "message": "scene is set earlier in story time (day 123) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -847,8 +876,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSFFZRBBC70VTQHPT4MFV",
-            "scene:01M74NSFN7Z02EFH88DC7D6B9D"
+            "scene:01M74S02J8S5GCRHJMCQ14QDYY",
+            "scene:01M74S02Q3F4MCFANGRMBV3KJA"
           ],
           "message": "scene is set earlier in story time (day 132) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -857,43 +886,43 @@
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSD9EMG3NKBY1DFSYR19Z"
+            "character:01M74S00KB5GM3FPJH5YKX4ANP"
           ],
-          "message": "silver for 'character:01M74NSD9EMG3NKBY1DFSYR19Z' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S00KB5GM3FPJH5YKX4ANP' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSD9GZ0X9KWVCDEGRTC7W"
+            "character:01M74S00KCBW7QPJAZACRA1C8D"
           ],
-          "message": "silver for 'character:01M74NSD9GZ0X9KWVCDEGRTC7W' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S00KCBW7QPJAZACRA1C8D' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSD9JB9TF66J4W3ZF0RSS"
+            "character:01M74S00KECSXQHSWFDC880Q51"
           ],
-          "message": "silver for 'character:01M74NSD9JB9TF66J4W3ZF0RSS' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S00KECSXQHSWFDC880Q51' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSD9M6A7SKJT558SJ21S4"
+            "character:01M74S00KFYZ95ND0XKZ12J3FC"
           ],
-          "message": "silver for 'character:01M74NSD9M6A7SKJT558SJ21S4' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S00KFYZ95ND0XKZ12J3FC' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M74NSDHTCDFXZC8PKV1PM3KE"
+            "scene:01M74S00TF26WQ517KY4YYSCXE"
           ],
           "message": "scene names purchases totalling 2000 base units, but the spender is ambiguous",
           "severity": "info",
@@ -902,8 +931,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSDHTCDFXZC8PKV1PM3KE",
-            "character:01M74NSD9GZ0X9KWVCDEGRTC7W"
+            "scene:01M74S00TF26WQ517KY4YYSCXE",
+            "character:01M74S00KCBW7QPJAZACRA1C8D"
           ],
           "message": "scene has 'Sela Quill' reference knowledge they do not learn until book 1 chapter 8",
           "severity": "warning",
@@ -912,8 +941,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSE9JG138231MY1RDVGH5",
-            "character:01M74NSD9EMG3NKBY1DFSYR19Z"
+            "scene:01M74S01EYHJBV8RT64JN1HF4S",
+            "character:01M74S00KB5GM3FPJH5YKX4ANP"
           ],
           "message": "scene has 'Miro Voss' reference knowledge they do not learn until book 1 chapter 10",
           "severity": "warning",
@@ -922,8 +951,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSETVCG71BW87WZB0J4GQ",
-            "character:01M74NSD9JB9TF66J4W3ZF0RSS"
+            "scene:01M74S01YT5GVHWPC2ACYXF6V0",
+            "character:01M74S00KECSXQHSWFDC880Q51"
           ],
           "message": "scene has 'Brann Tallow' reference knowledge they do not learn until book 1 chapter 12",
           "severity": "warning",
@@ -932,8 +961,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSFFZRBBC70VTQHPT4MFV",
-            "character:01M74NSD9M6A7SKJT558SJ21S4"
+            "scene:01M74S02J8S5GCRHJMCQ14QDYY",
+            "character:01M74S00KFYZ95ND0XKZ12J3FC"
           ],
           "message": "scene has 'Orla Finch' reference knowledge they do not learn until book 1 chapter 14",
           "severity": "warning",
@@ -942,8 +971,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9GZ0X9KWVCDEGRTC7W",
-            "scene:01M74NSDHTCDFXZC8PKV1PM3KE"
+            "character:01M74S00KCBW7QPJAZACRA1C8D",
+            "scene:01M74S00TF26WQ517KY4YYSCXE"
           ],
           "message": "scene has 'Sela Quill' reference knowledge they do not learn until book 1 chapter 8",
           "severity": "warning",
@@ -952,8 +981,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9PTGKMYY3BD4QWHAET",
-            "scene:01M74NSDQFG56G2M2SYZWCESR8"
+            "character:01M74S00KGCWQ21GCT924EAGPA",
+            "scene:01M74S00Z9GJP41T4CZF3NC5RA"
           ],
           "message": "book 1 chapter 3 scene 1 includes 'Oren Pike' acting after status 'dead'",
           "severity": "warning",
@@ -962,8 +991,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSD9PTGKMYY3BD4QWHAET",
-            "scene:01M74NSDQFG56G2M2SYZWCESR8"
+            "character:01M74S00KGCWQ21GCT924EAGPA",
+            "scene:01M74S00Z9GJP41T4CZF3NC5RA"
           ],
           "message": "book 1 chapter 3 scene 1 includes 'Oren Pike' acting after status 'dead'",
           "severity": "warning",
@@ -972,8 +1001,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9R4614R3KQ5NTPB76T",
-            "scene:01M74NSE9JG138231MY1RDVGH5"
+            "character:01M74S00KJ9R2ZQGS37GS7WH4A",
+            "scene:01M74S01EYHJBV8RT64JN1HF4S"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Lira Vane' acting after status 'dead'",
           "severity": "warning",
@@ -982,8 +1011,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSD9R4614R3KQ5NTPB76T",
-            "scene:01M74NSE9JG138231MY1RDVGH5"
+            "character:01M74S00KJ9R2ZQGS37GS7WH4A",
+            "scene:01M74S01EYHJBV8RT64JN1HF4S"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Lira Vane' acting after status 'dead'",
           "severity": "warning",
@@ -992,8 +1021,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9EMG3NKBY1DFSYR19Z",
-            "scene:01M74NSE9JG138231MY1RDVGH5"
+            "character:01M74S00KB5GM3FPJH5YKX4ANP",
+            "scene:01M74S01EYHJBV8RT64JN1HF4S"
           ],
           "message": "scene has 'Miro Voss' reference knowledge they do not learn until book 1 chapter 10",
           "severity": "warning",
@@ -1002,8 +1031,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9JB9TF66J4W3ZF0RSS",
-            "scene:01M74NSETVCG71BW87WZB0J4GQ"
+            "character:01M74S00KECSXQHSWFDC880Q51",
+            "scene:01M74S01YT5GVHWPC2ACYXF6V0"
           ],
           "message": "scene has 'Brann Tallow' reference knowledge they do not learn until book 1 chapter 12",
           "severity": "warning",
@@ -1012,8 +1041,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9S5KXJ1FD2W1QVK730",
-            "scene:01M74NSEZSXD5C890CAE50BMEQ"
+            "character:01M74S00KK5VM304NS6SB1HJNB",
+            "scene:01M74S023D3S1A3PY6MQ4DKJAD"
           ],
           "message": "book 1 chapter 10 scene 1 includes 'Piet Moss' acting after status 'dead'",
           "severity": "warning",
@@ -1022,8 +1051,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSD9S5KXJ1FD2W1QVK730",
-            "scene:01M74NSEZSXD5C890CAE50BMEQ"
+            "character:01M74S00KK5VM304NS6SB1HJNB",
+            "scene:01M74S023D3S1A3PY6MQ4DKJAD"
           ],
           "message": "book 1 chapter 10 scene 1 includes 'Piet Moss' acting after status 'dead'",
           "severity": "warning",
@@ -1032,8 +1061,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9V550YSZMA68GE2P0B",
-            "scene:01M74NSFFZRBBC70VTQHPT4MFV"
+            "character:01M74S00KMDSPDNGXMXXGJCXA4",
+            "scene:01M74S02J8S5GCRHJMCQ14QDYY"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Sera Bell' acting after status 'dead'",
           "severity": "warning",
@@ -1042,8 +1071,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSD9V550YSZMA68GE2P0B",
-            "scene:01M74NSFFZRBBC70VTQHPT4MFV"
+            "character:01M74S00KMDSPDNGXMXXGJCXA4",
+            "scene:01M74S02J8S5GCRHJMCQ14QDYY"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Sera Bell' acting after status 'dead'",
           "severity": "warning",
@@ -1052,8 +1081,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSD9M6A7SKJT558SJ21S4",
-            "scene:01M74NSFFZRBBC70VTQHPT4MFV"
+            "character:01M74S00KFYZ95ND0XKZ12J3FC",
+            "scene:01M74S02J8S5GCRHJMCQ14QDYY"
           ],
           "message": "scene has 'Orla Finch' reference knowledge they do not learn until book 1 chapter 14",
           "severity": "warning",
@@ -1062,9 +1091,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSDA4Z9CTK51SR2ACW9Z5",
-            "character:01M74NSD9EMG3NKBY1DFSYR19Z",
-            "scene:01M74NSDAFAKF70EFKQ2WPXV26"
+            "canonical_fact:01M74S00KVSB4Y34525Y8P4YYF",
+            "character:01M74S00KB5GM3FPJH5YKX4ANP",
+            "scene:01M74S00M4HQTA7P49CXT3Y07R"
           ],
           "message": "book 1 chapter 1 scene 1: 'handedness' conflicts with canonical value 'left' (prose says 'right': Miro signed the ledger with his right hand and blotted the ink.) (bytes 274..338)",
           "severity": "warning",
@@ -1073,8 +1102,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSDA33GS4VFYVSCY09D19",
-            "scene:01M74NSDAFAKF70EFKQ2WPXV26"
+            "world_rule:01M74S00KT0MQ5DTZYPWXDVGQM",
+            "scene:01M74S00M4HQTA7P49CXT3Y07R"
           ],
           "message": "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 366..377)",
           "severity": "info",
@@ -1083,9 +1112,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSDA5MJ3Y5PSKB276BQSY",
-            "character:01M74NSD9GZ0X9KWVCDEGRTC7W",
-            "scene:01M74NSDXBN0PQGYHDRSWQ6GSR"
+            "canonical_fact:01M74S00KWF5MCQZN0NC62E2HP",
+            "character:01M74S00KCBW7QPJAZACRA1C8D",
+            "scene:01M74S014H2ABSFZFM868H44S2"
           ],
           "message": "book 1 chapter 4 scene 1: 'eye_color' conflicts with canonical value 'grey' (prose says 'brown': Sela's brown eyes narrowed at the permit.) (bytes 178..220)",
           "severity": "warning",
@@ -1094,8 +1123,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSDA33GS4VFYVSCY09D19",
-            "scene:01M74NSE2V04YZYHTKS8JX9ZEX"
+            "world_rule:01M74S00KT0MQ5DTZYPWXDVGQM",
+            "scene:01M74S01957GTTKZYB7PF4RDM8"
           ],
           "message": "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 226..237)",
           "severity": "info",
@@ -1104,8 +1133,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSDA33GS4VFYVSCY09D19",
-            "scene:01M74NSEMDS2M0XKA00KRRJBKT"
+            "world_rule:01M74S00KT0MQ5DTZYPWXDVGQM",
+            "scene:01M74S01RSR98KK0J66K2PK8XP"
           ],
           "message": "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 263..274)",
           "severity": "info",
@@ -1114,9 +1143,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSDA76VXSGREG374229GV",
-            "character:01M74NSD9M6A7SKJT558SJ21S4",
-            "scene:01M74NSF4W0GR9FF1YC5AMF0HW"
+            "canonical_fact:01M74S00KX9Y5WN3CBMPWA1004",
+            "character:01M74S00KFYZ95ND0XKZ12J3FC",
+            "scene:01M74S027ZCPNC0MZWZA78Y018"
           ],
           "message": "book 1 chapter 11 scene 1: 'scar_location' conflicts with canonical value 'left cheek' (prose says 'right': Orla turned her right cheek to the candle, showing the scar.) (bytes 166..227)",
           "severity": "warning",
@@ -1125,8 +1154,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSDA33GS4VFYVSCY09D19",
-            "scene:01M74NSF9SDMWCW2WGN6T6J5MB"
+            "world_rule:01M74S00KT0MQ5DTZYPWXDVGQM",
+            "scene:01M74S02CHF9YF571HZVKTB3PP"
           ],
           "message": "scene references world rule 'Lantern-ink' (no violation context detected) (bytes 240..251)",
           "severity": "info",
@@ -1135,9 +1164,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSDABJD4P2MJY6NZYZ02H",
-            "character:01M74NSD9X51D690S16HP090J4",
-            "scene:01M74NSDQFG56G2M2SYZWCESR8"
+            "canonical_fact:01M74S00M13Q38YRWBF04W8MBW",
+            "character:01M74S00KP0GVHN6YC6S2SZ0ZA",
+            "scene:01M74S00Z9GJP41T4CZF3NC5RA"
           ],
           "message": "scene (book 1, chapter 3 scene 1): Toma Reed speaks secret fact 'secret' ('The heir's name is written in the tide ledger.') \u2014 no recorded reveal to Toma Reed before this scene",
           "severity": "warning",
@@ -1146,9 +1175,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSDACHDW4E8QCM54CFE4X",
-            "character:01M74NSD9ZBKHWT53DMPWNTAAM",
-            "scene:01M74NSEF2VYFQ0Z5580FEQ3D5"
+            "canonical_fact:01M74S00M1HHW91BP3QWQ1V2TK",
+            "character:01M74S00KQKC8YVYBXYT8QED2C",
+            "scene:01M74S01KTJNXCPGH9HSEMH15B"
           ],
           "message": "scene (book 1, chapter 7 scene 1): Nessa Wren speaks secret fact 'secret' ('The harbor master sold the north channel.') \u2014 no recorded reveal to Nessa Wren before this scene",
           "severity": "warning",
@@ -1157,9 +1186,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSDACHDW4E8QCM54CFE4X",
-            "character:01M74NSD9JB9TF66J4W3ZF0RSS",
-            "scene:01M74NSETVCG71BW87WZB0J4GQ"
+            "canonical_fact:01M74S00M1HHW91BP3QWQ1V2TK",
+            "character:01M74S00KECSXQHSWFDC880Q51",
+            "scene:01M74S01YT5GVHWPC2ACYXF6V0"
           ],
           "message": "book 1 chapter 9 scene 1: Brann Tallow narrates secret fact 'secret' ('The harbor master sold the north channel.') outside dialogue \u2014 no recorded reveal to Brann Tallow before this scene",
           "severity": "warning",
@@ -1168,9 +1197,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSDADKEAMS5QAAV9H7CMX",
-            "character:01M74NSD9X51D690S16HP090J4",
-            "scene:01M74NSEZSXD5C890CAE50BMEQ"
+            "canonical_fact:01M74S00M25ZCXDAET887AFJVD",
+            "character:01M74S00KP0GVHN6YC6S2SZ0ZA",
+            "scene:01M74S023D3S1A3PY6MQ4DKJAD"
           ],
           "message": "scene (book 1, chapter 10 scene 1): Toma Reed speaks secret fact 'secret' ('The survey is a forgery.') \u2014 no recorded reveal to Toma Reed before this scene",
           "severity": "warning",
@@ -1179,9 +1208,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSDAED2H69EHE8Y3PA1KM",
-            "character:01M74NSD9ZBKHWT53DMPWNTAAM",
-            "scene:01M74NSFN7Z02EFH88DC7D6B9D"
+            "canonical_fact:01M74S00M3DQAZJYYJPHQMNXYG",
+            "character:01M74S00KQKC8YVYBXYT8QED2C",
+            "scene:01M74S02Q3F4MCFANGRMBV3KJA"
           ],
           "message": "scene (book 1, chapter 14 scene 1): Nessa Wren speaks secret fact 'secret' ('The archivist burned the original charter.') \u2014 no recorded reveal to Nessa Wren before this scene",
           "severity": "warning",
@@ -1190,8 +1219,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSK2NGSNF5MHEY9TZRNWS",
-            "scene:01M74NSK7PWEF8WJHEYX74K47V"
+            "scene:01M74S05XPXVQKXD332YBNQQE3",
+            "scene:01M74S062B8BNC26A7FSBN3NKP"
           ],
           "message": "scene is set earlier in story time (day 102) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -1200,8 +1229,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSKJR7M6SGYFR61Y7BT01",
-            "scene:01M74NSKQRHP9447CTYJ652Y9P"
+            "scene:01M74S06CGM3FX2H7M3G4K6X89",
+            "scene:01M74S06H3K08ZQR4M5AJGPFMF"
           ],
           "message": "scene is set earlier in story time (day 111) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -1210,8 +1239,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSMF88ZG3S3MGQNHWMZAS",
-            "scene:01M74NSMMB2ETYSDB2BW15NX6A"
+            "scene:01M74S06ZZQ6SZ45JTJDASRF61",
+            "scene:01M74S074MWAQC3N9B9D5DY6ST"
           ],
           "message": "scene is set earlier in story time (day 123) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -1220,8 +1249,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M74NSN1DDMADYDDDXBVT6JAS",
-            "scene:01M74NSN6H83RZYKMRK9RJYM7A"
+            "scene:01M74S07F09V07YTVS92KX0VB0",
+            "scene:01M74S07KNV8YAWQH8098C4H3W"
           ],
           "message": "scene is set earlier in story time (day 132) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -1230,43 +1259,43 @@
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSJPBKG6DJFGZFFTZDSV2"
+            "character:01M74S05J9TC3K296D2GZQC4MB"
           ],
-          "message": "silver for 'character:01M74NSJPBKG6DJFGZFFTZDSV2' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S05J9TC3K296D2GZQC4MB' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSJPD92HW53BN8CBNV6N3"
+            "character:01M74S05JA5BXZM7JHAF1ZWBX5"
           ],
-          "message": "silver for 'character:01M74NSJPD92HW53BN8CBNV6N3' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S05JA5BXZM7JHAF1ZWBX5' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSJPEE6JPTSPCJ34HFSNK"
+            "character:01M74S05JCYW7957EZ17N8SE8Z"
           ],
-          "message": "silver for 'character:01M74NSJPEE6JPTSPCJ34HFSNK' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S05JCYW7957EZ17N8SE8Z' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M74NSJPGJPX32MH8C409REN3"
+            "character:01M74S05JDCZPJ4BXVY3E2MBXQ"
           ],
-          "message": "silver for 'character:01M74NSJPGJPX32MH8C409REN3' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
+          "message": "silver for 'character:01M74S05JDCZPJ4BXVY3E2MBXQ' jumped 2 tiers (comfortable \u2192 destitute) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M74NSJX91BGYYKEX2EADMJSZ"
+            "scene:01M74S05RR1QBH89ZC5XNKSXBM"
           ],
           "message": "scene names purchases totalling 2000 base units, but the spender is ambiguous",
           "severity": "info",
@@ -1275,8 +1304,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSJX91BGYYKEX2EADMJSZ",
-            "character:01M74NSJPD92HW53BN8CBNV6N3"
+            "scene:01M74S05RR1QBH89ZC5XNKSXBM",
+            "character:01M74S05JA5BXZM7JHAF1ZWBX5"
           ],
           "message": "scene has 'Cade Morrow' reference knowledge they do not learn until book 1 chapter 8",
           "severity": "warning",
@@ -1285,8 +1314,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSKJR7M6SGYFR61Y7BT01",
-            "character:01M74NSJPBKG6DJFGZFFTZDSV2"
+            "scene:01M74S06CGM3FX2H7M3G4K6X89",
+            "character:01M74S05J9TC3K296D2GZQC4MB"
           ],
           "message": "scene has 'Anwen Rill' reference knowledge they do not learn until book 1 chapter 10",
           "severity": "warning",
@@ -1295,8 +1324,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSM626DVBH6F8XB95Y0RD",
-            "character:01M74NSJPEE6JPTSPCJ34HFSNK"
+            "scene:01M74S06V49B4NTQD8TER2356K",
+            "character:01M74S05JCYW7957EZ17N8SE8Z"
           ],
           "message": "scene has 'Mor Tarn' reference knowledge they do not learn until book 1 chapter 12",
           "severity": "warning",
@@ -1305,8 +1334,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M74NSN1DDMADYDDDXBVT6JAS",
-            "character:01M74NSJPGJPX32MH8C409REN3"
+            "scene:01M74S07F09V07YTVS92KX0VB0",
+            "character:01M74S05JDCZPJ4BXVY3E2MBXQ"
           ],
           "message": "scene has 'Rhys Vell' reference knowledge they do not learn until book 1 chapter 14",
           "severity": "warning",
@@ -1315,8 +1344,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPD92HW53BN8CBNV6N3",
-            "scene:01M74NSJX91BGYYKEX2EADMJSZ"
+            "character:01M74S05JA5BXZM7JHAF1ZWBX5",
+            "scene:01M74S05RR1QBH89ZC5XNKSXBM"
           ],
           "message": "scene has 'Cade Morrow' reference knowledge they do not learn until book 1 chapter 8",
           "severity": "warning",
@@ -1325,8 +1354,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPK6V3B5FB7BPQMDR1C",
-            "scene:01M74NSK2NGSNF5MHEY9TZRNWS"
+            "character:01M74S05JHBA0EC95XDKPCJDPV",
+            "scene:01M74S05XPXVQKXD332YBNQQE3"
           ],
           "message": "book 1 chapter 3 scene 1 includes 'Ianto Gorse' acting after status 'dead'",
           "severity": "warning",
@@ -1335,8 +1364,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSJPK6V3B5FB7BPQMDR1C",
-            "scene:01M74NSK2NGSNF5MHEY9TZRNWS"
+            "character:01M74S05JHBA0EC95XDKPCJDPV",
+            "scene:01M74S05XPXVQKXD332YBNQQE3"
           ],
           "message": "book 1 chapter 3 scene 1 includes 'Ianto Gorse' acting after status 'dead'",
           "severity": "warning",
@@ -1345,8 +1374,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPMTKS5SRQC21Y1TXW0",
-            "scene:01M74NSKJR7M6SGYFR61Y7BT01"
+            "character:01M74S05JJWYPHAKKFVAD1TXNC",
+            "scene:01M74S06CGM3FX2H7M3G4K6X89"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Wynn Spar' acting after status 'dead'",
           "severity": "warning",
@@ -1355,8 +1384,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSJPMTKS5SRQC21Y1TXW0",
-            "scene:01M74NSKJR7M6SGYFR61Y7BT01"
+            "character:01M74S05JJWYPHAKKFVAD1TXNC",
+            "scene:01M74S06CGM3FX2H7M3G4K6X89"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Wynn Spar' acting after status 'dead'",
           "severity": "warning",
@@ -1365,8 +1394,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPBKG6DJFGZFFTZDSV2",
-            "scene:01M74NSKJR7M6SGYFR61Y7BT01"
+            "character:01M74S05J9TC3K296D2GZQC4MB",
+            "scene:01M74S06CGM3FX2H7M3G4K6X89"
           ],
           "message": "scene has 'Anwen Rill' reference knowledge they do not learn until book 1 chapter 10",
           "severity": "warning",
@@ -1375,8 +1404,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPEE6JPTSPCJ34HFSNK",
-            "scene:01M74NSM626DVBH6F8XB95Y0RD"
+            "character:01M74S05JCYW7957EZ17N8SE8Z",
+            "scene:01M74S06V49B4NTQD8TER2356K"
           ],
           "message": "scene has 'Mor Tarn' reference knowledge they do not learn until book 1 chapter 12",
           "severity": "warning",
@@ -1385,8 +1414,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPPDTJE8EMEMSAS0NN4",
-            "scene:01M74NSMF88ZG3S3MGQNHWMZAS"
+            "character:01M74S05JKWFEXWSSMNWY2TQFN",
+            "scene:01M74S06ZZQ6SZ45JTJDASRF61"
           ],
           "message": "book 1 chapter 10 scene 1 includes 'Eira Sow' acting after status 'dead'",
           "severity": "warning",
@@ -1395,8 +1424,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSJPPDTJE8EMEMSAS0NN4",
-            "scene:01M74NSMF88ZG3S3MGQNHWMZAS"
+            "character:01M74S05JKWFEXWSSMNWY2TQFN",
+            "scene:01M74S06ZZQ6SZ45JTJDASRF61"
           ],
           "message": "book 1 chapter 10 scene 1 includes 'Eira Sow' acting after status 'dead'",
           "severity": "warning",
@@ -1405,8 +1434,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPQ64VNSS8Q85WF9F44",
-            "scene:01M74NSN1DDMADYDDDXBVT6JAS"
+            "character:01M74S05JM2C74XYVDZTH7CN5G",
+            "scene:01M74S07F09V07YTVS92KX0VB0"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Gethin Mott' acting after status 'dead'",
           "severity": "warning",
@@ -1415,8 +1444,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M74NSJPQ64VNSS8Q85WF9F44",
-            "scene:01M74NSN1DDMADYDDDXBVT6JAS"
+            "character:01M74S05JM2C74XYVDZTH7CN5G",
+            "scene:01M74S07F09V07YTVS92KX0VB0"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Gethin Mott' acting after status 'dead'",
           "severity": "warning",
@@ -1425,8 +1454,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M74NSJPGJPX32MH8C409REN3",
-            "scene:01M74NSN1DDMADYDDDXBVT6JAS"
+            "character:01M74S05JDCZPJ4BXVY3E2MBXQ",
+            "scene:01M74S07F09V07YTVS92KX0VB0"
           ],
           "message": "scene has 'Rhys Vell' reference knowledge they do not learn until book 1 chapter 14",
           "severity": "warning",
@@ -1435,9 +1464,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSJPYHAAMVRAXNVAJ7JJ6",
-            "character:01M74NSJPBKG6DJFGZFFTZDSV2",
-            "scene:01M74NSJQ746Q3Z0CMY42F600X"
+            "canonical_fact:01M74S05JVMCGK8RWVEZ294QZX",
+            "character:01M74S05J9TC3K296D2GZQC4MB",
+            "scene:01M74S05K4HGWA2DJTRY7PET88"
           ],
           "message": "book 1 chapter 1 scene 1: 'handedness' conflicts with canonical value 'left' (prose says 'right': Anwen signed the hymnal with her right hand and closed the book.) (bytes 259..324)",
           "severity": "warning",
@@ -1446,8 +1475,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSJPX8TJY0Z280T6VATHW",
-            "scene:01M74NSJQ746Q3Z0CMY42F600X"
+            "world_rule:01M74S05JTKPZKNA7W61K5PK4T",
+            "scene:01M74S05K4HGWA2DJTRY7PET88"
           ],
           "message": "scene references world rule 'Tide-song' (no violation context detected) (bytes 340..349)",
           "severity": "info",
@@ -1456,9 +1485,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSJPZV4F4AV2Q2RMA9T4F",
-            "character:01M74NSJPD92HW53BN8CBNV6N3",
-            "scene:01M74NSK7PWEF8WJHEYX74K47V"
+            "canonical_fact:01M74S05JWAG40X8WMNB3EXPYB",
+            "character:01M74S05JA5BXZM7JHAF1ZWBX5",
+            "scene:01M74S062B8BNC26A7FSBN3NKP"
           ],
           "message": "book 1 chapter 4 scene 1: 'eye_color' conflicts with canonical value 'grey' (prose says 'brown': Cade's brown eyes narrowed at the lighthouse log.) (bytes 184..234)",
           "severity": "warning",
@@ -1467,8 +1496,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSJPX8TJY0Z280T6VATHW",
-            "scene:01M74NSKCTR8YXGDJSRD090NCS"
+            "world_rule:01M74S05JTKPZKNA7W61K5PK4T",
+            "scene:01M74S0673QVYMEBQ8FERVJDPJ"
           ],
           "message": "scene references world rule 'Tide-song' (no violation context detected) (bytes 197..206)",
           "severity": "info",
@@ -1477,8 +1506,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSJPX8TJY0Z280T6VATHW",
-            "scene:01M74NSKWTF4VSPK7J46HMZKM1"
+            "world_rule:01M74S05JTKPZKNA7W61K5PK4T",
+            "scene:01M74S06NPW48KQ99YGC7YK92T"
           ],
           "message": "scene references world rule 'Tide-song' (no violation context detected) (bytes 248..257)",
           "severity": "info",
@@ -1487,9 +1516,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ0SYZH8HKVP9P03JC3",
-            "character:01M74NSJPGJPX32MH8C409REN3",
-            "scene:01M74NSMMB2ETYSDB2BW15NX6A"
+            "canonical_fact:01M74S05JXBYA7Y65ZR7K61T01",
+            "character:01M74S05JDCZPJ4BXVY3E2MBXQ",
+            "scene:01M74S074MWAQC3N9B9D5DY6ST"
           ],
           "message": "book 1 chapter 11 scene 1: 'scar_location' conflicts with canonical value 'left cheek' (prose says 'right': Rhys turned his right cheek to the candle, showing the scar.) (bytes 186..247)",
           "severity": "warning",
@@ -1498,8 +1527,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M74NSJPX8TJY0Z280T6VATHW",
-            "scene:01M74NSMSEWQSVZR330MHG6W73"
+            "world_rule:01M74S05JTKPZKNA7W61K5PK4T",
+            "scene:01M74S0797G6SBFGZ1KRYHPB0Y"
           ],
           "message": "scene references world rule 'Tide-song' (no violation context detected) (bytes 248..257)",
           "severity": "info",
@@ -1508,9 +1537,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ4S6W4WM4D0WM2DK8J",
-            "character:01M74NSJPK6V3B5FB7BPQMDR1C",
-            "scene:01M74NSK2NGSNF5MHEY9TZRNWS"
+            "canonical_fact:01M74S05K1CWQDDS4SC548DPQA",
+            "character:01M74S05JHBA0EC95XDKPCJDPV",
+            "scene:01M74S05XPXVQKXD332YBNQQE3"
           ],
           "message": "scene (book 1, chapter 3 scene 1): Ianto Gorse speaks secret fact 'secret' ('The chapel bell was cast from a drowned ship's bell.') \u2014 no recorded reveal to Ianto Gorse before this scene",
           "severity": "warning",
@@ -1519,9 +1548,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ4S6W4WM4D0WM2DK8J",
-            "character:01M74NSJPR9JKQ631QGQNQWFNT",
-            "scene:01M74NSK2NGSNF5MHEY9TZRNWS"
+            "canonical_fact:01M74S05K1CWQDDS4SC548DPQA",
+            "character:01M74S05JPC7VG7QK2EC97V7BD",
+            "scene:01M74S05XPXVQKXD332YBNQQE3"
           ],
           "message": "scene (book 1, chapter 3 scene 1): Briar Nook speaks secret fact 'secret' ('The chapel bell was cast from a drowned ship's bell.') \u2014 no recorded reveal to Briar Nook before this scene",
           "severity": "warning",
@@ -1530,9 +1559,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ5EJNT4HJS5F19BF47",
-            "character:01M74NSJPTDBAZFZG6AMTF31J1",
-            "scene:01M74NSKQRHP9447CTYJ652Y9P"
+            "canonical_fact:01M74S05K272QWSPQVTXDVJNP4",
+            "character:01M74S05JQRR8FX6FY7SHBQG8K",
+            "scene:01M74S06H3K08ZQR4M5AJGPFMF"
           ],
           "message": "scene (book 1, chapter 7 scene 1): Nell Cray speaks secret fact 'secret' ('The lighthouse keeper's log names the missing boat.') \u2014 no recorded reveal to Nell Cray before this scene",
           "severity": "warning",
@@ -1541,9 +1570,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ5M90KKAR4ZJ5VYE84",
-            "character:01M74NSJPR9JKQ631QGQNQWFNT",
-            "scene:01M74NSMF88ZG3S3MGQNHWMZAS"
+            "canonical_fact:01M74S05K2APMAKQ4K2KCRQG6R",
+            "character:01M74S05JPC7VG7QK2EC97V7BD",
+            "scene:01M74S06ZZQ6SZ45JTJDASRF61"
           ],
           "message": "scene (book 1, chapter 10 scene 1): Briar Nook speaks secret fact 'secret' ('The boatwright sawed the keel on purpose.') \u2014 no recorded reveal to Briar Nook before this scene",
           "severity": "warning",
@@ -1552,24 +1581,25 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M74NSJQ606Q4ZJJRADJ6P7YJ",
-            "character:01M74NSJPTDBAZFZG6AMTF31J1",
-            "scene:01M74NSN6H83RZYKMRK9RJYM7A"
+            "canonical_fact:01M74S05K3QTHKA8CRVF4HXCBT",
+            "character:01M74S05JQRR8FX6FY7SHBQG8K",
+            "scene:01M74S07KNV8YAWQH8098C4H3W"
           ],
           "message": "scene (book 1, chapter 14 scene 1): Nell Cray speaks secret fact 'secret' ('The singer's mother is buried under the chapel step.') \u2014 no recorded reveal to Nell Cray before this scene",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the dialogue"
         }
       ],
-      "judgments": 206,
-      "model_calls": 96,
-      "output_tokens": 103270,
-      "p95_latency_ms": 3237.0,
+      "judgments": 200,
+      "model_calls": 97,
+      "output_tokens": 104246,
+      "p95_latency_ms": 3905.0,
+      "p95_output_chars": 2744.0,
       "p95_output_tokens": 1200.0,
-      "p95_prompt_tokens": 6519.0,
-      "per_call_receipts": 96,
-      "repair_rate": 0.3333,
-      "repaired_scene_rate": 0.5,
+      "p95_prompt_tokens": 6577.0,
+      "per_call_receipts": 97,
+      "repair_rate": 0.3402,
+      "repaired_scene_rate": 0.5156,
       "semantic_control_warnings": 0,
       "semantic_issues": [],
       "semantic_on": {
@@ -1586,8 +1616,16 @@
       },
       "semantic_warning_count": 0,
       "semantic_warning_precision": null,
-      "tokens_per_chapter": 18027.59,
-      "tokens_per_scene": 9013.8,
+      "stop_reasons": {
+        "success": 45,
+        "truncated": 52
+      },
+      "tokens_per_chapter": 18297.44,
+      "tokens_per_scene": 9148.72,
+      "verdicts": {
+        "compatible": 162,
+        "insufficient": 38
+      },
       "would_be_infos": 0,
       "would_be_warnings": 0
     }

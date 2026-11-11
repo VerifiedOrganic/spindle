@@ -14,6 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Version of the prompt/DTO contract. It participates in the semantic cache
 /// key and is checked on every candidate set, report, and host request.
 pub const SEMANTIC_CONTRACT_VERSION: &str = "semantic-continuity-v1";
+/// Internal judge-policy revision. Included in the cache identity so policy
+/// changes cannot reuse reports produced by an older judge path.
+pub const SEMANTIC_JUDGE_POLICY_VERSION: &str = "semantic-judge-policy-v2";
 
 /// Maximum number of candidates in one scene request.
 pub const SEMANTIC_MAX_CANDIDATES_PER_SCENE: usize = 12;
@@ -323,6 +326,10 @@ pub struct SemanticCallSummaryV1 {
     pub elapsed_ms: u64,
     /// True when this was the one allowed repair call.
     pub repaired: bool,
+    /// `success`, `truncated`, `timeout`, `route_error`, or `local_stub`.
+    pub stop_reason: String,
+    /// Character length of this call's raw output.
+    pub output_chars: usize,
 }
 
 /// Per-scene semantic accounting for the evaluator. Present only when the
@@ -395,6 +402,18 @@ pub struct SemanticRunSummaryV1 {
     /// Individual dispatch receipts for per-call percentiles.
     #[serde(default)]
     pub calls: Vec<SemanticCallSummaryV1>,
+    /// Verdict counts across validated judgments.
+    #[serde(default)]
+    pub verdicts: BTreeMap<String, usize>,
+    /// Confidence histogram: <0.5, 0.5-0.7, 0.7-0.8, 0.8-0.85, 0.85-1.
+    #[serde(default)]
+    pub confidence_buckets: Vec<usize>,
+    /// Why a candidate was discarded before emission.
+    #[serde(default)]
+    pub discard_reasons: BTreeMap<String, usize>,
+    /// Stop reasons across actual dispatches.
+    #[serde(default)]
+    pub stop_reasons: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
