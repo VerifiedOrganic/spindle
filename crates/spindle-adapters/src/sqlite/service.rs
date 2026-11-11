@@ -2255,7 +2255,7 @@ fn cached_validator_issues(
             {
                 message = format!("{message} (bytes {start}..{end})");
             }
-            let entity_ids = issue
+            let mut entity_ids = issue
                 .get("entity_ids")
                 .and_then(|value| value.as_array())
                 .map(|values| {
@@ -2265,7 +2265,10 @@ fn cached_validator_issues(
                         .collect::<Vec<_>>()
                 })
                 .filter(|ids| !ids.is_empty())
-                .unwrap_or_else(|| vec![scene_id.to_string()]);
+                .unwrap_or_default();
+            if !entity_ids.iter().any(|id| id == scene_id) {
+                entity_ids.push(scene_id.to_string());
+            }
             issues.push(spindle_core::models::ConsistencyIssue {
                 severity,
                 check_type,
