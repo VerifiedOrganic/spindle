@@ -1,41 +1,20 @@
 # Changelog
 
-## Unreleased (0.4.0)
+## 0.4.0 — 2026-11-11
 
 ### Added
 
-- Added the core P1 contracts for the 0.4 semantic continuity lane: candidate,
-  judgment, evidence, host, and error DTOs; strict scene/canon/evidence
-  validation; the server-side severity policy; and stable dedupe keys. This is
-  additive and does not change deterministic consistency behavior. `ConsistencyIssue`
-  now has an optional evidence span that is omitted for legacy findings.
-- Added the deterministic P2 semantic candidate builder, candidate coverage,
-  `semantic_mode` off/shadow/on plumbing (default off; no findings yet), and the
-  read-only `prepare_semantic_continuity` host-request surface. No model calls
-  are made in any mode.
-- Added a compact semantic judge wire format with server-side evidence-span
-  resolution, general family evidence gates, a fail-closed contradiction
-  verifier, and evidence-identity dedupe. Public held-out-3 improves by +3
-  localized/+2 type-present with perfect warning precision and no control rise;
-  baseline/#72/held-out-2 do not yet show lift, so activation gates remain unmet
-  and the lane stays off by default.
-- Added the P4 semantic evaluator: `continuity_recall.py --semantic off|shadow|on`
-  runs the public continuity sets with an explicit judge config; reports
-  deterministic-vs-semantic recall, warning precision/control counts, evidence
-  validity, repairs, p95 tokens/latency, cache hits, and per-scene/chapter token
-  totals; includes the host-report round-trip acceptance path. The default
-  remains `semantic_mode = off`.
-- Added the P3 semantic judge transport: `continuity_semantic` with `review`
-  fallback, local-stub rejection, a bounded strict-JSON prompt, one repair,
-  typed errors, and fail-closed handling. Added the V0058 validated-report
-  cache, `semantic_host_reports` input, stale-request validation, shadow
-  counters, and per-call/run budget and latency guards. Default behavior remains
-  `semantic_mode = off`.
+- An experimental semantic continuity lane: core candidate/judgment/evidence
+  contracts, deterministic candidate building, a compact judge transport with a
+  fail-closed contradiction verifier and validated-report caching (V0058),
+  host-report input, `semantic_mode=off|shadow|on` plumbing, and a public-set
+  evaluator. It ships **off by default**; `shadow` observes without changing
+  findings.
 - `commit_scene` accepts `prose_path` as an alternative to inline `full_text`
   (exactly one), reading long prose from a workspace-relative UTF-8 file with
-  path confinement, dotfile/`.spindle` rejection, a 2 MB cap, line-ending
-  normalization, optional `expected_sha256`, and a prose-source receipt. HTTP
-  and secondary clients resolve the file on the primary's workspace.
+  path confinement, a 2 MB cap, line-ending normalization, optional
+  `expected_sha256`, and a prose-source receipt. The primary resolves the file
+  for HTTP and secondary clients.
 
 ### Changed
 
@@ -48,7 +27,24 @@
   `create_style_revision_patch`. Stored history, scene versions, save points,
   and record IDs remain readable.
 
+### Upgrade notes
 
+- Back up `.spindle/` before the first 0.4.0 start: migration **V0058** runs on
+  the project database.
+- Legacy tool profiles were removed and unset now means generated
+  `workflow-write`. Set `SPINDLE_TOOL_PROFILE` explicitly if you relied on an
+  unset or legacy profile name.
+- For long scenes, write the prose to a workspace file and pass `prose_path` to
+  `commit_scene` instead of inline `full_text`.
+
+### Known limitations
+
+- The semantic continuity lane ships **off by default** and is experimental.
+  `semantic_mode=shadow` is available. Public-set results improve held-out-3
+  from 26/56 to 29/56 localized with warning precision 1.00, but activation
+  gates are not met: control false positives remain on baseline/held-out-2 and
+  aggregate lift is limited. Do not use `semantic_mode=on` in production yet.
+- Deterministic continuity recall is unchanged from 0.3.1.
 
 ## 0.3.1 — 2026-11-10
 
