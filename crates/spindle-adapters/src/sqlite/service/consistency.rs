@@ -2789,6 +2789,7 @@ impl SqliteSpindleService {
             let run_deadline = std::time::Duration::from_secs(
                 spindle_core::semantic_continuity::SEMANTIC_RUN_WALL_CLOCK_SECONDS,
             );
+            let run_deadline_at = std::time::Instant::now() + run_deadline;
             let mut host_reports: std::collections::BTreeMap<
                 &str,
                 &spindle_core::semantic_continuity::SemanticHostReportV1,
@@ -2870,7 +2871,7 @@ impl SqliteSpindleService {
                     )
                     .await
                 } else {
-                    self.judge_semantic_scene(request, scene, &mut summary)
+                    self.judge_semantic_scene(request, scene, &mut summary, run_deadline_at)
                         .await
                 };
                 match judged {

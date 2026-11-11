@@ -9,8 +9,9 @@ use super::*;
 use crate::ai::{ModelRequest, RouteClearanceError};
 use spindle_core::semantic_continuity::{
     SEMANTIC_CONTRACT_VERSION, SEMANTIC_MAX_PROMPT_TOKENS, SEMANTIC_MAX_RATIONALE_CHARS,
-    SemanticCacheKeyV1, SemanticErrorKind, SemanticHostReportV1, SemanticHostRequestV1,
-    SemanticJudgeErrorV1, SemanticJudgeReportV1, SemanticRunSummaryV1, semantic_candidate_set_hash,
+    SemanticCacheKeyV1, SemanticDedupeKeyV1, SemanticErrorKind, SemanticHostReportV1,
+    SemanticHostRequestV1, SemanticJudgeErrorV1, SemanticJudgeReportV1, SemanticRunSummaryV1,
+    semantic_candidate_set_hash, semantic_dedupe_key, semantic_findings_are_duplicates,
     validate_semantic_host_report, validate_semantic_judge_report,
 };
 use std::time::Duration;
@@ -72,6 +73,7 @@ impl SqliteSpindleService {
         request: &SemanticHostRequestV1,
         scene: &crate::sqlite::records::Scene,
         summary: &mut SemanticRunSummaryV1,
+        deadline: std::time::Instant,
     ) -> Result<SemanticJudgeReportV1, SemanticJudgeErrorV1> {
         let route = self.resolve_semantic_route(scene.content_rating.as_str())?;
         let cache_key = SemanticCacheKeyV1 {
@@ -114,7 +116,7 @@ impl SqliteSpindleService {
             ));
         }
         let first = self
-            .complete_semantic_prompt(&route, &prompt, request, scene, summary)
+            .complete_semantic_prompt(&route, &prompt, request, scene, summary, deadline)
             .await;
         let report = match first {
             Ok(report) => report,
@@ -133,8 +135,15 @@ impl SqliteSpindleService {
                     scene.content_rating.as_str(),
                     Some(&[error]),
                 );
-                self.complete_semantic_prompt(&route, &repair_prompt, request, scene, summary)
-                    .await?
+                self.complete_semantic_prompt(
+                    &route,
+                    &repair_prompt,
+                    request,
+                    scene,
+                    summary,
+                    deadline,
+                )
+                .await?
             }
             Err(error) => return Err(error),
         };
@@ -157,6 +166,7 @@ impl SqliteSpindleService {
         request: &SemanticHostRequestV1,
         scene: &crate::sqlite::records::Scene,
         summary: &mut SemanticRunSummaryV1,
+        deadline: std::time::Instant,
     ) -> Result<SemanticJudgeReportV1, SemanticJudgeErrorV1> {
         summary.model_calls += 1;
         let model_request = ModelRequest {
@@ -189,9 +199,22 @@ impl SqliteSpindleService {
                 "semantic run input-token budget exhausted",
             ));
         }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(SemanticJudgeErrorV1::new(
+                SemanticErrorKind::BudgetExceeded,
+                "semantic run wall-clock budget exhausted",
+            ));
+        }
+        let per_call =
+            Duration::from_secs(spindle_core::semantic_continuity::SEMANTIC_CALL_TIMEOUT_SECONDS);
+        summary.input_tokens = summary.input_tokens.saturating_add(prompt_tokens as u64);
         let response = tokio::time::timeout(
-            Duration::from_secs(spindle_core::semantic_continuity::SEMANTIC_CALL_TIMEOUT_SECONDS),
-            self.repository.model_router().complete(&model_request),
+            remaining.min(per_call),
+            self.repository.model_router().complete_bounded(
+                &model_request,
+                spindle_core::semantic_continuity::SEMANTIC_MAX_OUTPUT_TOKENS as u32,
+            ),
         )
         .await
         .map_err(|_| {
@@ -199,15 +222,19 @@ impl SqliteSpindleService {
                 .retryable(true)
         })?
         .map_err(|error| map_route_error(error, &route.name, scene.content_rating.as_str()))?;
-        if let Some(usage) = response.usage.as_ref() {
-            summary.input_tokens += usage.input_tokens.unwrap_or(prompt_tokens as u64);
-            summary.output_tokens += usage
-                .output_tokens
-                .unwrap_or_else(|| estimate_tokens(&response.output) as u64);
-        } else {
-            summary.input_tokens += prompt_tokens as u64;
-            summary.output_tokens += estimate_tokens(&response.output) as u64;
+        let response_output_tokens = response
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.output_tokens)
+            .unwrap_or_else(|| estimate_tokens(&response.output) as u64);
+        if let Some(actual_input) = response.usage.as_ref().and_then(|usage| usage.input_tokens)
+            && actual_input > prompt_tokens as u64
+        {
+            summary.input_tokens = summary
+                .input_tokens
+                .saturating_add(actual_input - prompt_tokens as u64);
         }
+        summary.output_tokens = summary.output_tokens.saturating_add(response_output_tokens);
         if response.adapter_kind == "local" {
             return Err(SemanticJudgeErrorV1::new(
                 SemanticErrorKind::RouteUnavailable,
@@ -245,28 +272,10 @@ impl SqliteSpindleService {
         for name in ["continuity_semantic", "review"] {
             match router.check_route_clearance(name, Some(rating)) {
                 Ok(()) => {
-                    let bindings = router.list_route_bindings().unwrap_or_default();
-                    let exact = bindings.iter().find(|binding| {
-                        binding.route.route_name == name
-                            && binding
-                                .rating
-                                .as_deref()
-                                .is_some_and(|bound| bound.eq_ignore_ascii_case(rating))
-                    });
-                    let default = bindings.iter().find(|binding| {
-                        binding.route.route_name == name && binding.rating.is_none()
-                    });
-                    let identity = exact
-                        .or(default)
-                        .map(|binding| {
-                            format!(
-                                "{}|{}|{}|{}",
-                                binding.route.model_name,
-                                binding.route.adapter_kind,
-                                binding.route.purpose,
-                                binding.rating.as_deref().unwrap_or("default")
-                            )
-                        })
+                    let identity = router
+                        .resolved_route_identity(name, Some(rating))
+                        .ok()
+                        .flatten()
                         .unwrap_or_else(|| name.to_string());
                     return Ok(SemanticRoute {
                         name: name.to_string(),
@@ -430,15 +439,7 @@ pub(super) fn semantic_issue_from_report(
     let mut warnings = 0;
     let mut infos = 0;
     let mut issues = Vec::new();
-    let mut seen: Vec<(String, std::collections::BTreeSet<String>)> = existing
-        .iter()
-        .map(|issue| {
-            (
-                issue.check_type.clone(),
-                issue.entity_ids.iter().cloned().collect(),
-            )
-        })
-        .collect();
+    let mut semantic_keys: Vec<SemanticDedupeKeyV1> = Vec::new();
     for judgment in &report.judgments {
         let Some(candidate) = candidates.get(judgment.candidate_id.as_str()) else {
             continue;
@@ -447,16 +448,23 @@ pub(super) fn semantic_issue_from_report(
         let Some(severity) = decision.severity else {
             continue;
         };
-        let mut identity: std::collections::BTreeSet<String> =
-            candidate.subject_ids.iter().cloned().collect();
-        identity.insert(scene_id.clone());
-        let duplicate = seen.iter().any(|(check_type, ids)| {
-            check_type == &candidate.check_type && !ids.is_disjoint(&identity)
-        });
+        let key = semantic_dedupe_key(
+            &scene_id,
+            &candidate.check_type,
+            &candidate.canon_refs,
+            &candidate.subject_ids,
+            judgment.evidence.as_ref(),
+        );
+        let duplicate = semantic_keys
+            .iter()
+            .any(|seen| semantic_findings_are_duplicates(seen, &key))
+            || existing
+                .iter()
+                .any(|issue| deterministic_issue_matches(issue, candidate, &scene_id));
         if duplicate {
             continue;
         }
-        seen.push((candidate.check_type.clone(), identity.clone()));
+        semantic_keys.push(key);
         match severity {
             SemanticIssueSeverity::Warning => warnings += 1,
             SemanticIssueSeverity::Info => infos += 1,
@@ -502,6 +510,41 @@ pub(super) fn semantic_issue_from_report(
         });
     }
     (warnings, infos, issues)
+}
+
+fn deterministic_issue_matches(
+    issue: &spindle_core::models::ConsistencyIssue,
+    candidate: &spindle_core::semantic_continuity::SemanticCandidateV1,
+    scene_id: &str,
+) -> bool {
+    if issue.check_type != candidate.check_type
+        || !matches!(issue.severity.as_str(), "warning" | "error")
+        || !issue.entity_ids.iter().any(|id| id == scene_id)
+    {
+        return false;
+    }
+    if candidate
+        .subject_ids
+        .iter()
+        .any(|subject| issue.entity_ids.contains(subject))
+    {
+        return true;
+    }
+    // World-rule deterministic messages name the rule; the semantic constraint
+    // carries the same quoted rule name. This prevents a different rule in the
+    // same scene from suppressing the finding.
+    candidate
+        .canon_refs
+        .iter()
+        .any(|reference| reference.table == "world_rule")
+        && quoted_rule_name(&candidate.constraint).is_some_and(|name| issue.message.contains(name))
+}
+
+fn quoted_rule_name(constraint: &str) -> Option<&str> {
+    let start = constraint.find('\'')? + 1;
+    let rest = &constraint[start..];
+    let end = rest.find('\'')?;
+    (end > 0).then_some(&rest[..end])
 }
 
 #[cfg(test)]
@@ -677,10 +720,94 @@ rating = "explicit"
             .resolve_semantic_route("explicit")
             .expect("explicit review");
         assert!(
-            route.model_identity.starts_with("review-explicit|"),
+            route.model_identity.contains("agent=review-explicit|"),
             "rating override must key the cache, got {}",
             route.model_identity
         );
+    }
+
+    #[tokio::test]
+    async fn cache_identity_changes_when_agent_endpoint_changes() {
+        let config = |endpoint: &str| {
+            format!(
+                r#"
+[[agents]]
+id = "judge"
+name = "Judge"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "shared-model"
+ratings = ["general"]
+
+[[routing]]
+route = "review"
+agent = "judge"
+"#
+            )
+        };
+        let (_tmp_a, svc_a) = service_with_config(&config("http://endpoint-a/v1")).await;
+        let (_tmp_b, svc_b) = service_with_config(&config("http://endpoint-b/v1")).await;
+        let identity_a = svc_a
+            .resolve_semantic_route("general")
+            .unwrap()
+            .model_identity;
+        let identity_b = svc_b
+            .resolve_semantic_route("general")
+            .unwrap()
+            .model_identity;
+        assert_ne!(identity_a, identity_b);
+        assert!(identity_a.contains("endpoint=http://endpoint-a/v1"));
+    }
+
+    #[test]
+    fn deterministic_dedupe_requires_same_rule_scene_and_warning_strength() {
+        use spindle_core::models::ConsistencyIssue;
+        use spindle_core::semantic_continuity::SemanticCandidateV1;
+        let candidate = SemanticCandidateV1 {
+            schema_version: SEMANTIC_CONTRACT_VERSION.into(),
+            candidate_id: "c".into(),
+            family: SemanticCandidateFamily::WorldRule,
+            check_type: "world_rule_semantic_drift".into(),
+            canon_refs: vec![SemanticCanonRefV1 {
+                table: "world_rule".into(),
+                id: "rule:alpha".into(),
+                version: "v".into(),
+            }],
+            subject_ids: Vec::new(),
+            constraint: "world rule 'alpha': alpha rule".into(),
+            excerpt: "x".into(),
+            excerpt_start_byte: 0,
+            excerpt_end_byte: 1,
+            evidence_hints: Vec::new(),
+        };
+        let issue = |severity: &str, scene: &str, message: &str| ConsistencyIssue {
+            severity: severity.into(),
+            check_type: "world_rule_semantic_drift".into(),
+            message: message.into(),
+            entity_ids: vec![scene.into()],
+            suggested_action: None,
+            evidence: None,
+        };
+        assert!(deterministic_issue_matches(
+            &issue("warning", "scene:1", "world rule 'alpha' violated"),
+            &candidate,
+            "scene:1"
+        ));
+        assert!(!deterministic_issue_matches(
+            &issue("warning", "scene:1", "world rule 'beta' violated"),
+            &candidate,
+            "scene:1"
+        ));
+        assert!(!deterministic_issue_matches(
+            &issue("warning", "scene:2", "world rule 'alpha' violated"),
+            &candidate,
+            "scene:1"
+        ));
+        assert!(!deterministic_issue_matches(
+            &issue("info", "scene:1", "world rule 'alpha' mention"),
+            &candidate,
+            "scene:1"
+        ));
     }
 
     #[test]

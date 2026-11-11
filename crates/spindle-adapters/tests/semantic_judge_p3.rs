@@ -52,7 +52,8 @@ async fn seeded_scene() -> (TempDir, SqliteSpindleService, String) {
         chapter_number: 1,
         chapter_id: None,
         scene_order: 1,
-        full_text: "Mara turned the moon key in daylight.".into(),
+        full_text: "Mara tried to ignore the moon-key rule and turned the moon key in daylight."
+            .into(),
         summary: "test".into(),
         content_rating: ContentRating::General,
         tone: None,
@@ -70,7 +71,9 @@ fn host_report(
 ) -> SemanticHostReportV1 {
     let candidate = &svc_request.candidate_set.candidates[0];
     let quote = "moon key";
-    let start = "Mara turned the moon key in daylight.".find(quote).unwrap();
+    let start = "Mara tried to ignore the moon-key rule and turned the moon key in daylight."
+        .find(quote)
+        .unwrap();
     let end = start + quote.len();
     SemanticHostReportV1 {
         request_id: svc_request.request_id.clone(),

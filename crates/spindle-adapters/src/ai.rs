@@ -834,6 +834,43 @@ impl ModelRouter {
     /// per-rating overrides carry the lowercase rating string. Use this when
     /// you need to disambiguate two ModelRoute entries with the same
     /// `route_name` (e.g. one default + one explicit override).
+    /// Stable identity of the route's resolved agent/provider configuration,
+    /// used in cache keys. Includes the agent id and endpoint so repointing an
+    /// agent or swapping a rating override invalidates semantic reports.
+    pub fn resolved_route_identity(
+        &self,
+        route_name: &str,
+        rating: Option<&str>,
+    ) -> anyhow::Result<Option<String>> {
+        let runtime = self
+            .runtime
+            .read()
+            .map_err(|_| poisoned_lock("model router read lock"))?;
+        let Some(route) = resolve_route(&runtime, route_name, rating) else {
+            return Ok(None);
+        };
+        let settings = format!(
+            "route={route_name}|adapter={}|model={}|max_tokens={:?}|temperature={:?}",
+            route.adapter_kind, route.model_name, route.max_tokens, route.temperature
+        );
+        if let Some(agent) = runtime.agents.get(&route.model_name) {
+            Ok(Some(format!(
+                "agent={}|provider={}|endpoint={}|model={}|max_context={:?}|quality={:?}|settings={settings}",
+                agent.config.id,
+                agent.config.provider,
+                agent.config.endpoint,
+                agent.config.model,
+                agent.config.max_context,
+                agent.config.quality_tier
+            )))
+        } else {
+            Ok(Some(format!(
+                "builtin|adapter={}|model={}|purpose={}|settings={settings}",
+                route.adapter_kind, route.model_name, route.purpose
+            )))
+        }
+    }
+
     pub fn list_route_bindings(&self) -> anyhow::Result<Vec<RouteBinding>> {
         let runtime = self
             .runtime
@@ -1362,6 +1399,25 @@ impl ModelRouter {
     }
 
     pub async fn complete(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
+        self.complete_with_limit(request, None).await
+    }
+
+    /// Complete with a hard per-call output-token cap applied to the resolved
+    /// route before dispatch. Used by model-backed passes that have a tighter
+    /// ceiling than the route's configured default.
+    pub async fn complete_bounded(
+        &self,
+        request: &ModelRequest,
+        max_tokens: u32,
+    ) -> anyhow::Result<ModelResponse> {
+        self.complete_with_limit(request, Some(max_tokens)).await
+    }
+
+    async fn complete_with_limit(
+        &self,
+        request: &ModelRequest,
+        max_tokens_override: Option<u32>,
+    ) -> anyhow::Result<ModelResponse> {
         let start = std::time::Instant::now();
         let mut resolved_route =
             self.resolve_route_for_telemetry(&request.route, request.rating.as_deref());
@@ -1370,14 +1426,22 @@ impl ModelRouter {
         {
             route.max_tokens = Some(route.max_tokens.unwrap_or(2000).min(2000));
         }
+        if let Some(limit) = max_tokens_override
+            && let Some(route) = &mut resolved_route
+        {
+            route.max_tokens = Some(route.max_tokens.unwrap_or(limit).min(limit));
+        }
         // Leave time inside the engine's 60-second foreground bound to record
         // timeout attribution, rather than cancelling before the ledger write.
         let mut result = if request.route == "extract" {
-            tokio::time::timeout(Duration::from_secs(55), self.complete_inner(request))
-                .await
-                .unwrap_or_else(|_| Err(anyhow::Error::new(ExtractionTimedOut)))
+            tokio::time::timeout(
+                Duration::from_secs(55),
+                self.complete_inner(request, max_tokens_override),
+            )
+            .await
+            .unwrap_or_else(|_| Err(anyhow::Error::new(ExtractionTimedOut)))
         } else {
-            self.complete_inner(request).await
+            self.complete_inner(request, max_tokens_override).await
         };
         self.record_usage(
             &request.route,
@@ -1393,7 +1457,11 @@ impl ModelRouter {
         result
     }
 
-    async fn complete_inner(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
+    async fn complete_inner(
+        &self,
+        request: &ModelRequest,
+        max_tokens_override: Option<u32>,
+    ) -> anyhow::Result<ModelResponse> {
         let runtime = self
             .runtime
             .read()
@@ -1430,6 +1498,9 @@ impl ModelRouter {
         };
 
         let mut bounded_route = route.clone();
+        if let Some(limit) = max_tokens_override {
+            bounded_route.max_tokens = Some(bounded_route.max_tokens.unwrap_or(limit).min(limit));
+        }
         if request.route == "extract" {
             // Shadow extraction has no tool authority. Agentic/CLI routes must
             // not gain access to a project's write tools through this pass.
