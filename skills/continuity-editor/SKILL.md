@@ -90,3 +90,4 @@ When continuity drift stems from missing or stale state records rather than bad 
 <!-- tool: update_location -->
 <!-- tool: update_entity -->
 <!-- tool: update_promise_status -->
+<!-- tool: prepare_semantic_continuity -->

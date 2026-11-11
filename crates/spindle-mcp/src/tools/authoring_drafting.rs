@@ -1224,6 +1224,7 @@ impl ToolRouter {
                     .collect(),
                 severity_filter: Vec::new(),
                 deep_check: Some(false),
+                semantic_mode: None,
                 subjects: Vec::new(),
                 format: None,
                 budget_tokens: None,

@@ -9,6 +9,10 @@
   validation; the server-side severity policy; and stable dedupe keys. This is
   additive and does not change deterministic consistency behavior. `ConsistencyIssue`
   now has an optional evidence span that is omitted for legacy findings.
+- Added the deterministic P2 semantic candidate builder, candidate coverage,
+  `semantic_mode` off/shadow/on plumbing (default off; no findings yet), and the
+  read-only `prepare_semantic_continuity` host-request surface. No model calls
+  are made in any mode.
 
 ### Changed
 

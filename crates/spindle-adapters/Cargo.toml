@@ -16,6 +16,7 @@ reqwest.workspace = true
 roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+regex.workspace = true
 sha2.workspace = true
 spindle-core = { path = "../spindle-core" }
 spindle-skills = { path = "../spindle-skills" }

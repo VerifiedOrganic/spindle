@@ -154,6 +154,7 @@ async fn verify_rolls_chapter_quota_hard_only() {
             checks: vec!["anti_slop".into()],
             severity_filter: Vec::new(),
             deep_check: Some(false),
+            semantic_mode: None,
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,

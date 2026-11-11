@@ -1,0 +1,622 @@
+{
+  "manuscripts": [
+    {
+      "candidate_count": 21,
+      "candidate_scene_count": 14,
+      "name": "ashfall_expedition",
+      "omitted_by_family": {},
+      "scene_count": 20,
+      "scenes": [
+        {
+          "by_check_type": {
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "timeline": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "temporal_anchor"
+          ],
+          "scene_index": 0
+        },
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 1
+        },
+        {
+          "by_check_type": {
+            "quantity_drift": 1
+          },
+          "by_family": {
+            "quantity": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "quantity_state"
+          ],
+          "evidence_origins": [
+            "price_scan"
+          ],
+          "scene_index": 2
+        },
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 3
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 1
+          },
+          "by_family": {
+            "knowledge": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "resolver"
+          ],
+          "scene_index": 4
+        },
+        {
+          "by_check_type": {
+            "dead_character_acting": 1,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "death": 1,
+            "timeline": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "character_state",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 5
+        },
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 6
+        },
+        {
+          "by_check_type": {
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "timeline": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "temporal_anchor"
+          ],
+          "scene_index": 7
+        },
+        {
+          "by_check_type": {
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "world_rule": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "world_rule_scan"
+          ],
+          "scene_index": 8
+        },
+        {
+          "by_check_type": {
+            "quantity_drift": 1,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "quantity": 1,
+            "timeline": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "quantity_state",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "price_scan",
+            "temporal_anchor"
+          ],
+          "scene_index": 9
+        },
+        {
+          "by_check_type": {
+            "dead_character_acting": 1,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "death": 1,
+            "timeline": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "character_state",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 10
+        },
+        {
+          "by_check_type": {
+            "quantity_drift": 1
+          },
+          "by_family": {
+            "quantity": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "quantity_state"
+          ],
+          "evidence_origins": [
+            "price_scan"
+          ],
+          "scene_index": 11
+        },
+        {
+          "by_check_type": {
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "world_rule": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "world_rule_scan"
+          ],
+          "scene_index": 12
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 1,
+            "secret_leak": 1,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "knowledge": 1,
+            "secret": 1,
+            "timeline": 1
+          },
+          "candidate_count": 3,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 13
+        },
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 14
+        },
+        {
+          "by_check_type": {
+            "temporal_coherence": 1,
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "timeline": 1,
+            "world_rule": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "scene_clock",
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "temporal_anchor",
+            "world_rule_scan"
+          ],
+          "scene_index": 15
+        },
+        {
+          "by_check_type": {
+            "secret_leak": 1,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "secret": 1,
+            "timeline": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "canonical_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 16
+        },
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 17
+        },
+        {
+          "by_check_type": {
+            "dead_character_acting": 1
+          },
+          "by_family": {
+            "death": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "character_state"
+          ],
+          "evidence_origins": [
+            "resolver"
+          ],
+          "scene_index": 18
+        },
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 19
+        }
+      ]
+    },
+    {
+      "candidate_count": 21,
+      "candidate_scene_count": 14,
+      "name": "veridian_station",
+      "omitted_by_family": {},
+      "scene_count": 20,
+      "scenes": [
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 0
+        },
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 1
+        },
+        {
+          "by_check_type": {
+            "quantity_drift": 1
+          },
+          "by_family": {
+            "quantity": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "quantity_state"
+          ],
+          "evidence_origins": [
+            "price_scan"
+          ],
+          "scene_index": 2
+        },
+        {
+          "by_check_type": {
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "world_rule": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "resolver"
+          ],
+          "scene_index": 3
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 1,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "knowledge": 1,
+            "timeline": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "knowledge_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 4
+        },
+        {
+          "by_check_type": {
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "timeline": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "temporal_anchor"
+          ],
+          "scene_index": 5
+        },
+        {
+          "by_check_type": {
+            "dead_character_acting": 1,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "death": 1,
+            "timeline": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "character_state",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 6
+        },
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 7
+        },
+        {
+          "by_check_type": {
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "world_rule": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "world_rule_scan"
+          ],
+          "scene_index": 8
+        },
+        {
+          "by_check_type": {
+            "quantity_drift": 1
+          },
+          "by_family": {
+            "quantity": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "quantity_state"
+          ],
+          "evidence_origins": [
+            "price_scan"
+          ],
+          "scene_index": 9
+        },
+        {
+          "by_check_type": {
+            "dead_character_acting": 1
+          },
+          "by_family": {
+            "death": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "character_state"
+          ],
+          "evidence_origins": [
+            "resolver"
+          ],
+          "scene_index": 10
+        },
+        {
+          "by_check_type": {
+            "quantity_drift": 1
+          },
+          "by_family": {
+            "quantity": 1
+          },
+          "candidate_count": 1,
+          "canon_tables": [
+            "quantity_state"
+          ],
+          "evidence_origins": [
+            "price_scan"
+          ],
+          "scene_index": 11
+        },
+        {
+          "by_check_type": {
+            "temporal_coherence": 1,
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "timeline": 1,
+            "world_rule": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "scene_clock",
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "temporal_anchor",
+            "world_rule_scan"
+          ],
+          "scene_index": 12
+        },
+        {
+          "by_check_type": {
+            "knowledge_timing": 1,
+            "secret_leak": 1
+          },
+          "by_family": {
+            "knowledge": 1,
+            "secret": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "canonical_fact",
+            "knowledge_fact"
+          ],
+          "evidence_origins": [
+            "resolver"
+          ],
+          "scene_index": 13
+        },
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 14
+        },
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 15
+        },
+        {
+          "by_check_type": {
+            "secret_leak": 1,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "secret": 1,
+            "timeline": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "canonical_fact",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 16
+        },
+        {
+          "by_check_type": {
+            "temporal_coherence": 1,
+            "world_rule_semantic_drift": 1
+          },
+          "by_family": {
+            "timeline": 1,
+            "world_rule": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "scene_clock",
+            "world_rule"
+          ],
+          "evidence_origins": [
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 17
+        },
+        {
+          "by_check_type": {
+            "dead_character_acting": 1,
+            "temporal_coherence": 1
+          },
+          "by_family": {
+            "death": 1,
+            "timeline": 1
+          },
+          "candidate_count": 2,
+          "canon_tables": [
+            "character_state",
+            "scene_clock"
+          ],
+          "evidence_origins": [
+            "resolver",
+            "temporal_anchor"
+          ],
+          "scene_index": 18
+        },
+        {
+          "by_check_type": {},
+          "by_family": {},
+          "candidate_count": 0,
+          "canon_tables": [],
+          "evidence_origins": [],
+          "scene_index": 19
+        }
+      ]
+    }
+  ],
+  "suite": "baseline",
+  "variant": "planted"
+}
