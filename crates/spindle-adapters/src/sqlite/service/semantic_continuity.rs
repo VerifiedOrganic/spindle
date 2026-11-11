@@ -275,7 +275,7 @@ impl SqliteSpindleService {
                 let Some(dead) = dead else {
                     continue;
                 };
-                if character_by_id.get(character_id.as_str()).is_none() {
+                if !character_by_id.contains_key(character_id.as_str()) {
                     continue;
                 }
                 let Some(range) = character_range(scene, resolver.aliases_for(character_id)) else {
