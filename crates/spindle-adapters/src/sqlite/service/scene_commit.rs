@@ -1,5 +1,7 @@
 use super::*;
 
+mod prose;
+
 use spindle_core::models::{
     CommitSceneAppliedDeltas, CommitSceneContinuityPackage, CommitSceneCoverage, CommitSceneCursor,
     CommitSceneFollowUp, CommitSceneFollowUpKind, CommitSceneInput, CommitSceneIssue,
@@ -338,6 +340,28 @@ fn commit_scene_issue_from_consistency(issue: ConsistencyIssue) -> CommitSceneIs
 }
 
 impl SqliteSpindleService {
+    fn commit_scene_workspace_root(&self) -> Option<std::path::PathBuf> {
+        let data_dir = self.repository.data_dir();
+        (data_dir.file_name().and_then(|name| name.to_str()) == Some(".spindle"))
+            .then(|| data_dir.parent().map(std::path::Path::to_path_buf))
+            .flatten()
+    }
+
+    fn resolve_commit_scene_prose(
+        &self,
+        input: &mut CommitSceneInput,
+    ) -> Result<spindle_core::models::CommitSceneProseReceipt> {
+        let root = self.commit_scene_workspace_root();
+        let resolved = prose::resolve_prose(
+            root.as_deref(),
+            &input.full_text,
+            input.prose_path.as_deref(),
+            input.expected_sha256.as_deref(),
+        )?;
+        input.full_text = resolved.text;
+        Ok(resolved.receipt)
+    }
+
     /// Return a stored idempotency receipt for this exact payload, if one
     /// exists. Used by both the service and the authoring-run adapter so a
     /// retry can reach its receipt before any live-state phase assertion.
@@ -356,7 +380,9 @@ impl SqliteSpindleService {
         else {
             return Ok(None);
         };
-        let payload_hash = commit_scene_payload_hash(input)?;
+        let mut resolved = input.clone();
+        self.resolve_commit_scene_prose(&mut resolved)?;
+        let payload_hash = commit_scene_payload_hash(&resolved)?;
         let Some((stored_hash, stored_receipt)) =
             self.repository.find_scene_commit_receipt(key).await?
         else {
@@ -378,18 +404,19 @@ impl SqliteSpindleService {
     /// optional chapter summary, writer cursor, and an idempotency receipt all
     /// land in one SQLite write transaction. Blocking deterministic gates are
     /// evaluated before the transaction opens, so a failed gate writes nothing.
-    pub async fn commit_scene(&self, input: CommitSceneInput) -> Result<CommitSceneOutput> {
+    pub async fn commit_scene(&self, mut input: CommitSceneInput) -> Result<CommitSceneOutput> {
+        if let Some(replay) = self.commit_scene_replay(&input).await? {
+            return Ok(replay);
+        }
+        let prose_receipt = self.resolve_commit_scene_prose(&mut input)?;
         if input.full_text.trim().is_empty() {
-            anyhow::bail!("commit_scene requires non-empty full_text");
+            anyhow::bail!("commit_scene requires non-empty prose");
         }
         if input.summary.trim().is_empty() {
             anyhow::bail!("commit_scene requires a non-empty summary");
         }
 
         let payload_hash = commit_scene_payload_hash(&input)?;
-        if let Some(replay) = self.commit_scene_replay(&input).await? {
-            return Ok(replay);
-        }
 
         let project = self.repository.get_project(&input.project_id).await?;
         let branch = match input
@@ -832,6 +859,7 @@ impl SqliteSpindleService {
                 } else {
                     "dry run wrote nothing; a live commit revalidates first".to_string()
                 }),
+                prose: Some(prose_receipt.clone()),
             });
         }
 
@@ -1008,6 +1036,7 @@ impl SqliteSpindleService {
                          require a branch checkpoint until undo_change ships"
                             .to_string(),
                     ),
+                    prose: Some(prose_receipt.clone()),
                 };
 
                 if let Some(key) = idempotency_key.as_deref() {
