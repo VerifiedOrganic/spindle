@@ -6427,6 +6427,9 @@ pub struct CheckConsistencyOutput {
     /// Shadow/on semantic counters. Present only when the lane was invoked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_summary: Option<crate::semantic_continuity::SemanticRunSummaryV1>,
+    /// Per-scene semantic counters for evaluator percentiles and coverage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic_scene_summaries: Vec<crate::semantic_continuity::SemanticSceneSummaryV1>,
 }
 
 /// Read-only request for the deterministic semantic candidate sets of every

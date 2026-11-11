@@ -2889,6 +2889,17 @@ def main() -> int:
             help="Path to Spindle agent config TOML when running with --deep",
         )
         p.add_argument(
+            "--semantic",
+            choices=("off", "shadow", "on"),
+            default="off",
+            help="Run the semantic lane and write a semantic evaluation report",
+        )
+        p.add_argument(
+            "--semantic-judge-identity",
+            default="configured-agent",
+            help="Public model/agent identity recorded in the semantic report",
+        )
+        p.add_argument(
             "--accepted-artifacts-dir",
             help="Optional directory of PlainTextDraftArtifactV1 (*.artifact.json) files to verify and ingest",
         )
@@ -2905,6 +2916,26 @@ def main() -> int:
         if getattr(args, "accepted_artifacts_dir", None)
         else None
     )
+    if getattr(args, "semantic", "off") != "off":
+        from semantic_eval import SET_COMMANDS, run_semantic_set
+
+        if args.command not in SET_COMMANDS:
+            raise RuntimeError("--semantic is supported for run/held-out/held-out-2/held-out-3")
+        if args.deep:
+            raise RuntimeError("--semantic cannot be combined with --deep")
+        if agent_config is None:
+            raise RuntimeError("--semantic requires an explicit --agent-config")
+        report = run_semantic_set(
+            binary,
+            SET_COMMANDS[args.command],
+            agent_config,
+            judge_identity=args.semantic_judge_identity,
+        )
+        if args.output:
+            Path(args.output).write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps(report, indent=2))
+        return 0
+
     if args.command == "held-out-3":
         from continuity_held_out_3 import run_held_out_3_benchmark
 
