@@ -309,6 +309,54 @@ pub struct SemanticCacheKeyV1 {
     pub model_identity: String,
 }
 
+/// One actual judge dispatch receipt (initial or repair).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticCallSummaryV1 {
+    /// Scene on whose behalf the call was made.
+    pub scene_id: String,
+    /// Prompt tokens attributable to this call.
+    pub input_tokens: u64,
+    /// Output tokens attributable to this call.
+    pub output_tokens: u64,
+    /// Wall time for this call.
+    pub elapsed_ms: u64,
+    /// True when this was the one allowed repair call.
+    pub repaired: bool,
+}
+
+/// Per-scene semantic accounting for the evaluator. Present only when the
+/// semantic lane runs in shadow or on mode.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticSceneSummaryV1 {
+    /// Scene the counters describe.
+    pub scene_id: String,
+    /// Candidates built for this scene.
+    pub candidates: usize,
+    /// Validated judgments accepted for this scene.
+    pub judgments: usize,
+    /// Would-be/emitted warning count after dedupe.
+    pub warnings: usize,
+    /// Would-be/emitted advisory count after dedupe.
+    pub infos: usize,
+    /// Whether a validated cache report satisfied this scene.
+    pub cache_hit: bool,
+    /// Model calls made for this scene (including one repair).
+    pub model_calls: usize,
+    /// Whether a repair call was made.
+    pub repaired: bool,
+    /// Prompt tokens attributable to this scene.
+    pub input_tokens: u64,
+    /// Output tokens attributable to this scene.
+    pub output_tokens: u64,
+    /// Wall time for this scene.
+    pub elapsed_ms: u64,
+    /// First typed error for this scene, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<SemanticJudgeErrorV1>,
+}
+
 /// Shadow/on run counters. This is observability, not a finding channel.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -344,6 +392,9 @@ pub struct SemanticRunSummaryV1 {
     /// Typed route/parse/host errors, never containing scene prose.
     #[serde(default)]
     pub errors: Vec<SemanticJudgeErrorV1>,
+    /// Individual dispatch receipts for per-call percentiles.
+    #[serde(default)]
+    pub calls: Vec<SemanticCallSummaryV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -2766,6 +2766,9 @@ impl SqliteSpindleService {
         }
 
         let mut semantic_summary = None;
+        let mut semantic_scene_summaries: Vec<
+            spindle_core::semantic_continuity::SemanticSceneSummaryV1,
+        > = Vec::new();
         if let Some(mode) = input.semantic_mode.filter(|mode| !mode.is_off()) {
             let started = std::time::Instant::now();
             let (requests, audit) = self
@@ -2862,6 +2865,14 @@ impl SqliteSpindleService {
                         .push(request.candidate_set.scene_id.clone());
                     continue;
                 }
+                let scene_started = std::time::Instant::now();
+                let before = (
+                    summary.cache_hits,
+                    summary.model_calls,
+                    summary.input_tokens,
+                    summary.output_tokens,
+                    summary.errors.len(),
+                );
                 let judged = if let Some(report) = host_reports.get(request.request_id.as_str()) {
                     self.accept_semantic_host_report(
                         request,
@@ -2874,6 +2885,8 @@ impl SqliteSpindleService {
                     self.judge_semantic_scene(request, scene, &mut summary, run_deadline_at)
                         .await
                 };
+                let scene_judgment_count =
+                    judged.as_ref().map_or(0, |report| report.judgments.len());
                 match judged {
                     Ok(report) => {
                         summary.judgments += report.judgments.len();
@@ -2910,6 +2923,35 @@ impl SqliteSpindleService {
                         }
                     }
                 }
+                let scene_warnings = summary.warnings.saturating_sub(
+                    semantic_scene_summaries
+                        .iter()
+                        .map(|scene| scene.warnings)
+                        .sum::<usize>(),
+                );
+                let scene_infos = summary.infos.saturating_sub(
+                    semantic_scene_summaries
+                        .iter()
+                        .map(|scene| scene.infos)
+                        .sum::<usize>(),
+                );
+                let scene_error = summary.errors.get(before.4).cloned();
+                semantic_scene_summaries.push(
+                    spindle_core::semantic_continuity::SemanticSceneSummaryV1 {
+                        scene_id: request.candidate_set.scene_id.clone(),
+                        candidates: request.candidate_set.candidates.len(),
+                        judgments: scene_judgment_count,
+                        warnings: scene_warnings,
+                        infos: scene_infos,
+                        cache_hit: summary.cache_hits > before.0,
+                        model_calls: summary.model_calls.saturating_sub(before.1),
+                        repaired: summary.model_calls.saturating_sub(before.1) > 1,
+                        input_tokens: summary.input_tokens.saturating_sub(before.2),
+                        output_tokens: summary.output_tokens.saturating_sub(before.3),
+                        elapsed_ms: scene_started.elapsed().as_millis() as u64,
+                        error: scene_error,
+                    },
+                );
                 if summary.input_tokens
                     > spindle_core::semantic_continuity::SEMANTIC_MAX_RUN_INPUT_TOKENS as u64
                 {
@@ -2977,6 +3019,7 @@ impl SqliteSpindleService {
             report_sections,
             markdown,
             semantic_summary,
+            semantic_scene_summaries,
         })
     }
 }

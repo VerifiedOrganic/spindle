@@ -78,3 +78,21 @@ and a secondary over a full primary, including a denied mutation with no databas
 change. The isolated live probe checks every profile, CLI metadata/help, and
 unknown-name rejection before data access. The inherited stalled-child test
 observes the real child/workspace from the parent, avoiding child-marker races.
+
+## Semantic continuity evaluation
+
+`check_consistency` accepts `semantic_mode: off | shadow | on` (default off).
+`shadow` builds and judges candidates but emits no findings; `on` emits
+policy-approved semantic findings. `prepare_semantic_continuity` is the
+read-only host-request surface, and `check_consistency.semantic_host_reports`
+accepts validated host reports. The evaluator is:
+
+```sh
+ai run OLLAMA_API_KEY -- python3 evals/continuity_recall.py run \
+  --semantic shadow --agent-config /path/to/agents.toml --binary target/debug/spindle-mcp
+```
+
+Use `run`, `held-out`, `held-out-2`, or `held-out-3` as the set subcommand.
+The command reports deterministic-only vs semantic-on recall, semantic warning
+precision, control warnings by check type, evidence validity, repair/cache/call
+rates, p95 prompt/output tokens and latency, and token totals per scene/chapter.

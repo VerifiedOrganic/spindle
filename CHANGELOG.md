@@ -13,6 +13,12 @@
   `semantic_mode` off/shadow/on plumbing (default off; no findings yet), and the
   read-only `prepare_semantic_continuity` host-request surface. No model calls
   are made in any mode.
+- Added the P4 semantic evaluator: `continuity_recall.py --semantic off|shadow|on`
+  runs the public continuity sets with an explicit judge config; reports
+  deterministic-vs-semantic recall, warning precision/control counts, evidence
+  validity, repairs, p95 tokens/latency, cache hits, and per-scene/chapter token
+  totals; includes the host-report round-trip acceptance path. The default
+  remains `semantic_mode = off`.
 - Added the P3 semantic judge transport: `continuity_semantic` with `review`
   fallback, local-stub rejection, a bounded strict-JSON prompt, one repair,
   typed errors, and fail-closed handling. Added the V0058 validated-report

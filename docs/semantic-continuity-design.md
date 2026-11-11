@@ -619,6 +619,34 @@ only aggregate candidate/coverage counts before the final P4 measurement. The
 corpus is not edited after the P0 freeze; a second worker audits that the clean
 twins contain no unintentional contradictions.
 
+### 4.2.1 P4 public-set measurement (2026-11-11)
+
+Evaluator: `evals/continuity_recall.py <set> --semantic shadow --agent-config ...`
+with one judge config (`ollama:gemma4:31b`) held constant. The evaluator runs a
+shadow pass, then an on pass against the same projects; the on pass reuses the
+validated cache. Checked-in reports: `evals/results/semantic_p4_*.json`. All
+p95/repair figures are per actual dispatch receipt, including failed/timeout
+dispatches.
+
+| Set | Deterministic recall | Semantic-on recall | Semantic warnings | Control warnings | Cache hit (on) | Repair rate (shadow/on) | p95 prompt/call | p95 output/call | p95 latency/call | Tokens/scene (on) |
+| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline | 28/28 | 28/28 | 0 | unchanged (2 warnings + 1 info) | 81.3% | 19.2% / 50.0% | 5,141 | 1,200 | 5,637 ms | 1,655 |
+| #72 | 54/56 | 54/56 | 0 | unchanged (0) | 50.0% | 33.3% / 50.0% | 6,539 | 1,200 | 3,727 ms | 6,670 |
+| held-out-2 | 55/56 localized, 56/56 type | 55/56, 56/56 | 0 | unchanged (0) | 61.0% | 29.8% / 50.0% | 4,798 | 1,200 | 3,970 ms | 3,440 |
+| held-out-3 | 26/56 localized, 28/56 type | 26/56, 28/56 | 0 | unchanged (0) | 31.3% | 40.7% / 49.4% | 6,895 | 1,200 | 6,718 ms | 9,770 |
+
+The semantic lane added no recall on these public sets with this judge config.
+No semantic warning reached the output, so warning precision is undefined
+(`null`, zero denominator), evidence-anchor validity is vacuous (1.0 over zero
+issues), and the control-warning gate is unchanged. Shadow and on both recorded
+zero would-be warnings. The measured **repair rate (19-50%) exceeds the <=10%
+activation gate**; per-call prompt/output/latency ceilings pass. The lane
+therefore remains **off by default**; these are honest failure measurements,
+not activation.
+
+Cost: the provider exposes no configured price, so only token and latency
+inputs are reported. Held-out-4 was not accessed.
+
 ### 4.3 Metrics on all five sets
 
 For baseline, #72, held-out-2, held-out-3, and held-out-4:
