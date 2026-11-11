@@ -476,6 +476,7 @@ mod scene_changes;
 mod scene_commit;
 mod scenes;
 mod semantic_continuity;
+mod semantic_judge;
 mod source_bridge;
 mod structure;
 mod validators;
@@ -2184,6 +2185,12 @@ fn phase_four_context_hashes(
                 serde_json::json!({ "style_directive": context.style_directive })
             }
         };
+        // Bump when the serialized finding/issue shape changes so old cache
+        // rows without structured entity ids are recomputed.
+        let payload = serde_json::json!({
+            "validator_output_version": 2,
+            "payload": payload,
+        });
         let serialized = serde_json::to_vec(&payload)?;
         hashes.insert(check.as_str(), generation_sha256_hex(&serialized));
     }
@@ -2248,11 +2255,25 @@ fn cached_validator_issues(
             {
                 message = format!("{message} (bytes {start}..{end})");
             }
+            let mut entity_ids = issue
+                .get("entity_ids")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .filter(|ids| !ids.is_empty())
+                .unwrap_or_default();
+            if !entity_ids.iter().any(|id| id == scene_id) {
+                entity_ids.push(scene_id.to_string());
+            }
             issues.push(spindle_core::models::ConsistencyIssue {
                 severity,
                 check_type,
                 message,
-                entity_ids: vec![scene_id.to_string()],
+                entity_ids,
                 suggested_action: Some(
                     "revise scene prose or supporting canon records".to_string(),
                 ),

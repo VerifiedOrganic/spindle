@@ -116,6 +116,7 @@ async fn check_consistency_subjects_list_filters_scene_set() {
             severity_filter: Vec::new(),
             deep_check: None,
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: vec![mara.character_id.clone()],
             format: None,
             budget_tokens: None,

@@ -6339,6 +6339,10 @@ pub struct CheckConsistencyInput {
     /// requests/coverage only and never emits model findings.
     #[serde(default)]
     pub semantic_mode: Option<crate::semantic_continuity::SemanticMode>,
+    /// Optional host reports answering `prepare_semantic_continuity` requests.
+    /// Reports are validated and cached; no model call is made for them.
+    #[serde(default)]
+    pub semantic_host_reports: Vec<crate::semantic_continuity::SemanticHostReportV1>,
     /// Optional subject narrowing. Each entry is a record id of the form
     /// `<table>:<id>` (for example `character:abc123`). When non-empty, the
     /// check runs only against scenes that reference at least one listed
@@ -6420,6 +6424,9 @@ pub struct CheckConsistencyOutput {
     /// budget would be exceeded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markdown: Option<String>,
+    /// Shadow/on semantic counters. Present only when the lane was invoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_summary: Option<crate::semantic_continuity::SemanticRunSummaryV1>,
 }
 
 /// Read-only request for the deterministic semantic candidate sets of every

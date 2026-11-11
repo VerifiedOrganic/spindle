@@ -933,6 +933,7 @@ async fn test_check_consistency_research_accuracy() {
             subjects: Vec::new(),
             deep_check: Some(false),
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             format: None,
             budget_tokens: None,
         })
@@ -1022,6 +1023,7 @@ async fn test_check_consistency_research_accuracy() {
             subjects: Vec::new(),
             deep_check: Some(false),
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             format: None,
             budget_tokens: None,
         })

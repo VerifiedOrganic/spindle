@@ -107,6 +107,8 @@ pub struct ValidatorFinding {
     pub severity: ValidatorSeverity,
     pub message: String,
     pub byte_range: Option<TextByteRange>,
+    /// Stable record ids that identify the finding's subject/canon item.
+    pub entity_ids: Vec<String>,
 }
 
 pub trait SceneValidator: Send + Sync {

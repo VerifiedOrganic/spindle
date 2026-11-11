@@ -289,6 +289,63 @@ pub enum SemanticErrorKind {
     CacheCorrupt,
 }
 
+/// Complete cache identity for one validated semantic judge report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticCacheKeyV1 {
+    /// Scene the report describes.
+    pub scene_id: String,
+    /// Prose hash at judgment time.
+    pub scene_sha256: String,
+    /// Relevant canon hash at judgment time.
+    pub canon_version: String,
+    /// Hash of the exact candidate set.
+    pub candidate_set_hash: String,
+    /// Semantic contract version.
+    pub contract_version: String,
+    /// Resolved route (`continuity_semantic`, `review`, or `host`).
+    pub route: String,
+    /// Resolved model/agent identity.
+    pub model_identity: String,
+}
+
+/// Shadow/on run counters. This is observability, not a finding channel.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticRunSummaryV1 {
+    /// Effective mode used for this run.
+    pub mode: SemanticMode,
+    /// Scenes considered in scope.
+    pub scenes: usize,
+    /// Scenes with at least one candidate.
+    pub candidate_scenes: usize,
+    /// Candidates built (before judgments).
+    pub candidates: usize,
+    /// Judgments accepted after validation.
+    pub judgments: usize,
+    /// Warnings emitted.
+    pub warnings: usize,
+    /// Advisory info findings emitted.
+    pub infos: usize,
+    /// Candidates whose judgment was dropped.
+    pub dropped: usize,
+    /// Validated cache hits.
+    pub cache_hits: usize,
+    /// Cache misses (including corrupt keys treated as misses).
+    pub cache_misses: usize,
+    /// Model calls made, excluding host reports.
+    pub model_calls: usize,
+    /// Prompt tokens reported by the router, when available.
+    pub input_tokens: u64,
+    /// Output tokens reported by the router, when available.
+    pub output_tokens: u64,
+    /// Wall time for the semantic stage.
+    pub elapsed_ms: u64,
+    /// Typed route/parse/host errors, never containing scene prose.
+    #[serde(default)]
+    pub errors: Vec<SemanticJudgeErrorV1>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticJudgeErrorV1 {

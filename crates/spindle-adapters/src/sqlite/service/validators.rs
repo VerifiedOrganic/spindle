@@ -1018,6 +1018,7 @@ impl SqliteSpindleService {
                             "check_type": finding.check_type,
                             "message": finding.message,
                             "byte_range": finding.byte_range,
+                            "entity_ids": finding.entity_ids,
                         })
                     })
                     .collect::<Vec<_>>();
@@ -1064,11 +1065,15 @@ impl SqliteSpindleService {
                 if let Some(byte_range) = finding.byte_range {
                     message = format!("{message} (bytes {}..{})", byte_range.start, byte_range.end);
                 }
+                let mut entity_ids = finding.entity_ids;
+                if !entity_ids.iter().any(|id| id == &scene.scene_id) {
+                    entity_ids.push(scene.scene_id.clone());
+                }
                 issues.push(ConsistencyIssue {
                     severity: finding.severity.as_str().to_string(),
                     check_type: finding.check_type.to_string(),
                     message,
-                    entity_ids: vec![scene.scene_id.clone()],
+                    entity_ids,
                     suggested_action: Some(
                         "revise scene prose or supporting canon records".to_string(),
                     ),

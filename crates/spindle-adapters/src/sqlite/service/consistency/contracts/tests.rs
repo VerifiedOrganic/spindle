@@ -1128,6 +1128,7 @@ async fn check_consistency_flags_stub_scenes() {
             severity_filter: Vec::new(),
             deep_check: Some(false),
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -1590,6 +1591,7 @@ async fn style_enforcement_pipeline_flags_offgenre_comedy_scene() {
             severity_filter: Vec::new(),
             deep_check: None,
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -2686,6 +2688,7 @@ async fn check_consistency_happy_path_no_blocking_issues() {
             severity_filter: Vec::new(),
             deep_check: None,
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: Some(ContextFormat::Markdown),
             budget_tokens: None,
@@ -3265,6 +3268,7 @@ async fn check_consistency_flags_pacing_drift_on_sustained_sag() {
             severity_filter: Vec::new(),
             deep_check: Some(false),
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -3373,6 +3377,7 @@ async fn check_consistency_flags_premature_knowledge() {
             severity_filter: Vec::new(),
             deep_check: Some(false),
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -3502,6 +3507,7 @@ async fn save_summary_recomputes_pacing_over_budget() {
             severity_filter: Vec::new(),
             deep_check: Some(false),
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -3835,6 +3841,7 @@ async fn check_consistency_subjects_narrowing_filters_scene_set() {
             severity_filter: Vec::new(),
             deep_check: None,
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: vec![mara.character_id.clone()],
             format: None,
             budget_tokens: None,
@@ -3926,6 +3933,7 @@ async fn check_consistency_emits_world_rule_semantic_drift_issue() {
             severity_filter: Vec::new(),
             deep_check: None,
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -4241,6 +4249,7 @@ mod secret_leak_audit {
             severity_filter: Vec::new(),
             deep_check: Some(false),
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -4653,6 +4662,7 @@ mod secret_leak_deep {
             severity_filter: Vec::new(),
             deep_check: Some(deep),
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -5214,6 +5224,7 @@ mod scene_purpose_fulfillment {
             severity_filter: Vec::new(),
             deep_check: Some(deep),
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -6191,6 +6202,7 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
                 severity_filter: Vec::new(),
                 deep_check: Some(false),
                 semantic_mode: None,
+                semantic_host_reports: Vec::new(),
                 subjects: Vec::new(),
                 format: None,
                 budget_tokens: None,
@@ -6457,6 +6469,7 @@ async fn is_dead_status_word_boundaries_and_retcon_severity_downgrade() {
                 severity_filter: Vec::new(),
                 deep_check: Some(false),
                 semantic_mode: None,
+                semantic_host_reports: Vec::new(),
                 subjects: Vec::new(),
                 format: None,
                 budget_tokens: None,
@@ -7245,6 +7258,7 @@ mod claim_validation_lanes {
             severity_filter: Vec::new(),
             deep_check: Some(false),
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -7259,6 +7273,7 @@ mod claim_validation_lanes {
         let (_tmp, svc) = fresh_service().await;
         let (project, seed_scene_id, _) = project_with_scene(&svc, "Unkeyed Attribute").await;
         let character_id = create_character_named(&svc, &project.project_id, "Mara Vance").await;
+        let character_for_assert = character_id.clone();
         svc.register_canonical_fact(RegisterCanonicalFactInput {
             project_id: project.project_id.clone(),
             scene_id: Some(seed_scene_id),
@@ -7294,15 +7309,28 @@ mod claim_validation_lanes {
         )
         .await;
 
-        let issues = run_checks(&svc, &project.project_id, "canonical_fact_prose_drift").await;
-        assert!(
-            issues.iter().any(|issue| {
+        for pass in 0..2 {
+            let issues = run_checks(&svc, &project.project_id, "canonical_fact_prose_drift").await;
+            let matching = issues.iter().find(|issue| {
                 issue.check_type == "canonical_fact_prose_drift"
                     && issue.message.contains("chapter 11")
                     && (issue.message.contains("prosthetic") || issue.message.contains("gauntlet"))
-            }),
-            "expected unkeyed attribute drift, got {issues:?}"
-        );
+            });
+            let matching = matching.unwrap_or_else(|| {
+                panic!("expected unkeyed attribute drift on pass {pass}, got {issues:?}")
+            });
+            assert!(
+                matching.entity_ids.contains(&character_for_assert),
+                "attribute finding must retain its subject id on pass {pass}: {matching:?}"
+            );
+            assert!(
+                matching
+                    .entity_ids
+                    .iter()
+                    .any(|id| id.starts_with("scene:")),
+                "attribute finding must retain its scene id on pass {pass}: {matching:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -7600,6 +7628,7 @@ mod secret_leak_narration {
                 severity_filter: Vec::new(),
                 deep_check: Some(false),
                 semantic_mode: None,
+                semantic_host_reports: Vec::new(),
                 subjects: Vec::new(),
                 format: None,
                 budget_tokens: None,
@@ -7690,6 +7719,7 @@ async fn check_consistency_does_not_emit_info_for_clean_world_rule_cost_demo() {
             severity_filter: Vec::new(),
             deep_check: None,
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,

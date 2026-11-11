@@ -367,6 +367,7 @@ async fn prepare_candidates_world_rules_and_keeps_modes_finding_neutral() {
             severity_filter: Vec::new(),
             deep_check: Some(false),
             semantic_mode: None,
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -382,6 +383,7 @@ async fn prepare_candidates_world_rules_and_keeps_modes_finding_neutral() {
             severity_filter: Vec::new(),
             deep_check: Some(false),
             semantic_mode: Some(SemanticMode::Shadow),
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -397,6 +399,7 @@ async fn prepare_candidates_world_rules_and_keeps_modes_finding_neutral() {
             severity_filter: Vec::new(),
             deep_check: Some(false),
             semantic_mode: Some(SemanticMode::On),
+            semantic_host_reports: Vec::new(),
             subjects: Vec::new(),
             format: None,
             budget_tokens: None,
@@ -424,6 +427,8 @@ async fn prepare_candidates_world_rules_and_keeps_modes_finding_neutral() {
         .find(|coverage| coverage.check_type == "semantic_continuity")
         .expect("shadow mode must record semantic candidate coverage");
     assert_eq!(semantic.eligible, 1);
-    assert_eq!(semantic.evaluated_ids.len(), 1);
-    assert!(semantic.not_evaluated_ids.is_empty());
+    // P3 attempts the judge route; this service has only a local stub, so the
+    // scene is honestly recorded as not evaluated rather than clean.
+    assert!(semantic.evaluated_ids.is_empty());
+    assert_eq!(semantic.not_evaluated_ids.len(), 1);
 }
