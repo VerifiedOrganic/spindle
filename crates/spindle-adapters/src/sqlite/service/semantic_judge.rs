@@ -522,9 +522,18 @@ fn deterministic_issue_matches(
         return false;
     }
     if candidate.check_type == "canonical_fact_prose_drift" {
-        // Phase-4 attribute issues carry only the scene id, but their message
-        // names the canonical predicate and value. Require both so an eye-color
-        // warning cannot suppress a scar contradiction for the same character.
+        // Phase-4 attribute issues now carry the canonical subject id plus the
+        // scene id; their message names the predicate and value. Require the
+        // same subject and both message tokens so two characters with the same
+        // attribute, or two attributes for one character, stay distinct.
+        if candidate.subject_ids.is_empty()
+            || !candidate
+                .subject_ids
+                .iter()
+                .any(|subject| issue.entity_ids.contains(subject))
+        {
+            return false;
+        }
         if let Some((predicate, value)) = candidate.constraint.split_once(": ") {
             return issue.message.contains(&format!("'{predicate}'"))
                 && issue.message.contains(&format!("'{value}'"));
@@ -832,18 +841,19 @@ agent = "judge"
             excerpt_end_byte: 1,
             evidence_hints: Vec::new(),
         };
-        let issue = |message: &str, scene: &str| ConsistencyIssue {
+        let issue = |message: &str, scene: &str, entity: &str| ConsistencyIssue {
             severity: "warning".into(),
             check_type: "canonical_fact_prose_drift".into(),
             message: message.into(),
-            entity_ids: vec![scene.into()],
+            entity_ids: vec![scene.into(), entity.into()],
             suggested_action: None,
             evidence: None,
         };
         assert!(deterministic_issue_matches(
             &issue(
                 "book 1 chapter 1 scene 1: 'eye_color' conflicts with canonical value 'blue' (prose says 'green')",
-                "scene:1"
+                "scene:1",
+                "character:mara"
             ),
             &candidate,
             "scene:1"
@@ -851,7 +861,17 @@ agent = "judge"
         assert!(!deterministic_issue_matches(
             &issue(
                 "book 1 chapter 1 scene 1: 'scar' conflicts with canonical value 'left cheek' (prose says 'right')",
-                "scene:1"
+                "scene:1",
+                "character:mara"
+            ),
+            &candidate,
+            "scene:1"
+        ));
+        assert!(!deterministic_issue_matches(
+            &issue(
+                "book 1 chapter 1 scene 1: 'eye_color' conflicts with canonical value 'blue' (prose says 'green')",
+                "scene:1",
+                "character:nora"
             ),
             &candidate,
             "scene:1"
@@ -859,7 +879,8 @@ agent = "judge"
         assert!(!deterministic_issue_matches(
             &issue(
                 "book 1 chapter 1 scene 2: 'eye_color' conflicts with canonical value 'blue' (prose says 'green')",
-                "scene:2"
+                "scene:2",
+                "character:mara"
             ),
             &candidate,
             "scene:1"

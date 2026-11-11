@@ -2249,11 +2249,22 @@ fn cached_validator_issues(
             {
                 message = format!("{message} (bytes {start}..{end})");
             }
+            let entity_ids = issue
+                .get("entity_ids")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .filter(|ids| !ids.is_empty())
+                .unwrap_or_else(|| vec![scene_id.to_string()]);
             issues.push(spindle_core::models::ConsistencyIssue {
                 severity,
                 check_type,
                 message,
-                entity_ids: vec![scene_id.to_string()],
+                entity_ids,
                 suggested_action: Some(
                     "revise scene prose or supporting canon records".to_string(),
                 ),
