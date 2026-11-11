@@ -13,6 +13,12 @@
   `semantic_mode` off/shadow/on plumbing (default off; no findings yet), and the
   read-only `prepare_semantic_continuity` host-request surface. No model calls
   are made in any mode.
+- Added the P3 semantic judge transport: `continuity_semantic` with `review`
+  fallback, local-stub rejection, a bounded strict-JSON prompt, one repair,
+  typed errors, and fail-closed handling. Added the V0058 validated-report
+  cache, `semantic_host_reports` input, stale-request validation, shadow
+  counters, and per-call/run budget and latency guards. Default behavior remains
+  `semantic_mode = off`.
 - `commit_scene` accepts `prose_path` as an alternative to inline `full_text`
   (exactly one), reading long prose from a workspace-relative UTF-8 file with
   path confinement, dotfile/`.spindle` rejection, a 2 MB cap, line-ending

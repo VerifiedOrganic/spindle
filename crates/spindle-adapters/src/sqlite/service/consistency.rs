@@ -2769,21 +2769,131 @@ impl SqliteSpindleService {
         // callers can render them under their own headings.
         let report_sections = build_consistency_report_sections(&issues, &scenes);
 
-        if input.semantic_mode.is_some_and(|mode| !mode.is_off()) {
-            let (requests, _audit) = self
+        let mut semantic_summary = None;
+        if let Some(mode) = input.semantic_mode.filter(|mode| !mode.is_off()) {
+            let started = std::time::Instant::now();
+            let (requests, audit) = self
                 .semantic_requests_for_scenes(&project_id, &active_branch.id, &scenes)
                 .await?;
+            let scene_by_id: BTreeMap<&str, &crate::sqlite::records::Scene> = scenes
+                .iter()
+                .map(|scene| (scene.id.as_str(), scene))
+                .collect();
+            let mut summary = spindle_core::semantic_continuity::SemanticRunSummaryV1 {
+                mode,
+                scenes: scenes.len(),
+                candidate_scenes: audit.candidate_scene_count,
+                candidates: audit.candidate_count,
+                ..Default::default()
+            };
             let mut coverage = spindle_core::models::AuditCoverage::new(
                 "semantic_continuity",
                 scenes.iter().map(|scene| scene.id.clone()),
             );
-            coverage.evaluated_ids = requests
+            let mut host_reports: std::collections::BTreeMap<
+                &str,
+                &spindle_core::semantic_continuity::SemanticHostReportV1,
+            > = std::collections::BTreeMap::new();
+            for report in &input.semantic_host_reports {
+                if host_reports
+                    .insert(report.request_id.as_str(), report)
+                    .is_some()
+                {
+                    summary.errors.push(
+                        spindle_core::semantic_continuity::SemanticJudgeErrorV1::new(
+                            spindle_core::semantic_continuity::SemanticErrorKind::StaleHostRequest,
+                            "duplicate host report request_id",
+                        ),
+                    );
+                }
+            }
+            let requested_ids: BTreeSet<&str> = requests
                 .iter()
-                .filter(|request| !request.candidate_set.candidates.is_empty())
-                .map(|request| request.candidate_set.scene_id.clone())
+                .map(|request| request.request_id.as_str())
                 .collect();
+            for report in &input.semantic_host_reports {
+                if !requested_ids.contains(report.request_id.as_str()) {
+                    summary.errors.push(
+                        spindle_core::semantic_continuity::SemanticJudgeErrorV1::new(
+                            spindle_core::semantic_continuity::SemanticErrorKind::StaleHostRequest,
+                            "host report does not match a current request",
+                        ),
+                    );
+                }
+            }
+            for request in &requests {
+                let Some(scene) = scene_by_id.get(request.candidate_set.scene_id.as_str()) else {
+                    continue;
+                };
+                if request.candidate_set.candidates.is_empty() {
+                    coverage
+                        .not_evaluated_ids
+                        .push(request.candidate_set.scene_id.clone());
+                    continue;
+                }
+                let judged = if let Some(report) = host_reports.get(request.request_id.as_str()) {
+                    self.accept_semantic_host_report(
+                        request,
+                        report,
+                        &scene.full_text,
+                        &mut summary,
+                    )
+                    .await
+                } else {
+                    self.judge_semantic_scene(request, scene, &mut summary)
+                        .await
+                };
+                match judged {
+                    Ok(report) => {
+                        summary.judgments += report.judgments.len();
+                        let (warnings, infos, semantic_issues) =
+                            super::semantic_judge::semantic_issue_from_report(
+                                &report,
+                                request,
+                                mode == spindle_core::semantic_continuity::SemanticMode::On,
+                            );
+                        summary.warnings += warnings;
+                        summary.infos += infos;
+                        issues.extend(semantic_issues);
+                        if !coverage
+                            .evaluated_ids
+                            .iter()
+                            .any(|id| id == &request.candidate_set.scene_id)
+                        {
+                            coverage
+                                .evaluated_ids
+                                .push(request.candidate_set.scene_id.clone());
+                        }
+                    }
+                    Err(error) => {
+                        summary.errors.push(error);
+                        if !coverage
+                            .not_evaluated_ids
+                            .iter()
+                            .any(|id| id == &request.candidate_set.scene_id)
+                        {
+                            coverage
+                                .not_evaluated_ids
+                                .push(request.candidate_set.scene_id.clone());
+                        }
+                    }
+                }
+                if summary.input_tokens
+                    > spindle_core::semantic_continuity::SEMANTIC_MAX_RUN_INPUT_TOKENS as u64
+                {
+                    summary.errors.push(
+                        spindle_core::semantic_continuity::SemanticJudgeErrorV1::new(
+                            spindle_core::semantic_continuity::SemanticErrorKind::BudgetExceeded,
+                            "semantic run input-token ceiling reached",
+                        ),
+                    );
+                    break;
+                }
+            }
+            summary.elapsed_ms = started.elapsed().as_millis() as u64;
             coverage.finish();
             audit_coverage.push(coverage);
+            semantic_summary = Some(summary);
         }
 
         let summary = ConsistencySummary {
@@ -2829,6 +2939,7 @@ impl SqliteSpindleService {
             summary,
             report_sections,
             markdown,
+            semantic_summary,
         })
     }
 }

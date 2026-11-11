@@ -1225,6 +1225,7 @@ impl ToolRouter {
                 severity_filter: Vec::new(),
                 deep_check: Some(false),
                 semantic_mode: None,
+                semantic_host_reports: Vec::new(),
                 subjects: Vec::new(),
                 format: None,
                 budget_tokens: None,

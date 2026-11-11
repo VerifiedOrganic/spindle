@@ -476,6 +476,7 @@ mod scene_changes;
 mod scene_commit;
 mod scenes;
 mod semantic_continuity;
+mod semantic_judge;
 mod source_bridge;
 mod structure;
 mod validators;

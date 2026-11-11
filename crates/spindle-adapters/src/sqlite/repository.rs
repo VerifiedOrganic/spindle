@@ -774,6 +774,7 @@ mod reviews;
 mod scene_commit;
 mod scenes;
 mod search;
+mod semantic;
 mod snapshots;
 mod style;
 mod timeline;

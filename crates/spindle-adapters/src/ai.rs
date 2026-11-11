@@ -146,6 +146,7 @@ pub const PROSE_BEARING_ROUTES: &[&str] = &[
     "line_edit",
     "reader_sim",
     "review",
+    "continuity_semantic",
 ];
 
 /// Manuscript-import routes. Prose-bearing (they carry the operator's full
@@ -6849,7 +6850,8 @@ agent = "reviewer"
                 "extract",
                 "line_edit",
                 "reader_sim",
-                "review"
+                "review",
+                "continuity_semantic"
             ]
         );
     }
