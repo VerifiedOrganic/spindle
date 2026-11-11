@@ -2872,6 +2872,7 @@ impl SqliteSpindleService {
                     summary.input_tokens,
                     summary.output_tokens,
                     summary.errors.len(),
+                    summary.calls.len(),
                 );
                 let judged = if let Some(report) = host_reports.get(request.request_id.as_str()) {
                     self.accept_semantic_host_report(
@@ -2890,7 +2891,7 @@ impl SqliteSpindleService {
                 match judged {
                     Ok(report) => {
                         summary.judgments += report.judgments.len();
-                        let (warnings, infos, semantic_issues) =
+                        let (warnings, infos, semantic_issues, outcome) =
                             super::semantic_judge::semantic_issue_from_report(
                                 &report,
                                 request,
@@ -2899,6 +2900,18 @@ impl SqliteSpindleService {
                             );
                         summary.warnings += warnings;
                         summary.infos += infos;
+                        for (verdict, count) in outcome.verdicts {
+                            *summary.verdicts.entry(verdict).or_default() += count;
+                        }
+                        if summary.confidence_buckets.is_empty() {
+                            summary.confidence_buckets = vec![0; 5];
+                        }
+                        for (index, count) in outcome.confidence_buckets.iter().enumerate() {
+                            summary.confidence_buckets[index] += count;
+                        }
+                        for (reason, count) in outcome.discard_reasons {
+                            *summary.discard_reasons.entry(reason).or_default() += count;
+                        }
                         issues.extend(semantic_issues);
                         if !coverage
                             .evaluated_ids
@@ -2922,6 +2935,12 @@ impl SqliteSpindleService {
                                 .push(request.candidate_set.scene_id.clone());
                         }
                     }
+                }
+                for call in &summary.calls[before.5..] {
+                    *summary
+                        .stop_reasons
+                        .entry(call.stop_reason.clone())
+                        .or_default() += 1;
                 }
                 let scene_warnings = summary.warnings.saturating_sub(
                     semantic_scene_summaries

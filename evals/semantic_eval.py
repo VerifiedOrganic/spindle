@@ -118,9 +118,27 @@ def _metrics(
         for error in summary.get("errors", []):
             kind = error.get("kind", "unknown")
             errors_by_kind[kind] = errors_by_kind.get(kind, 0) + 1
+    verdicts: dict[str, int] = {}
+    discard_reasons: dict[str, int] = {}
+    stop_reasons: dict[str, int] = {}
+    confidence_buckets = [0, 0, 0, 0, 0]
+    for summary in summaries:
+        for key, count in summary.get("verdicts", {}).items():
+            verdicts[key] = verdicts.get(key, 0) + int(count)
+        for key, count in summary.get("discard_reasons", {}).items():
+            discard_reasons[key] = discard_reasons.get(key, 0) + int(count)
+        for key, count in summary.get("stop_reasons", {}).items():
+            stop_reasons[key] = stop_reasons.get(key, 0) + int(count)
+        for index, count in enumerate(summary.get("confidence_buckets", [])):
+            if index < len(confidence_buckets):
+                confidence_buckets[index] += int(count)
     return {
         "issues": issues,
         "errors_by_kind": dict(sorted(errors_by_kind.items())),
+        "verdicts": dict(sorted(verdicts.items())),
+        "confidence_buckets": confidence_buckets,
+        "discard_reasons": dict(sorted(discard_reasons.items())),
+        "stop_reasons": dict(sorted(stop_reasons.items())),
         "semantic_issues": semantic,
         "semantic_warning_count": sum(
             1 for issue in semantic if issue.get("severity") == "warning"
@@ -160,6 +178,9 @@ def _metrics(
         "p95_latency_ms": _p95([call.get("elapsed_ms", 0) for call in call_receipts])
         if call_receipts
         else _p95([scene.get("elapsed_ms", 0) for scene in scenes]),
+        "p95_output_chars": _p95([call.get("output_chars", 0) for call in call_receipts])
+        if call_receipts
+        else 0.0,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "tokens_per_scene": round((input_tokens + output_tokens) / len(scenes), 2) if scenes else 0.0,

@@ -11,8 +11,9 @@ use spindle_core::semantic_continuity::{
     SEMANTIC_CONTRACT_VERSION, SEMANTIC_MAX_PROMPT_TOKENS, SEMANTIC_MAX_RATIONALE_CHARS,
     SemanticCacheKeyV1, SemanticDedupeKeyV1, SemanticErrorKind, SemanticHostReportV1,
     SemanticHostRequestV1, SemanticJudgeErrorV1, SemanticJudgeReportV1, SemanticRunSummaryV1,
-    semantic_candidate_set_hash, semantic_dedupe_key, semantic_findings_are_duplicates,
-    validate_semantic_host_report, validate_semantic_judge_report,
+    SemanticVerdict, semantic_candidate_set_hash, semantic_dedupe_key,
+    semantic_findings_are_duplicates, validate_semantic_host_report,
+    validate_semantic_judge_report,
 };
 use std::time::Duration;
 
@@ -232,6 +233,8 @@ impl SqliteSpindleService {
                         output_tokens: 0,
                         elapsed_ms: call_started.elapsed().as_millis() as u64,
                         repaired,
+                        stop_reason: "route_error".to_string(),
+                        output_chars: 0,
                     });
                 return Err(map_route_error(
                     error,
@@ -248,6 +251,8 @@ impl SqliteSpindleService {
                         output_tokens: 0,
                         elapsed_ms: call_started.elapsed().as_millis() as u64,
                         repaired,
+                        stop_reason: "timeout".to_string(),
+                        output_chars: 0,
                     });
                 return Err(SemanticJudgeErrorV1::new(
                     SemanticErrorKind::Timeout,
@@ -281,6 +286,14 @@ impl SqliteSpindleService {
                 output_tokens: response_output_tokens,
                 elapsed_ms: call_started.elapsed().as_millis() as u64,
                 repaired,
+                stop_reason: if response.adapter_kind == "local" {
+                    "local_stub".to_string()
+                } else if response.truncated {
+                    "truncated".to_string()
+                } else {
+                    "success".to_string()
+                },
+                output_chars: response.output.chars().count(),
             });
         if response.adapter_kind == "local" {
             return Err(SemanticJudgeErrorV1::new(
@@ -465,12 +478,24 @@ pub(super) fn parse_semantic_report(
 
 /// Apply the precision policy and build the optional issue. Shadow mode counts
 /// would-be findings but returns no issue.
+#[derive(Default)]
+pub(super) struct SemanticPolicyOutcome {
+    pub verdicts: std::collections::BTreeMap<String, usize>,
+    pub confidence_buckets: [usize; 5],
+    pub discard_reasons: std::collections::BTreeMap<String, usize>,
+}
+
 pub(super) fn semantic_issue_from_report(
     report: &SemanticJudgeReportV1,
     request: &SemanticHostRequestV1,
     emit: bool,
     existing: &[spindle_core::models::ConsistencyIssue],
-) -> (usize, usize, Vec<spindle_core::models::ConsistencyIssue>) {
+) -> (
+    usize,
+    usize,
+    Vec<spindle_core::models::ConsistencyIssue>,
+    SemanticPolicyOutcome,
+) {
     use spindle_core::semantic_continuity::{
         SemanticDecisionReason, SemanticIssueSeverity, decide_semantic_severity,
     };
@@ -484,13 +509,45 @@ pub(super) fn semantic_issue_from_report(
     let mut warnings = 0;
     let mut infos = 0;
     let mut issues = Vec::new();
+    let mut outcome = SemanticPolicyOutcome::default();
     let mut semantic_keys: Vec<SemanticDedupeKeyV1> = Vec::new();
     for judgment in &report.judgments {
         let Some(candidate) = candidates.get(judgment.candidate_id.as_str()) else {
+            *outcome
+                .discard_reasons
+                .entry("unknown_candidate".to_string())
+                .or_default() += 1;
             continue;
         };
+        let verdict = match judgment.verdict {
+            SemanticVerdict::Contradiction => "contradiction",
+            SemanticVerdict::Compatible => "compatible",
+            SemanticVerdict::Insufficient => "insufficient",
+        };
+        *outcome.verdicts.entry(verdict.to_string()).or_default() += 1;
+        let confidence = judgment.confidence;
+        let bucket = if confidence < 0.5 {
+            0
+        } else if confidence < 0.7 {
+            1
+        } else if confidence < 0.8 {
+            2
+        } else if confidence < 0.85 {
+            3
+        } else {
+            4
+        };
+        outcome.confidence_buckets[bucket] += 1;
         let decision = decide_semantic_severity(candidate, judgment);
         let Some(severity) = decision.severity else {
+            *outcome
+                .discard_reasons
+                .entry(match decision.reason {
+                    SemanticDecisionReason::NotContradiction => "not_contradiction".to_string(),
+                    SemanticDecisionReason::MissingCanonRef => "missing_canon_ref".to_string(),
+                    _ => "no_finding".to_string(),
+                })
+                .or_default() += 1;
             continue;
         };
         let key = semantic_dedupe_key(
@@ -507,6 +564,10 @@ pub(super) fn semantic_issue_from_report(
                 .iter()
                 .any(|issue| deterministic_issue_matches(issue, candidate, &scene_id));
         if duplicate {
+            *outcome
+                .discard_reasons
+                .entry("dedupe".to_string())
+                .or_default() += 1;
             continue;
         }
         semantic_keys.push(key);
@@ -554,7 +615,7 @@ pub(super) fn semantic_issue_from_report(
             evidence: judgment.evidence.clone(),
         });
     }
-    (warnings, infos, issues)
+    (warnings, infos, issues, outcome)
 }
 
 fn deterministic_issue_matches(
@@ -954,10 +1015,11 @@ agent = "judge"
         let text = "the bell was silent";
         let request = request(text);
         let report: SemanticJudgeReportV1 = serde_json::from_str(&report(text)).expect("report");
-        let (warnings, infos, issues) = semantic_issue_from_report(&report, &request, true, &[]);
+        let (warnings, infos, issues, _) = semantic_issue_from_report(&report, &request, true, &[]);
         assert_eq!((warnings, infos, issues.len()), (1, 0, 1));
         assert_eq!(issues[0].severity, "warning");
-        let (warnings, infos, issues) = semantic_issue_from_report(&report, &request, false, &[]);
+        let (warnings, infos, issues, _) =
+            semantic_issue_from_report(&report, &request, false, &[]);
         assert_eq!((warnings, infos, issues.len()), (1, 0, 0));
     }
 
