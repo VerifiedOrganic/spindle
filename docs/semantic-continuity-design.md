@@ -666,11 +666,13 @@ requiring quantity evidence to be a balance/stock statement (not a price or
 transaction), selecting character death only from states strictly before the
 scene, rejecting dead-character actions framed as memory/flashback/vision, and
 generalizing deterministic dedupe to same-subject/same-scene findings for
-families beyond world rules. Secret disclosures now require either a
+families beyond world rules (secret dedupe also requires the same secret fact,
+not just the same outsider). Secret disclosures now require either a
 distinctive detail from the secret's value or a public-audience marker, so a
-private accusation that only names the topic is not a leak. The judge-policy
-revision moved to v3 so full reports cached under the older policy are misses
-rather than reuse. The evaluator runs one fresh on pass (the pass that
+private accusation that only names the topic is not a leak. The family gates
+run on compact, full, and host reports before caching or emission. The
+judge-policy revision moved to v3 so full reports cached under the older policy
+are misses rather than reuse. The evaluator runs one fresh on pass (the pass that
 dispatches the judge and emits findings) and then an actual cache-only shadow
 pass against the same projects; each mode keeps its own results, and shadow/on
 parity is measured from the two actual summaries rather than derived from on.
@@ -679,15 +681,15 @@ Public-set measurement on this head (`ollama:gemma4:31b`, shadow/on):
 
 | Set | Deterministic | Semantic on | Warning precision | Control warnings | On repair | Shadow/on parity | Anchor validity | p95 prompt/output/latency |
 | --- | --- | --- | ---: | ---: | ---: | --- | ---: | --- |
-| Baseline | 28/28 | 28/28 | n/a (0 warnings) | 0 | 1.19% (84 calls) | pass | 1.00 | 2,172 / 624 / 1,877 ms |
-| #72 | 54/56 | 54/56 | 1.00 | 0 | 3.80% (79 calls) | pass | 1.00 | 2,905 / 978 / 2,671 ms |
-| held-out-2 | 55/56, 56/56 type | 55/56, 56/56 type | n/a (0 warnings) | 0 | 2.94% (68 calls) | pass | 1.00 | 2,153 / 723 / 1,863 ms |
-| held-out-3 | 26/56, 28/56 type | 29/56, 30/56 type | 1.00 | 0 | 1.41% (71 calls) | pass | 1.00 | 3,188 / 934 / 2,541 ms |
+| Baseline | 28/28 | 28/28 | n/a (0 warnings) | 0 | 2.33% (86 calls) | pass | 1.00 | 2,189 / 626 / 1,727 ms |
+| #72 | 54/56 | 54/56 | 1.00 | 0 | 2.63% (76 calls) | pass | 1.00 | 2,861 / 969 / 2,522 ms |
+| held-out-2 | 55/56, 56/56 type | 55/56, 56/56 type | n/a (0 warnings) | 0 | 2.94% (68 calls) | pass | 1.00 | 2,037 / 654 / 1,804 ms |
+| held-out-3 | 26/56, 28/56 type | 29/56, 30/56 type | 1.00 | 0 | 4.17% (72 calls) | pass | 1.00 | 3,189 / 972 / 2,669 ms |
 
 Control warnings do not rise anywhere; warning precision is 1.0 where warnings
-exist; anchor validity is 1.0; on-mode repair is <=3.8% of calls; shadow/on
+exist; anchor validity is 1.0; on-mode repair is <=4.17% of calls; shadow/on
 would-be finding counts match on every set. The cache-only shadow pass made
-1-6 dispatches per set (only scenes that failed on), so its repair ratio is a
+1-2 dispatches per set (only scenes that failed on), so its repair ratio is a
 retry ratio, not a second full dispatch pass, and is reported separately in the
 checked-in reports. The remaining gap is **recall**: baseline is already at
 28/28, while #72 and held-out-2 still show no semantic lift (their correct

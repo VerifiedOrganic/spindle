@@ -11,7 +11,7 @@
   and secret disclosures require a distinctive value detail or a public
   audience. Deterministic dedupe now covers same-subject/same-scene findings
   beyond world rules. Shadow and on runs are measured from their own passes;
-  on-mode repairs are <=3.8% of calls, control warnings do not rise, warning
+  on-mode repairs are <=4.17% of calls, control warnings do not rise, warning
   precision is 1.0 where warnings exist, and the judge-policy revision is
   bumped so pre-change cached reports cannot bypass the new gates.
 

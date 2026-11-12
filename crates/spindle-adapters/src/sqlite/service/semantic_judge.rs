@@ -56,7 +56,14 @@ impl SqliteSpindleService {
         summary: &mut SemanticRunSummaryV1,
     ) -> Result<SemanticJudgeReportV1, SemanticJudgeErrorV1> {
         validate_semantic_host_report(report, request, scene_text)?;
-        let report_json = serde_json::to_string(report).map_err(|_| {
+        let mut gated = SemanticJudgeReportV1 {
+            schema_version: SEMANTIC_CONTRACT_VERSION.to_string(),
+            scene_id: request.candidate_set.scene_id.clone(),
+            scene_sha256: report.scene_sha256.clone(),
+            judgments: report.judgments.clone(),
+        };
+        apply_evidence_gates(&mut gated, request, scene_text);
+        let report_json = serde_json::to_string(&gated).map_err(|_| {
             SemanticJudgeErrorV1::new(
                 SemanticErrorKind::MalformedOutput,
                 "host report serialization",
@@ -73,12 +80,7 @@ impl SqliteSpindleService {
                 )
             })?;
         summary.cache_misses += 1;
-        Ok(SemanticJudgeReportV1 {
-            schema_version: SEMANTIC_CONTRACT_VERSION.to_string(),
-            scene_id: request.candidate_set.scene_id.clone(),
-            scene_sha256: report.scene_sha256.clone(),
-            judgments: report.judgments.clone(),
-        })
+        Ok(gated)
     }
 
     /// Judge one scene through configured routes. Returns a validated report or
@@ -952,6 +954,67 @@ fn has_secret_disclosure(constraint: &str, quote: &str) -> bool {
         .any(|word| lower.contains(&word))
 }
 
+/// Family evidence gates shared by compact, full, and host reports. A
+/// contradiction that fails its family gate becomes advisory and loses its
+/// evidence; the same policy must apply before any report form is cached or
+/// emitted.
+fn evidence_gate_rejects(
+    candidate: &spindle_core::semantic_continuity::SemanticCandidateV1,
+    quote: &str,
+    scene_text: &str,
+    start: usize,
+    end: usize,
+) -> bool {
+    match candidate.check_type.as_str() {
+        "temporal_coherence" => !has_temporal_anchor(quote),
+        "world_rule_semantic_drift" => {
+            !has_world_rule_subject(&candidate.constraint, quote)
+                || (!has_world_rule_cost(quote) && !has_world_rule_absence(quote))
+        }
+        "secret_leak" => !has_secret_disclosure(&candidate.constraint, quote),
+        "quantity_drift" => !has_balance_language(quote),
+        "dead_character_acting" => dead_context_is_non_present(scene_text, start, end),
+        "canonical_fact_prose_drift" => !has_world_rule_subject(&candidate.constraint, quote),
+        "knowledge_timing" => !has_acquisition_language(quote),
+        _ => false,
+    }
+}
+
+fn apply_evidence_gates(
+    report: &mut SemanticJudgeReportV1,
+    request: &SemanticHostRequestV1,
+    scene_text: &str,
+) {
+    let candidates: std::collections::BTreeMap<_, _> = request
+        .candidate_set
+        .candidates
+        .iter()
+        .map(|candidate| (candidate.candidate_id.as_str(), candidate))
+        .collect();
+    for judgment in &mut report.judgments {
+        if judgment.verdict != SemanticVerdict::Contradiction {
+            continue;
+        }
+        let Some(candidate) = candidates.get(judgment.candidate_id.as_str()) else {
+            continue;
+        };
+        let Some(evidence) = judgment.evidence.as_ref() else {
+            continue;
+        };
+        if evidence_gate_rejects(
+            candidate,
+            &evidence.exact_quote,
+            scene_text,
+            evidence.start_byte,
+            evidence.end_byte,
+        ) {
+            judgment.verdict = SemanticVerdict::Insufficient;
+            judgment.evidence = None;
+            judgment.canon_refs.clear();
+        }
+    }
+}
+
 fn expand_compact_report(
     envelope: CompactJudgeEnvelope,
     request: &SemanticHostRequestV1,
@@ -996,70 +1059,15 @@ fn expand_compact_report(
             None
         };
         if verdict == SemanticVerdict::Contradiction
-            && candidate.check_type == "temporal_coherence"
-            && compact
-                .evidence_quote
-                .as_deref()
-                .is_some_and(|quote| !has_temporal_anchor(quote))
-        {
-            verdict = SemanticVerdict::Insufficient;
-            evidence = None;
-        }
-        if verdict == SemanticVerdict::Contradiction
-            && candidate.check_type == "world_rule_semantic_drift"
-            && compact.evidence_quote.as_deref().is_some_and(|quote| {
-                !has_world_rule_subject(&candidate.constraint, quote)
-                    || (!has_world_rule_cost(quote) && !has_world_rule_absence(quote))
-            })
-        {
-            verdict = SemanticVerdict::Insufficient;
-            evidence = None;
-        }
-        if verdict == SemanticVerdict::Contradiction
-            && candidate.check_type == "secret_leak"
-            && compact
-                .evidence_quote
-                .as_deref()
-                .is_some_and(|quote| !has_secret_disclosure(&candidate.constraint, quote))
-        {
-            verdict = SemanticVerdict::Insufficient;
-            evidence = None;
-        }
-        if verdict == SemanticVerdict::Contradiction
-            && candidate.check_type == "quantity_drift"
-            && compact
-                .evidence_quote
-                .as_deref()
-                .is_some_and(|quote| !has_balance_language(quote))
-        {
-            verdict = SemanticVerdict::Insufficient;
-            evidence = None;
-        }
-        if verdict == SemanticVerdict::Contradiction
-            && candidate.check_type == "dead_character_acting"
             && evidence.as_ref().is_some_and(|span| {
-                dead_context_is_non_present(scene_text, span.start_byte, span.end_byte)
+                evidence_gate_rejects(
+                    candidate,
+                    &span.exact_quote,
+                    scene_text,
+                    span.start_byte,
+                    span.end_byte,
+                )
             })
-        {
-            verdict = SemanticVerdict::Insufficient;
-            evidence = None;
-        }
-        if verdict == SemanticVerdict::Contradiction
-            && candidate.check_type == "canonical_fact_prose_drift"
-            && compact
-                .evidence_quote
-                .as_deref()
-                .is_some_and(|quote| !has_world_rule_subject(&candidate.constraint, quote))
-        {
-            verdict = SemanticVerdict::Insufficient;
-            evidence = None;
-        }
-        if verdict == SemanticVerdict::Contradiction
-            && candidate.check_type == "knowledge_timing"
-            && compact
-                .evidence_quote
-                .as_deref()
-                .is_some_and(|quote| !has_acquisition_language(quote))
         {
             verdict = SemanticVerdict::Insufficient;
             evidence = None;
@@ -1125,8 +1133,9 @@ pub(super) fn parse_semantic_report(
     scene_text: &str,
 ) -> Result<SemanticJudgeReportV1, SemanticJudgeErrorV1> {
     let json = strip_single_fence(raw);
-    if let Ok(report) = serde_json::from_str::<SemanticJudgeReportV1>(json) {
+    if let Ok(mut report) = serde_json::from_str::<SemanticJudgeReportV1>(json) {
         validate_semantic_judge_report(&report, &request.candidate_set, scene_text)?;
+        apply_evidence_gates(&mut report, request, scene_text);
         return Ok(report);
     }
     let envelope: CompactJudgeEnvelope = serde_json::from_str(json).map_err(|error| {
@@ -1383,6 +1392,21 @@ fn deterministic_issue_matches(
         // different rule in the same scene from suppressing the finding.
         return quoted_rule_name(&candidate.constraint)
             .is_some_and(|name| issue.message.contains(name));
+    }
+    // Secret findings also carry the secret fact id in the deterministic
+    // issue. Requiring that identity keeps two different secrets involving the
+    // same outsider in one scene from collapsing into one suppression.
+    if candidate.check_type == "secret_leak" {
+        let fact_matches = candidate
+            .canon_refs
+            .iter()
+            .any(|reference| issue.entity_ids.contains(&reference.id));
+        return fact_matches
+            && (candidate.subject_ids.is_empty()
+                || candidate
+                    .subject_ids
+                    .iter()
+                    .any(|subject| issue.entity_ids.contains(subject)));
     }
     // Every other family dedupes on the same scene and check type plus the
     // candidate subject. Without the subject check, two dead characters (or
@@ -1739,6 +1763,58 @@ agent = "judge"
     }
 
     #[test]
+    fn secret_dedupe_requires_the_same_secret_fact() {
+        use spindle_core::models::ConsistencyIssue;
+        use spindle_core::semantic_continuity::SemanticCandidateV1;
+        let candidate = |fact: &str| SemanticCandidateV1 {
+            schema_version: SEMANTIC_CONTRACT_VERSION.into(),
+            candidate_id: format!("candidate:{fact}"),
+            family: SemanticCandidateFamily::Secret,
+            check_type: "secret_leak".into(),
+            canon_refs: vec![SemanticCanonRefV1 {
+                table: "knowledge_fact".into(),
+                id: fact.into(),
+                version: "v".into(),
+            }],
+            subject_ids: vec!["character:outsider".into()],
+            constraint: format!("secret fact 'secret {fact}' (secret:{fact}): a hidden thing"),
+            excerpt: "x".into(),
+            excerpt_start_byte: 0,
+            excerpt_end_byte: 1,
+            evidence_hints: Vec::new(),
+        };
+        let issue = ConsistencyIssue {
+            severity: "warning".into(),
+            check_type: "secret_leak".into(),
+            message: "scene:1: outsider speaks secret fact 'first'".into(),
+            entity_ids: vec![
+                "fact:first".into(),
+                "character:outsider".into(),
+                "scene:1".into(),
+            ],
+            suggested_action: None,
+            evidence: None,
+        };
+        assert!(deterministic_issue_matches(
+            &issue,
+            &candidate("fact:first"),
+            "scene:1"
+        ));
+        assert!(!deterministic_issue_matches(
+            &issue,
+            &candidate("fact:second"),
+            "scene:1"
+        ));
+        let mut other_subject = candidate("fact:first");
+        other_subject.subject_ids = vec!["character:other".into()];
+        assert!(!deterministic_issue_matches(
+            &issue,
+            &other_subject,
+            "scene:1"
+        ));
+    }
+
+    #[test]
     fn attribute_dedupe_requires_same_predicate_and_value() {
         use spindle_core::models::ConsistencyIssue;
         use spindle_core::semantic_continuity::SemanticCandidateV1;
@@ -1992,6 +2068,111 @@ agent = "judge"
             text,
         )
         .expect("quantity report");
+        assert_eq!(report.judgments[0].verdict, SemanticVerdict::Insufficient);
+        assert!(report.judgments[0].evidence.is_none());
+    }
+
+    #[test]
+    fn full_report_applies_family_evidence_gates() {
+        let text = "He paid three silver for the horse at the gate.";
+        let quote = "paid three silver";
+        let request = request_for(
+            text,
+            SemanticCandidateFamily::Quantity,
+            "quantity_drift",
+            "quantity_state",
+            "the purse holds seven silver",
+            quote,
+        );
+        let start = text.find(quote).unwrap();
+        let end = start + quote.len();
+        let full = serde_json::json!({
+            "schema_version": SEMANTIC_CONTRACT_VERSION,
+            "scene_id": "scene:test",
+            "scene_sha256": scene_sha256(text),
+            "judgments": [{
+                "candidate_id": "candidate:1",
+                "verdict": "contradiction",
+                "canon_refs": [{"table": "quantity_state", "id": "rule:1", "version": "v1"}],
+                "evidence": {
+                    "scene_id": "scene:test",
+                    "scene_sha256": scene_sha256(text),
+                    "start_byte": start,
+                    "end_byte": end,
+                    "exact_quote": quote
+                },
+                "confidence": 0.95,
+                "rationale": "transaction amount"
+            }]
+        })
+        .to_string();
+        let report = parse_semantic_report(&full, &request, text).expect("full report");
+        assert_eq!(report.judgments[0].verdict, SemanticVerdict::Insufficient);
+        assert!(report.judgments[0].evidence.is_none());
+    }
+
+    #[tokio::test]
+    async fn host_report_applies_family_evidence_gates() {
+        use spindle_core::semantic_continuity::{
+            SemanticHostReportV1, SemanticJudgmentV1, semantic_candidate_set_hash,
+        };
+        let (_tmp, svc) = service_with_config(
+            r#"
+[[agents]]
+id = "review-local"
+name = "Review Local"
+provider = "local"
+endpoint = "local"
+model = "review-local"
+ratings = ["general"]
+
+[[routing]]
+route = "review"
+agent = "review-local"
+"#,
+        )
+        .await;
+        let text = "He paid three silver for the horse at the gate.";
+        let quote = "paid three silver";
+        let scene_id = seed_scene(&svc, text).await;
+        let mut request = request_for(
+            text,
+            SemanticCandidateFamily::Quantity,
+            "quantity_drift",
+            "quantity_state",
+            "the purse holds seven silver",
+            quote,
+        );
+        request.candidate_set.scene_id = scene_id.clone();
+        request.request_id =
+            spindle_core::semantic_continuity::semantic_host_request_id(&request.candidate_set);
+        let start = text.find(quote).unwrap();
+        let end = start + quote.len();
+        let host = SemanticHostReportV1 {
+            request_id: request.request_id.clone(),
+            candidate_set_hash: semantic_candidate_set_hash(&request.candidate_set),
+            scene_sha256: request.candidate_set.scene_sha256.clone(),
+            canon_version: request.candidate_set.canon_version.clone(),
+            judgments: vec![SemanticJudgmentV1 {
+                candidate_id: "candidate:1".into(),
+                verdict: SemanticVerdict::Contradiction,
+                canon_refs: request.candidate_set.candidates[0].canon_refs.clone(),
+                evidence: Some(SemanticEvidenceSpanV1 {
+                    scene_id,
+                    scene_sha256: request.candidate_set.scene_sha256.clone(),
+                    start_byte: start,
+                    end_byte: end,
+                    exact_quote: quote.into(),
+                }),
+                confidence: 0.95,
+                rationale: "transaction amount".into(),
+            }],
+        };
+        let mut summary = SemanticRunSummaryV1::default();
+        let report = svc
+            .accept_semantic_host_report(&request, &host, text, &mut summary)
+            .await
+            .expect("host report");
         assert_eq!(report.judgments[0].verdict, SemanticVerdict::Insufficient);
         assert!(report.judgments[0].evidence.is_none());
     }
@@ -2288,10 +2469,10 @@ agent = "review-local"
             }]
         })
         .to_string();
-        // The pre-change payload still parses as a contradiction: only the
-        // policy revision keeps a v2 cache hit from skipping the new gate.
+        // The shared gate now downgrades the pre-change full report, and the
+        // v3 cache key independently prevents reuse of the v2 entry.
         let parsed = parse_semantic_report(&stale_report, &request, text).expect("stale report");
-        assert_eq!(parsed.judgments[0].verdict, SemanticVerdict::Contradiction);
+        assert_eq!(parsed.judgments[0].verdict, SemanticVerdict::Insufficient);
         svc.repository
             .put_semantic_continuity_cache(&stale, &stale_report)
             .await

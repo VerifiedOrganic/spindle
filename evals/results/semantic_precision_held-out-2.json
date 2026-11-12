@@ -9,28 +9,24 @@
       "on_infos": 0,
       "shadow_warnings": 0,
       "shadow_infos": 0,
-      "on_judgments": 88,
-      "shadow_judgments": 88,
+      "on_judgments": 94,
+      "shadow_judgments": 94,
       "on_verdicts": {
-        "compatible": 63,
-        "insufficient": 25
+        "compatible": 75,
+        "insufficient": 19
       },
       "shadow_verdicts": {
-        "compatible": 63,
-        "insufficient": 25
+        "compatible": 75,
+        "insufficient": 19
       },
       "on_discard_reasons": {
-        "not_contradiction": 88
+        "not_contradiction": 94
       },
       "shadow_discard_reasons": {
-        "not_contradiction": 88
+        "not_contradiction": 94
       },
-      "on_error_kinds": [
-        "unknown_candidate"
-      ],
-      "shadow_error_kinds": [
-        "unknown_candidate"
-      ],
+      "on_error_kinds": [],
+      "shadow_error_kinds": [],
       "matches": true,
       "summary_matches": true
     },
@@ -41,32 +37,32 @@
       "on_infos": 0,
       "shadow_warnings": 0,
       "shadow_infos": 0,
-      "on_judgments": 100,
-      "shadow_judgments": 100,
+      "on_judgments": 103,
+      "shadow_judgments": 103,
       "on_verdicts": {
-        "compatible": 59,
+        "compatible": 73,
         "contradiction": 3,
-        "insufficient": 38
+        "insufficient": 27
       },
       "shadow_verdicts": {
-        "compatible": 59,
+        "compatible": 73,
         "contradiction": 3,
-        "insufficient": 38
+        "insufficient": 27
       },
       "on_discard_reasons": {
         "dedupe": 3,
-        "not_contradiction": 97,
+        "not_contradiction": 100,
         "verification_rejected": 1
       },
       "shadow_discard_reasons": {
         "dedupe": 3,
-        "not_contradiction": 97
+        "not_contradiction": 100
       },
       "on_error_kinds": [
-        "truncated"
+        "unknown_candidate"
       ],
       "shadow_error_kinds": [
-        "truncated"
+        "unknown_candidate"
       ],
       "matches": true,
       "summary_matches": false
@@ -81,12 +77,12 @@
       "on_judgments": 38,
       "shadow_judgments": 38,
       "on_verdicts": {
-        "compatible": 34,
-        "insufficient": 4
+        "compatible": 31,
+        "insufficient": 7
       },
       "shadow_verdicts": {
-        "compatible": 34,
-        "insufficient": 4
+        "compatible": 31,
+        "insufficient": 7
       },
       "on_discard_reasons": {
         "not_contradiction": 38
@@ -109,14 +105,14 @@
       "on_judgments": 60,
       "shadow_judgments": 60,
       "on_verdicts": {
-        "compatible": 45,
+        "compatible": 52,
         "contradiction": 3,
-        "insufficient": 12
+        "insufficient": 5
       },
       "shadow_verdicts": {
-        "compatible": 45,
+        "compatible": 52,
         "contradiction": 3,
-        "insufficient": 12
+        "insufficient": 5
       },
       "on_discard_reasons": {
         "dedupe": 3,
@@ -158,8 +154,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8RY4CWKZJVA5P5Z1QG6T",
-            "scene:01M76H8RYCG0JZN1MKD54AG2R0"
+            "world_rule:01M76K5N1THXKE0TCY1V4F92PH",
+            "scene:01M76K5N2141C89XVKY1PGG9DN"
           ],
           "message": "scene references world rule 'Tide gate cost' (no violation context detected) (bytes 81..90)",
           "severity": "info",
@@ -168,8 +164,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8TVC3T9BR6C1ZTXGNP0E",
-            "scene:01M76H8TWBWBC9935FQ5T3SBE4"
+            "scene:01M76K5PSYA929DHS4MNQP8R3A",
+            "scene:01M76K5PTTHYHR75YTHTNVAP2Y"
           ],
           "message": "scene is set earlier in story time (day 3) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -178,8 +174,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8TZA70NCRHYTWQ1HD03W",
-            "scene:01M76H8V0AX9M0DHF0TF3JZ5FV"
+            "scene:01M76K5PXCZJQH4M1Q6MNZ9HF3",
+            "scene:01M76K5PY7CB53TZ74W3E4RRV9"
           ],
           "message": "scene is set earlier in story time (day 6) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -188,8 +184,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8V28T2P9V9X7Y969NW0P",
-            "scene:01M76H8V37EFXF81TR1ZR8R90X"
+            "scene:01M76K5Q0068BEQK9HB9C4THX4",
+            "scene:01M76K5Q0WYRGAB9XB1FG1JVAT"
           ],
           "message": "scene is set earlier in story time (day 5) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -198,8 +194,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8V55Y6HZ36C9EA639HFB",
-            "scene:01M76H8V65PETY4JB3PXGRP9XX"
+            "scene:01M76K5Q2MQ0XGB4HJ9W8291BJ",
+            "scene:01M76K5Q3HTF5P0CDD1Z3133JW"
           ],
           "message": "scene is set earlier in story time (day 9) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -208,8 +204,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8TVC3T9BR6C1ZTXGNP0E",
-            "character:01M76H8TQTGM3JASJCSV730RD3"
+            "scene:01M76K5PSYA929DHS4MNQP8R3A",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A"
           ],
           "message": "scene names purchases totalling 12 base units for Mara Voss, above their tracked coin of 3 base units",
           "severity": "warning",
@@ -218,8 +214,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8TZA70NCRHYTWQ1HD03W",
-            "character:01M76H8TQTGM3JASJCSV730RD3"
+            "scene:01M76K5PXCZJQH4M1Q6MNZ9HF3",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A"
           ],
           "message": "scene names purchases totalling 40 base units for Mara Voss, above their tracked coin of 3 base units",
           "severity": "warning",
@@ -228,8 +224,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8V37EFXF81TR1ZR8R90X",
-            "character:01M76H8TQTGM3JASJCSV730RD3"
+            "scene:01M76K5Q0WYRGAB9XB1FG1JVAT",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A"
           ],
           "message": "scene names purchases totalling 100 base units for Mara Voss, above their tracked coin of 3 base units",
           "severity": "warning",
@@ -238,8 +234,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8V65PETY4JB3PXGRP9XX",
-            "character:01M76H8TQTGM3JASJCSV730RD3"
+            "scene:01M76K5Q3HTF5P0CDD1Z3133JW",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A"
           ],
           "message": "scene names purchases totalling 20 base units for Mara Voss, above their tracked coin of 3 base units",
           "severity": "warning",
@@ -248,9 +244,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M76H8V7382SXKFGJ52F6R3RZ",
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TTER043YGCWEEVZ0P7E"
+            "knowledge_fact:01M76K5Q4F53YB3JETQG4H9PPX",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PS2T0PWEEEZDZZT84W1"
           ],
           "message": "book 1 chapter 3 scene 1: 'Mara Voss' references 'Lord Vale forged the harbor tide charts.' before learning it in book 1 chapter 14 (paraphrased: 'Soren said the charts were forged, and Mara did not correct him.')",
           "severity": "warning",
@@ -259,9 +255,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M76H8V7382SXKFGJ52F6R3RZ",
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TWBWBC9935FQ5T3SBE4"
+            "knowledge_fact:01M76K5Q4F53YB3JETQG4H9PPX",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PTTHYHR75YTHTNVAP2Y"
           ],
           "message": "book 1 chapter 5 scene 1: 'Mara Voss' references 'Lord Vale forged the harbor tide charts.' before learning it in book 1 chapter 14 (paraphrased: 'Mara told the harbormaster the charts were false, though no one had shown her the forgery yet.')",
           "severity": "warning",
@@ -270,8 +266,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TTER043YGCWEEVZ0P7E"
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PS2T0PWEEEZDZZT84W1"
           ],
           "message": "book 1 chapter 3 scene 1: 'Mara Voss' references 'Lord Vale forged the harbor tide charts.' before learning it in book 1 chapter 14 (paraphrased: 'Soren said the charts were forged, and Mara did not correct him.')",
           "severity": "warning",
@@ -280,8 +276,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TWBWBC9935FQ5T3SBE4"
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PTTHYHR75YTHTNVAP2Y"
           ],
           "message": "book 1 chapter 5 scene 1: 'Mara Voss' references 'Lord Vale forged the harbor tide charts.' before learning it in book 1 chapter 14 (paraphrased: 'Mara told the harbormaster the charts were false, though no one had shown her the forgery yet.')",
           "severity": "warning",
@@ -290,8 +286,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8TXBSNKST3EG5J1V8AFJ"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5PVPKJX0TF9VWZGGQDZ7"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -300,8 +296,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8TXBSNKST3EG5J1V8AFJ"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5PVPKJX0TF9VWZGGQDZ7"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -310,8 +306,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8TZA70NCRHYTWQ1HD03W"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5PXCZJQH4M1Q6MNZ9HF3"
           ],
           "message": "book 1 chapter 8 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -320,8 +316,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8TZA70NCRHYTWQ1HD03W"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5PXCZJQH4M1Q6MNZ9HF3"
           ],
           "message": "book 1 chapter 8 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -330,8 +326,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8V28T2P9V9X7Y969NW0P"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5Q0068BEQK9HB9C4THX4"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -340,8 +336,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8V28T2P9V9X7Y969NW0P"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5Q0068BEQK9HB9C4THX4"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -350,8 +346,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8V465BHMCWS59J7C5AWG"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5Q1SXFNRSBHGRZRQRWFJ"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -360,8 +356,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8V465BHMCWS59J7C5AWG"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5Q1SXFNRSBHGRZRQRWFJ"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -370,8 +366,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8TR67Y35EVS0E13GN7ZM",
-            "scene:01M76H8TRE8A1B5514BEVJETHG"
+            "world_rule:01M76K5PQ2CKNP57GVTMNBQB3K",
+            "scene:01M76K5PQ85TH2FCKY8V6E9ZTC"
           ],
           "message": "scene references world rule 'Tide gate cost' (no violation context detected) (bytes 81..90)",
           "severity": "info",
@@ -380,9 +376,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8TR92PRARJ31Y3ECVVC7",
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TSEFGYF9K542RP1E7QD"
+            "canonical_fact:01M76K5PQ4RMHSXG49MCCV6CDC",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PR6D3S0S698P4YVVKCW"
           ],
           "message": "book 1 chapter 2 scene 1: 'handedness' conflicts with canonical value 'left' (prose says 'right': Mara wrote with her right hand, though the ink blotted at every turn.) (bytes 216..286)",
           "severity": "warning",
@@ -391,8 +387,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8TR67Y35EVS0E13GN7ZM",
-            "scene:01M76H8TTER043YGCWEEVZ0P7E"
+            "world_rule:01M76K5PQ2CKNP57GVTMNBQB3K",
+            "scene:01M76K5PS2T0PWEEEZDZZT84W1"
           ],
           "message": "scene likely violates world rule 'Tide gate cost'; surrounding prose suggests violation (bytes 244..253)",
           "severity": "warning",
@@ -401,9 +397,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8TRAJHJ3VJY6JM5ZRF5W",
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TVC3T9BR6C1ZTXGNP0E"
+            "canonical_fact:01M76K5PQ5HAG16BEHQHC2FZF6",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PSYA929DHS4MNQP8R3A"
           ],
           "message": "book 1 chapter 4 scene 1: 'height' conflicts with canonical value 'six feet two' (prose says '69 in': Mara stood five feet nine in her boots and had to duck under the sailmaker's awning.) (bytes 157..242)",
           "severity": "warning",
@@ -412,8 +408,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8TR67Y35EVS0E13GN7ZM",
-            "scene:01M76H8TXBSNKST3EG5J1V8AFJ"
+            "world_rule:01M76K5PQ2CKNP57GVTMNBQB3K",
+            "scene:01M76K5PVPKJX0TF9VWZGGQDZ7"
           ],
           "message": "scene likely violates world rule 'Tide gate cost'; surrounding prose suggests violation (bytes 258..266)",
           "severity": "warning",
@@ -422,9 +418,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8TRB5AAY64PYY55B58FJ",
-            "character:01M76H8TQW7K3MNWKWXS30J45B",
-            "scene:01M76H8TYBKT8GDENACDEYCJXD"
+            "canonical_fact:01M76K5PQ6H154KTSEZQPVZ2M2",
+            "character:01M76K5PPTGJ477WES15J19103",
+            "scene:01M76K5PWHZBR7BN69V23H4JNC"
           ],
           "message": "book 1 chapter 7 scene 1: 'handedness' conflicts with canonical value 'right' (prose says 'left': Ilya raised his left hand to stop her, though he had lost the fingers on that side years ago.) (bytes 166..260)",
           "severity": "warning",
@@ -433,8 +429,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8TR67Y35EVS0E13GN7ZM",
-            "scene:01M76H8V198H8PNAXJ7G24F12A"
+            "world_rule:01M76K5PQ2CKNP57GVTMNBQB3K",
+            "scene:01M76K5PZ3TVP311SXMCC1XKG0"
           ],
           "message": "scene likely violates world rule 'Tide gate cost'; surrounding prose suggests violation (bytes 234..249)",
           "severity": "warning",
@@ -443,9 +439,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8TRB4TSWXJMSXAPC6285",
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8V198H8PNAXJ7G24F12A"
+            "canonical_fact:01M76K5PQ68BB409S9VHFWG8P9",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PZ3TVP311SXMCC1XKG0"
           ],
           "message": "book 1 chapter 10 scene 1: 'scar' conflicts with canonical value 'left brow' (prose says 'unscarred': The scar over Mara's brow had never existed, and the mirror showed smooth skin.) (bytes 285..365)",
           "severity": "warning",
@@ -454,8 +450,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8TR67Y35EVS0E13GN7ZM",
-            "scene:01M76H8V55Y6HZ36C9EA639HFB"
+            "world_rule:01M76K5PQ2CKNP57GVTMNBQB3K",
+            "scene:01M76K5Q2MQ0XGB4HJ9W8291BJ"
           ],
           "message": "scene likely violates world rule 'Tide gate cost'; surrounding prose suggests violation (bytes 316..332)",
           "severity": "warning",
@@ -464,48 +460,48 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8TR8W210J6AKX64PE946",
-            "scene:01M76H8TSEFGYF9K542RP1E7QD"
+            "canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E",
+            "scene:01M76K5PR6D3S0S698P4YVVKCW"
           ],
-          "message": "book 1 chapter 2 scene 1: paraphrased secret fact 'canonical_fact:01M76H8TR8W210J6AKX64PE946' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (Everyone on the quay already knew that Lord Vale had forged the tide charts.)",
+          "message": "book 1 chapter 2 scene 1: paraphrased secret fact 'canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (Everyone on the quay already knew that Lord Vale had forged the tide charts.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8TR8W210J6AKX64PE946",
-            "scene:01M76H8TYBKT8GDENACDEYCJXD"
+            "canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E",
+            "scene:01M76K5PWHZBR7BN69V23H4JNC"
           ],
-          "message": "book 1 chapter 7 scene 1: paraphrased secret fact 'canonical_fact:01M76H8TR8W210J6AKX64PE946' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (A dockworker shouted that Vale's charts were false.)",
+          "message": "book 1 chapter 7 scene 1: paraphrased secret fact 'canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (A dockworker shouted that Vale's charts were false.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8TR8W210J6AKX64PE946",
-            "scene:01M76H8V28T2P9V9X7Y969NW0P"
+            "canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E",
+            "scene:01M76K5Q0068BEQK9HB9C4THX4"
           ],
-          "message": "book 1 chapter 11 scene 1: paraphrased secret fact 'canonical_fact:01M76H8TR8W210J6AKX64PE946' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The broadsheet printed the forged charts in full, with Vale's seal.)",
+          "message": "book 1 chapter 11 scene 1: paraphrased secret fact 'canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The broadsheet printed the forged charts in full, with Vale's seal.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8TR8W210J6AKX64PE946",
-            "scene:01M76H8V55Y6HZ36C9EA639HFB"
+            "canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E",
+            "scene:01M76K5Q2MQ0XGB4HJ9W8291BJ"
           ],
-          "message": "book 1 chapter 14 scene 1: paraphrased secret fact 'canonical_fact:01M76H8TR8W210J6AKX64PE946' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The clerk announced that Vale forged the charts before the board had heard the evidence.)",
+          "message": "book 1 chapter 14 scene 1: paraphrased secret fact 'canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The clerk announced that Vale forged the charts before the board had heard the evidence.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8WG1D6JXFQQV0PF4DD07",
-            "scene:01M76H8WHAJGGFSSNF89SQG2RD"
+            "world_rule:01M76K5RE9S8PY45NQPFJ5D0VS",
+            "scene:01M76K5RFDD50EGFTN0FF3EE1Y"
           ],
           "message": "scene references world rule 'Glass signal cost' (no violation context detected) (bytes 10..22)",
           "severity": "info",
@@ -514,8 +510,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8YA8P4Y8R8VX3SHM1FJY",
-            "scene:01M76H8YB8YHGBGB51DZB27WG1"
+            "scene:01M76K5TP9H3NCQQKDRBNSWHRK",
+            "scene:01M76K5TRZKQ5JG1RKRBP5Z7J7"
           ],
           "message": "scene is set earlier in story time (day 3) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -524,8 +520,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8YEA93AXCEFD5YWMQTKA",
-            "scene:01M76H8YFA9WSADQYA5MECCEFT"
+            "scene:01M76K5V1C1DS3JNJC12DNXHDB",
+            "scene:01M76K5V3BAH9F7C2ZJFQ8J23W"
           ],
           "message": "scene is set earlier in story time (day 6) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -534,8 +530,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8YH9J5HHH7P4H6CZM6XJ",
-            "scene:01M76H8YJ90Z9SAK1WZF541JKJ"
+            "scene:01M76K5V8F816SJGE6MC7N2C2D",
+            "scene:01M76K5VAS2RTDCRKXSFZTVNHX"
           ],
           "message": "scene is set earlier in story time (day 5) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -544,8 +540,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8YM984G4XAZ4H6EPDNBD",
-            "scene:01M76H8YN9E9PWXHVDZS3PH87P"
+            "scene:01M76K5VFVEE6EJK0M800BK1WB",
+            "scene:01M76K5VJM5FP508SD0W2JWP8E"
           ],
           "message": "scene is set earlier in story time (day 9) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -554,8 +550,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8YA8P4Y8R8VX3SHM1FJY",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD"
+            "scene:01M76K5TP9H3NCQQKDRBNSWHRK",
+            "character:01M76K5T4HA38355KBXJZ78NXM"
           ],
           "message": "scene names purchases totalling 5 base units for Tamsin Okoro, above their tracked copper of 2 base units",
           "severity": "warning",
@@ -564,8 +560,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8YEA93AXCEFD5YWMQTKA",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD"
+            "scene:01M76K5V1C1DS3JNJC12DNXHDB",
+            "character:01M76K5T4HA38355KBXJZ78NXM"
           ],
           "message": "scene names purchases totalling 20 base units for Tamsin Okoro, above their tracked copper of 2 base units",
           "severity": "warning",
@@ -574,8 +570,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8YJ90Z9SAK1WZF541JKJ",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD"
+            "scene:01M76K5VAS2RTDCRKXSFZTVNHX",
+            "character:01M76K5T4HA38355KBXJZ78NXM"
           ],
           "message": "scene names purchases totalling 50 base units for Tamsin Okoro, above their tracked copper of 2 base units",
           "severity": "warning",
@@ -584,8 +580,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8YN9E9PWXHVDZS3PH87P",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD"
+            "scene:01M76K5VJM5FP508SD0W2JWP8E",
+            "character:01M76K5T4HA38355KBXJZ78NXM"
           ],
           "message": "scene names purchases totalling 10 base units for Tamsin Okoro, above their tracked copper of 2 base units",
           "severity": "warning",
@@ -594,9 +590,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M76H8YP8FYBP17NZK0ENG69G",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8Y97T27KTEZ8WNMBSRJF"
+            "knowledge_fact:01M76K5VKWCNY3XHN0V7F5DSCH",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5THP9KRD4TR1A9QDPHMP"
           ],
           "message": "book 1 chapter 3 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell the survey clerk that Cassian cut the roots, though I have not yet seen the shed.')",
           "severity": "warning",
@@ -605,9 +601,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M76H8YP8FYBP17NZK0ENG69G",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YB8YHGBGB51DZB27WG1"
+            "knowledge_fact:01M76K5VKWCNY3XHN0V7F5DSCH",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5TRZKQ5JG1RKRBP5Z7J7"
           ],
           "message": "book 1 chapter 5 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell Rook the sabotage began in the shed, though Cassian has not shown me the cut roots.')",
           "severity": "warning",
@@ -616,9 +612,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M76H8YP8FYBP17NZK0ENG69G",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YK91VYEHTASNDFB9H17"
+            "knowledge_fact:01M76K5VKWCNY3XHN0V7F5DSCH",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5VDF5CHXARP2AWQTTGBR"
           ],
           "message": "book 1 chapter 13 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell Rook that Cassian cut the roots before we open the floorboard.')",
           "severity": "warning",
@@ -627,8 +623,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8Y97T27KTEZ8WNMBSRJF"
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5THP9KRD4TR1A9QDPHMP"
           ],
           "message": "book 1 chapter 3 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell the survey clerk that Cassian cut the roots, though I have not yet seen the shed.')",
           "severity": "warning",
@@ -637,8 +633,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YB8YHGBGB51DZB27WG1"
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5TRZKQ5JG1RKRBP5Z7J7"
           ],
           "message": "book 1 chapter 5 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell Rook the sabotage began in the shed, though Cassian has not shown me the cut roots.')",
           "severity": "warning",
@@ -647,8 +643,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YCAFAW7952TXV4GXYZE"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5TW30GHWFKP0ACPKJVVM"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -657,8 +653,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YCAFAW7952TXV4GXYZE"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5TW30GHWFKP0ACPKJVVM"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -667,8 +663,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YEA93AXCEFD5YWMQTKA"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5V1C1DS3JNJC12DNXHDB"
           ],
           "message": "book 1 chapter 8 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -677,8 +673,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YEA93AXCEFD5YWMQTKA"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5V1C1DS3JNJC12DNXHDB"
           ],
           "message": "book 1 chapter 8 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -687,8 +683,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YH9J5HHH7P4H6CZM6XJ"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5V8F816SJGE6MC7N2C2D"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -697,8 +693,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YH9J5HHH7P4H6CZM6XJ"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5V8F816SJGE6MC7N2C2D"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -707,8 +703,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YK91VYEHTASNDFB9H17"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5VDF5CHXARP2AWQTTGBR"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -717,8 +713,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YK91VYEHTASNDFB9H17"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5VDF5CHXARP2AWQTTGBR"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -727,8 +723,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YK91VYEHTASNDFB9H17"
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5VDF5CHXARP2AWQTTGBR"
           ],
           "message": "book 1 chapter 13 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell Rook that Cassian cut the roots before we open the floorboard.')",
           "severity": "warning",
@@ -737,8 +733,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8Y6Z9P6AH8R1WR2PN3VA",
-            "scene:01M76H8Y8783QN3F13EF7M9BKW"
+            "world_rule:01M76K5T87JC2SBGZX360CCQ05",
+            "scene:01M76K5TG7Z4P9VCN9JSH8MSTE"
           ],
           "message": "scene references world rule 'Glass signal cost' (no violation context detected) (bytes 10..22)",
           "severity": "info",
@@ -747,9 +743,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8Y72FMJXK3PCTQ261RAT",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8Y8783QN3F13EF7M9BKW"
+            "canonical_fact:01M76K5TAGF73DXX8T3KY4JQNY",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5TG7Z4P9VCN9JSH8MSTE"
           ],
           "message": "book 1 chapter 2 scene 1: 'handedness' conflicts with canonical value 'right' (prose says 'left': I am left-handed, so I hold the shard in my left hand and tap the trunk with my right.) (bytes 192..279)",
           "severity": "warning",
@@ -758,8 +754,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8Y6Z9P6AH8R1WR2PN3VA",
-            "scene:01M76H8Y97T27KTEZ8WNMBSRJF"
+            "world_rule:01M76K5T87JC2SBGZX360CCQ05",
+            "scene:01M76K5THP9KRD4TR1A9QDPHMP"
           ],
           "message": "scene likely violates world rule 'Glass signal cost'; surrounding prose suggests violation (bytes 319..331)",
           "severity": "warning",
@@ -768,9 +764,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8Y736NMRXPK6HH71XYEB",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YA8P4Y8R8VX3SHM1FJY"
+            "canonical_fact:01M76K5TAJXFHJVSSZ5V0NZFQF",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5TP9H3NCQQKDRBNSWHRK"
           ],
           "message": "book 1 chapter 4 scene 1: 'height' conflicts with canonical value 'five feet four' (prose says '72 in': I stand six feet in my boots and still cannot reach the highest branch.) (bytes 194..266)",
           "severity": "warning",
@@ -779,8 +775,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8Y6Z9P6AH8R1WR2PN3VA",
-            "scene:01M76H8YCAFAW7952TXV4GXYZE"
+            "world_rule:01M76K5T87JC2SBGZX360CCQ05",
+            "scene:01M76K5TW30GHWFKP0ACPKJVVM"
           ],
           "message": "scene likely violates world rule 'Glass signal cost'; surrounding prose suggests violation (bytes 280..292)",
           "severity": "warning",
@@ -789,9 +785,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8Y75XN9BWZZRGB557NSP",
-            "character:01M76H8Y6QMRRM67XC9XPHTMVH",
-            "scene:01M76H8YDAK4DBSGB2B8T25WK3"
+            "canonical_fact:01M76K5TAZ82ZW1E6G5JZMA1K0",
+            "character:01M76K5T4SCK0S0BWZK766HC91",
+            "scene:01M76K5TZAZ3C64MQD2JQRCXG9"
           ],
           "message": "book 1 chapter 7 scene 1: 'sight' conflicts with canonical value 'blind' (prose says 'sighted': Rook saw the crack in the glass before I did.) (bytes 191..237)",
           "severity": "warning",
@@ -800,8 +796,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8Y6Z9P6AH8R1WR2PN3VA",
-            "scene:01M76H8YG9KTHHNVVGBAXGCG2C"
+            "world_rule:01M76K5T87JC2SBGZX360CCQ05",
+            "scene:01M76K5V61FVYRRAAVQ93D9TE8"
           ],
           "message": "scene likely violates world rule 'Glass signal cost'; surrounding prose suggests violation (bytes 235..250)",
           "severity": "warning",
@@ -810,9 +806,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8Y74YDDBRTGVJZZTKHW8",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YG9KTHHNVVGBAXGCG2C"
+            "canonical_fact:01M76K5TAX9PFBD5ZR90Z9MM9C",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5V61FVYRRAAVQ93D9TE8"
           ],
           "message": "book 1 chapter 10 scene 1: 'scar' conflicts with canonical value 'burn on the right forearm' (prose says 'unscarred': The burn scar on my right forearm is gone, and the skin is smooth.) (bytes 275..342)",
           "severity": "warning",
@@ -821,8 +817,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8Y6Z9P6AH8R1WR2PN3VA",
-            "scene:01M76H8YM984G4XAZ4H6EPDNBD"
+            "world_rule:01M76K5T87JC2SBGZX360CCQ05",
+            "scene:01M76K5VFVEE6EJK0M800BK1WB"
           ],
           "message": "scene likely violates world rule 'Glass signal cost'; surrounding prose suggests violation (bytes 293..305)",
           "severity": "warning",
@@ -831,90 +827,88 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2",
-            "scene:01M76H8Y8783QN3F13EF7M9BKW"
+            "canonical_fact:01M76K5TABEY3E2TM66TYH45B0",
+            "scene:01M76K5TG7Z4P9VCN9JSH8MSTE"
           ],
-          "message": "book 1 chapter 2 scene 1: paraphrased secret fact 'canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (Everyone at the south wall already knew that Cassian had cut the roots.)",
+          "message": "book 1 chapter 2 scene 1: paraphrased secret fact 'canonical_fact:01M76K5TABEY3E2TM66TYH45B0' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (Everyone at the south wall already knew that Cassian had cut the roots.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2",
-            "scene:01M76H8YDAK4DBSGB2B8T25WK3"
+            "canonical_fact:01M76K5TABEY3E2TM66TYH45B0",
+            "scene:01M76K5TZAZ3C64MQD2JQRCXG9"
           ],
-          "message": "book 1 chapter 7 scene 1: paraphrased secret fact 'canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (A picker says Cassian cut the roots and the whole row goes quiet.)",
+          "message": "book 1 chapter 7 scene 1: paraphrased secret fact 'canonical_fact:01M76K5TABEY3E2TM66TYH45B0' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (A picker says Cassian cut the roots and the whole row goes quiet.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2",
-            "scene:01M76H8YH9J5HHH7P4H6CZM6XJ"
+            "canonical_fact:01M76K5TABEY3E2TM66TYH45B0",
+            "scene:01M76K5V8F816SJGE6MC7N2C2D"
           ],
-          "message": "book 1 chapter 11 scene 1: paraphrased secret fact 'canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The pickers' notice board says Cassian cut the roots and sold the copper.)",
+          "message": "book 1 chapter 11 scene 1: paraphrased secret fact 'canonical_fact:01M76K5TABEY3E2TM66TYH45B0' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The pickers' notice board says Cassian cut the roots and sold the copper.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2",
-            "scene:01M76H8YM984G4XAZ4H6EPDNBD"
+            "canonical_fact:01M76K5TABEY3E2TM66TYH45B0",
+            "scene:01M76K5VFVEE6EJK0M800BK1WB"
           ],
-          "message": "book 1 chapter 14 scene 1: paraphrased secret fact 'canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The carrier says Cassian cut the roots before I show her the logbook.)",
+          "message": "book 1 chapter 14 scene 1: paraphrased secret fact 'canonical_fact:01M76K5TABEY3E2TM66TYH45B0' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The carrier says Cassian cut the roots before I show her the logbook.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         }
       ],
       "errors_by_kind": {
-        "truncated": 1,
         "unknown_candidate": 1
       },
       "verdicts": {
-        "compatible": 201,
+        "compatible": 231,
         "contradiction": 6,
-        "insufficient": 79
+        "insufficient": 58
       },
       "confidence_buckets": [
         0,
         0,
         0,
-        0,
-        286
+        2,
+        293
       ],
       "discard_reasons": {
         "dedupe": 6,
-        "not_contradiction": 280
+        "not_contradiction": 289
       },
       "stop_reasons": {
-        "success": 2,
-        "truncated": 2
+        "success": 2
       },
       "semantic_issues": [],
       "semantic_warning_count": 0,
       "control_warnings_by_check_type": {},
-      "model_calls": 4,
-      "judgments": 286,
+      "model_calls": 2,
+      "judgments": 295,
       "would_be_warnings": 0,
       "would_be_infos": 0,
       "semantic_control_warnings": 0,
       "candidate_scene_count": 59,
-      "calls_per_candidate_scene": 0.0678,
-      "cache_hit_rate": 0.9661,
+      "calls_per_candidate_scene": 0.0339,
+      "cache_hit_rate": 0.9831,
       "repair_rate": 0.5,
-      "repaired_scene_rate": 0.0339,
-      "per_call_receipts": 4,
-      "p95_prompt_tokens": 2174.0,
-      "p95_output_tokens": 1200.0,
-      "p95_latency_ms": 2993.0,
-      "p95_output_chars": 2648.0,
-      "input_tokens": 7377,
-      "output_tokens": 3336,
-      "tokens_per_scene": 181.58,
-      "tokens_per_chapter": 357.1,
+      "repaired_scene_rate": 0.0169,
+      "per_call_receipts": 2,
+      "p95_prompt_tokens": 1612.0,
+      "p95_output_tokens": 490.0,
+      "p95_latency_ms": 1503.0,
+      "p95_output_chars": 964.0,
+      "input_tokens": 3200,
+      "output_tokens": 979,
+      "tokens_per_scene": 70.83,
+      "tokens_per_chapter": 139.3,
       "evidence_anchor_validity": 1.0
     },
     "on": {
@@ -941,8 +935,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8RY4CWKZJVA5P5Z1QG6T",
-            "scene:01M76H8RYCG0JZN1MKD54AG2R0"
+            "world_rule:01M76K5N1THXKE0TCY1V4F92PH",
+            "scene:01M76K5N2141C89XVKY1PGG9DN"
           ],
           "message": "scene references world rule 'Tide gate cost' (no violation context detected) (bytes 81..90)",
           "severity": "info",
@@ -951,8 +945,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8TVC3T9BR6C1ZTXGNP0E",
-            "scene:01M76H8TWBWBC9935FQ5T3SBE4"
+            "scene:01M76K5PSYA929DHS4MNQP8R3A",
+            "scene:01M76K5PTTHYHR75YTHTNVAP2Y"
           ],
           "message": "scene is set earlier in story time (day 3) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -961,8 +955,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8TZA70NCRHYTWQ1HD03W",
-            "scene:01M76H8V0AX9M0DHF0TF3JZ5FV"
+            "scene:01M76K5PXCZJQH4M1Q6MNZ9HF3",
+            "scene:01M76K5PY7CB53TZ74W3E4RRV9"
           ],
           "message": "scene is set earlier in story time (day 6) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -971,8 +965,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8V28T2P9V9X7Y969NW0P",
-            "scene:01M76H8V37EFXF81TR1ZR8R90X"
+            "scene:01M76K5Q0068BEQK9HB9C4THX4",
+            "scene:01M76K5Q0WYRGAB9XB1FG1JVAT"
           ],
           "message": "scene is set earlier in story time (day 5) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -981,8 +975,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8V55Y6HZ36C9EA639HFB",
-            "scene:01M76H8V65PETY4JB3PXGRP9XX"
+            "scene:01M76K5Q2MQ0XGB4HJ9W8291BJ",
+            "scene:01M76K5Q3HTF5P0CDD1Z3133JW"
           ],
           "message": "scene is set earlier in story time (day 9) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -991,8 +985,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8TVC3T9BR6C1ZTXGNP0E",
-            "character:01M76H8TQTGM3JASJCSV730RD3"
+            "scene:01M76K5PSYA929DHS4MNQP8R3A",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A"
           ],
           "message": "scene names purchases totalling 12 base units for Mara Voss, above their tracked coin of 3 base units",
           "severity": "warning",
@@ -1001,8 +995,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8TZA70NCRHYTWQ1HD03W",
-            "character:01M76H8TQTGM3JASJCSV730RD3"
+            "scene:01M76K5PXCZJQH4M1Q6MNZ9HF3",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A"
           ],
           "message": "scene names purchases totalling 40 base units for Mara Voss, above their tracked coin of 3 base units",
           "severity": "warning",
@@ -1011,8 +1005,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8V37EFXF81TR1ZR8R90X",
-            "character:01M76H8TQTGM3JASJCSV730RD3"
+            "scene:01M76K5Q0WYRGAB9XB1FG1JVAT",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A"
           ],
           "message": "scene names purchases totalling 100 base units for Mara Voss, above their tracked coin of 3 base units",
           "severity": "warning",
@@ -1021,8 +1015,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8V65PETY4JB3PXGRP9XX",
-            "character:01M76H8TQTGM3JASJCSV730RD3"
+            "scene:01M76K5Q3HTF5P0CDD1Z3133JW",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A"
           ],
           "message": "scene names purchases totalling 20 base units for Mara Voss, above their tracked coin of 3 base units",
           "severity": "warning",
@@ -1031,9 +1025,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M76H8V7382SXKFGJ52F6R3RZ",
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TTER043YGCWEEVZ0P7E"
+            "knowledge_fact:01M76K5Q4F53YB3JETQG4H9PPX",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PS2T0PWEEEZDZZT84W1"
           ],
           "message": "book 1 chapter 3 scene 1: 'Mara Voss' references 'Lord Vale forged the harbor tide charts.' before learning it in book 1 chapter 14 (paraphrased: 'Soren said the charts were forged, and Mara did not correct him.')",
           "severity": "warning",
@@ -1042,9 +1036,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M76H8V7382SXKFGJ52F6R3RZ",
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TWBWBC9935FQ5T3SBE4"
+            "knowledge_fact:01M76K5Q4F53YB3JETQG4H9PPX",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PTTHYHR75YTHTNVAP2Y"
           ],
           "message": "book 1 chapter 5 scene 1: 'Mara Voss' references 'Lord Vale forged the harbor tide charts.' before learning it in book 1 chapter 14 (paraphrased: 'Mara told the harbormaster the charts were false, though no one had shown her the forgery yet.')",
           "severity": "warning",
@@ -1053,8 +1047,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TTER043YGCWEEVZ0P7E"
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PS2T0PWEEEZDZZT84W1"
           ],
           "message": "book 1 chapter 3 scene 1: 'Mara Voss' references 'Lord Vale forged the harbor tide charts.' before learning it in book 1 chapter 14 (paraphrased: 'Soren said the charts were forged, and Mara did not correct him.')",
           "severity": "warning",
@@ -1063,8 +1057,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TWBWBC9935FQ5T3SBE4"
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PTTHYHR75YTHTNVAP2Y"
           ],
           "message": "book 1 chapter 5 scene 1: 'Mara Voss' references 'Lord Vale forged the harbor tide charts.' before learning it in book 1 chapter 14 (paraphrased: 'Mara told the harbormaster the charts were false, though no one had shown her the forgery yet.')",
           "severity": "warning",
@@ -1073,8 +1067,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8TXBSNKST3EG5J1V8AFJ"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5PVPKJX0TF9VWZGGQDZ7"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -1083,8 +1077,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8TXBSNKST3EG5J1V8AFJ"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5PVPKJX0TF9VWZGGQDZ7"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -1093,8 +1087,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8TZA70NCRHYTWQ1HD03W"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5PXCZJQH4M1Q6MNZ9HF3"
           ],
           "message": "book 1 chapter 8 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -1103,8 +1097,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8TZA70NCRHYTWQ1HD03W"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5PXCZJQH4M1Q6MNZ9HF3"
           ],
           "message": "book 1 chapter 8 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -1113,8 +1107,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8V28T2P9V9X7Y969NW0P"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5Q0068BEQK9HB9C4THX4"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -1123,8 +1117,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8V28T2P9V9X7Y969NW0P"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5Q0068BEQK9HB9C4THX4"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -1133,8 +1127,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8V465BHMCWS59J7C5AWG"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5Q1SXFNRSBHGRZRQRWFJ"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -1143,8 +1137,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8TR2D4E68YJFX4E5ND93",
-            "scene:01M76H8V465BHMCWS59J7C5AWG"
+            "character:01M76K5PPY11JYZ18F4NCTK3J2",
+            "scene:01M76K5Q1SXFNRSBHGRZRQRWFJ"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Cress Voss' acting after status 'dead'",
           "severity": "warning",
@@ -1153,8 +1147,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8TR67Y35EVS0E13GN7ZM",
-            "scene:01M76H8TRE8A1B5514BEVJETHG"
+            "world_rule:01M76K5PQ2CKNP57GVTMNBQB3K",
+            "scene:01M76K5PQ85TH2FCKY8V6E9ZTC"
           ],
           "message": "scene references world rule 'Tide gate cost' (no violation context detected) (bytes 81..90)",
           "severity": "info",
@@ -1163,9 +1157,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8TR92PRARJ31Y3ECVVC7",
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TSEFGYF9K542RP1E7QD"
+            "canonical_fact:01M76K5PQ4RMHSXG49MCCV6CDC",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PR6D3S0S698P4YVVKCW"
           ],
           "message": "book 1 chapter 2 scene 1: 'handedness' conflicts with canonical value 'left' (prose says 'right': Mara wrote with her right hand, though the ink blotted at every turn.) (bytes 216..286)",
           "severity": "warning",
@@ -1174,8 +1168,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8TR67Y35EVS0E13GN7ZM",
-            "scene:01M76H8TTER043YGCWEEVZ0P7E"
+            "world_rule:01M76K5PQ2CKNP57GVTMNBQB3K",
+            "scene:01M76K5PS2T0PWEEEZDZZT84W1"
           ],
           "message": "scene likely violates world rule 'Tide gate cost'; surrounding prose suggests violation (bytes 244..253)",
           "severity": "warning",
@@ -1184,9 +1178,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8TRAJHJ3VJY6JM5ZRF5W",
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8TVC3T9BR6C1ZTXGNP0E"
+            "canonical_fact:01M76K5PQ5HAG16BEHQHC2FZF6",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PSYA929DHS4MNQP8R3A"
           ],
           "message": "book 1 chapter 4 scene 1: 'height' conflicts with canonical value 'six feet two' (prose says '69 in': Mara stood five feet nine in her boots and had to duck under the sailmaker's awning.) (bytes 157..242)",
           "severity": "warning",
@@ -1195,8 +1189,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8TR67Y35EVS0E13GN7ZM",
-            "scene:01M76H8TXBSNKST3EG5J1V8AFJ"
+            "world_rule:01M76K5PQ2CKNP57GVTMNBQB3K",
+            "scene:01M76K5PVPKJX0TF9VWZGGQDZ7"
           ],
           "message": "scene likely violates world rule 'Tide gate cost'; surrounding prose suggests violation (bytes 258..266)",
           "severity": "warning",
@@ -1205,9 +1199,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8TRB5AAY64PYY55B58FJ",
-            "character:01M76H8TQW7K3MNWKWXS30J45B",
-            "scene:01M76H8TYBKT8GDENACDEYCJXD"
+            "canonical_fact:01M76K5PQ6H154KTSEZQPVZ2M2",
+            "character:01M76K5PPTGJ477WES15J19103",
+            "scene:01M76K5PWHZBR7BN69V23H4JNC"
           ],
           "message": "book 1 chapter 7 scene 1: 'handedness' conflicts with canonical value 'right' (prose says 'left': Ilya raised his left hand to stop her, though he had lost the fingers on that side years ago.) (bytes 166..260)",
           "severity": "warning",
@@ -1216,8 +1210,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8TR67Y35EVS0E13GN7ZM",
-            "scene:01M76H8V198H8PNAXJ7G24F12A"
+            "world_rule:01M76K5PQ2CKNP57GVTMNBQB3K",
+            "scene:01M76K5PZ3TVP311SXMCC1XKG0"
           ],
           "message": "scene likely violates world rule 'Tide gate cost'; surrounding prose suggests violation (bytes 234..249)",
           "severity": "warning",
@@ -1226,9 +1220,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8TRB4TSWXJMSXAPC6285",
-            "character:01M76H8TQTGM3JASJCSV730RD3",
-            "scene:01M76H8V198H8PNAXJ7G24F12A"
+            "canonical_fact:01M76K5PQ68BB409S9VHFWG8P9",
+            "character:01M76K5PPSDXRTVSJE8QVBMD5A",
+            "scene:01M76K5PZ3TVP311SXMCC1XKG0"
           ],
           "message": "book 1 chapter 10 scene 1: 'scar' conflicts with canonical value 'left brow' (prose says 'unscarred': The scar over Mara's brow had never existed, and the mirror showed smooth skin.) (bytes 285..365)",
           "severity": "warning",
@@ -1237,8 +1231,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8TR67Y35EVS0E13GN7ZM",
-            "scene:01M76H8V55Y6HZ36C9EA639HFB"
+            "world_rule:01M76K5PQ2CKNP57GVTMNBQB3K",
+            "scene:01M76K5Q2MQ0XGB4HJ9W8291BJ"
           ],
           "message": "scene likely violates world rule 'Tide gate cost'; surrounding prose suggests violation (bytes 316..332)",
           "severity": "warning",
@@ -1247,48 +1241,48 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8TR8W210J6AKX64PE946",
-            "scene:01M76H8TSEFGYF9K542RP1E7QD"
+            "canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E",
+            "scene:01M76K5PR6D3S0S698P4YVVKCW"
           ],
-          "message": "book 1 chapter 2 scene 1: paraphrased secret fact 'canonical_fact:01M76H8TR8W210J6AKX64PE946' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (Everyone on the quay already knew that Lord Vale had forged the tide charts.)",
+          "message": "book 1 chapter 2 scene 1: paraphrased secret fact 'canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (Everyone on the quay already knew that Lord Vale had forged the tide charts.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8TR8W210J6AKX64PE946",
-            "scene:01M76H8TYBKT8GDENACDEYCJXD"
+            "canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E",
+            "scene:01M76K5PWHZBR7BN69V23H4JNC"
           ],
-          "message": "book 1 chapter 7 scene 1: paraphrased secret fact 'canonical_fact:01M76H8TR8W210J6AKX64PE946' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (A dockworker shouted that Vale's charts were false.)",
+          "message": "book 1 chapter 7 scene 1: paraphrased secret fact 'canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (A dockworker shouted that Vale's charts were false.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8TR8W210J6AKX64PE946",
-            "scene:01M76H8V28T2P9V9X7Y969NW0P"
+            "canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E",
+            "scene:01M76K5Q0068BEQK9HB9C4THX4"
           ],
-          "message": "book 1 chapter 11 scene 1: paraphrased secret fact 'canonical_fact:01M76H8TR8W210J6AKX64PE946' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The broadsheet printed the forged charts in full, with Vale's seal.)",
+          "message": "book 1 chapter 11 scene 1: paraphrased secret fact 'canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The broadsheet printed the forged charts in full, with Vale's seal.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8TR8W210J6AKX64PE946",
-            "scene:01M76H8V55Y6HZ36C9EA639HFB"
+            "canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E",
+            "scene:01M76K5Q2MQ0XGB4HJ9W8291BJ"
           ],
-          "message": "book 1 chapter 14 scene 1: paraphrased secret fact 'canonical_fact:01M76H8TR8W210J6AKX64PE946' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The clerk announced that Vale forged the charts before the board had heard the evidence.)",
+          "message": "book 1 chapter 14 scene 1: paraphrased secret fact 'canonical_fact:01M76K5PQ4NC4GAGX78JJPZG1E' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The clerk announced that Vale forged the charts before the board had heard the evidence.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8WG1D6JXFQQV0PF4DD07",
-            "scene:01M76H8WHAJGGFSSNF89SQG2RD"
+            "world_rule:01M76K5RE9S8PY45NQPFJ5D0VS",
+            "scene:01M76K5RFDD50EGFTN0FF3EE1Y"
           ],
           "message": "scene references world rule 'Glass signal cost' (no violation context detected) (bytes 10..22)",
           "severity": "info",
@@ -1297,8 +1291,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8YA8P4Y8R8VX3SHM1FJY",
-            "scene:01M76H8YB8YHGBGB51DZB27WG1"
+            "scene:01M76K5TP9H3NCQQKDRBNSWHRK",
+            "scene:01M76K5TRZKQ5JG1RKRBP5Z7J7"
           ],
           "message": "scene is set earlier in story time (day 3) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -1307,8 +1301,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8YEA93AXCEFD5YWMQTKA",
-            "scene:01M76H8YFA9WSADQYA5MECCEFT"
+            "scene:01M76K5V1C1DS3JNJC12DNXHDB",
+            "scene:01M76K5V3BAH9F7C2ZJFQ8J23W"
           ],
           "message": "scene is set earlier in story time (day 6) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -1317,8 +1311,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8YH9J5HHH7P4H6CZM6XJ",
-            "scene:01M76H8YJ90Z9SAK1WZF541JKJ"
+            "scene:01M76K5V8F816SJGE6MC7N2C2D",
+            "scene:01M76K5VAS2RTDCRKXSFZTVNHX"
           ],
           "message": "scene is set earlier in story time (day 5) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -1327,8 +1321,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M76H8YM984G4XAZ4H6EPDNBD",
-            "scene:01M76H8YN9E9PWXHVDZS3PH87P"
+            "scene:01M76K5VFVEE6EJK0M800BK1WB",
+            "scene:01M76K5VJM5FP508SD0W2JWP8E"
           ],
           "message": "scene is set earlier in story time (day 9) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -1337,8 +1331,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8YA8P4Y8R8VX3SHM1FJY",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD"
+            "scene:01M76K5TP9H3NCQQKDRBNSWHRK",
+            "character:01M76K5T4HA38355KBXJZ78NXM"
           ],
           "message": "scene names purchases totalling 5 base units for Tamsin Okoro, above their tracked copper of 2 base units",
           "severity": "warning",
@@ -1347,8 +1341,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8YEA93AXCEFD5YWMQTKA",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD"
+            "scene:01M76K5V1C1DS3JNJC12DNXHDB",
+            "character:01M76K5T4HA38355KBXJZ78NXM"
           ],
           "message": "scene names purchases totalling 20 base units for Tamsin Okoro, above their tracked copper of 2 base units",
           "severity": "warning",
@@ -1357,8 +1351,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8YJ90Z9SAK1WZF541JKJ",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD"
+            "scene:01M76K5VAS2RTDCRKXSFZTVNHX",
+            "character:01M76K5T4HA38355KBXJZ78NXM"
           ],
           "message": "scene names purchases totalling 50 base units for Tamsin Okoro, above their tracked copper of 2 base units",
           "severity": "warning",
@@ -1367,8 +1361,8 @@
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M76H8YN9E9PWXHVDZS3PH87P",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD"
+            "scene:01M76K5VJM5FP508SD0W2JWP8E",
+            "character:01M76K5T4HA38355KBXJZ78NXM"
           ],
           "message": "scene names purchases totalling 10 base units for Tamsin Okoro, above their tracked copper of 2 base units",
           "severity": "warning",
@@ -1377,9 +1371,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M76H8YP8FYBP17NZK0ENG69G",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8Y97T27KTEZ8WNMBSRJF"
+            "knowledge_fact:01M76K5VKWCNY3XHN0V7F5DSCH",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5THP9KRD4TR1A9QDPHMP"
           ],
           "message": "book 1 chapter 3 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell the survey clerk that Cassian cut the roots, though I have not yet seen the shed.')",
           "severity": "warning",
@@ -1388,9 +1382,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M76H8YP8FYBP17NZK0ENG69G",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YB8YHGBGB51DZB27WG1"
+            "knowledge_fact:01M76K5VKWCNY3XHN0V7F5DSCH",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5TRZKQ5JG1RKRBP5Z7J7"
           ],
           "message": "book 1 chapter 5 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell Rook the sabotage began in the shed, though Cassian has not shown me the cut roots.')",
           "severity": "warning",
@@ -1399,9 +1393,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M76H8YP8FYBP17NZK0ENG69G",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YK91VYEHTASNDFB9H17"
+            "knowledge_fact:01M76K5VKWCNY3XHN0V7F5DSCH",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5VDF5CHXARP2AWQTTGBR"
           ],
           "message": "book 1 chapter 13 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell Rook that Cassian cut the roots before we open the floorboard.')",
           "severity": "warning",
@@ -1410,8 +1404,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8Y97T27KTEZ8WNMBSRJF"
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5THP9KRD4TR1A9QDPHMP"
           ],
           "message": "book 1 chapter 3 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell the survey clerk that Cassian cut the roots, though I have not yet seen the shed.')",
           "severity": "warning",
@@ -1420,8 +1414,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YB8YHGBGB51DZB27WG1"
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5TRZKQ5JG1RKRBP5Z7J7"
           ],
           "message": "book 1 chapter 5 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell Rook the sabotage began in the shed, though Cassian has not shown me the cut roots.')",
           "severity": "warning",
@@ -1430,8 +1424,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YCAFAW7952TXV4GXYZE"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5TW30GHWFKP0ACPKJVVM"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -1440,8 +1434,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YCAFAW7952TXV4GXYZE"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5TW30GHWFKP0ACPKJVVM"
           ],
           "message": "book 1 chapter 6 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -1450,8 +1444,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YEA93AXCEFD5YWMQTKA"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5V1C1DS3JNJC12DNXHDB"
           ],
           "message": "book 1 chapter 8 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -1460,8 +1454,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YEA93AXCEFD5YWMQTKA"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5V1C1DS3JNJC12DNXHDB"
           ],
           "message": "book 1 chapter 8 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -1470,8 +1464,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YH9J5HHH7P4H6CZM6XJ"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5V8F816SJGE6MC7N2C2D"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -1480,8 +1474,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YH9J5HHH7P4H6CZM6XJ"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5V8F816SJGE6MC7N2C2D"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -1490,8 +1484,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YK91VYEHTASNDFB9H17"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5VDF5CHXARP2AWQTTGBR"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -1500,8 +1494,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M76H8Y6VDN9KM8R5TEXZG6J3",
-            "scene:01M76H8YK91VYEHTASNDFB9H17"
+            "character:01M76K5T5RREYGMRT89656Z85J",
+            "scene:01M76K5VDF5CHXARP2AWQTTGBR"
           ],
           "message": "book 1 chapter 13 scene 1 includes 'Nia Okoro' acting after status 'dead'",
           "severity": "warning",
@@ -1510,8 +1504,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YK91VYEHTASNDFB9H17"
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5VDF5CHXARP2AWQTTGBR"
           ],
           "message": "book 1 chapter 13 scene 1: 'Tamsin Okoro' references 'Cassian Reed cut the orchard roots and sold the copper.' before learning it in book 1 chapter 14 (paraphrased: 'I tell Rook that Cassian cut the roots before we open the floorboard.')",
           "severity": "warning",
@@ -1520,8 +1514,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8Y6Z9P6AH8R1WR2PN3VA",
-            "scene:01M76H8Y8783QN3F13EF7M9BKW"
+            "world_rule:01M76K5T87JC2SBGZX360CCQ05",
+            "scene:01M76K5TG7Z4P9VCN9JSH8MSTE"
           ],
           "message": "scene references world rule 'Glass signal cost' (no violation context detected) (bytes 10..22)",
           "severity": "info",
@@ -1530,9 +1524,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8Y72FMJXK3PCTQ261RAT",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8Y8783QN3F13EF7M9BKW"
+            "canonical_fact:01M76K5TAGF73DXX8T3KY4JQNY",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5TG7Z4P9VCN9JSH8MSTE"
           ],
           "message": "book 1 chapter 2 scene 1: 'handedness' conflicts with canonical value 'right' (prose says 'left': I am left-handed, so I hold the shard in my left hand and tap the trunk with my right.) (bytes 192..279)",
           "severity": "warning",
@@ -1541,8 +1535,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8Y6Z9P6AH8R1WR2PN3VA",
-            "scene:01M76H8Y97T27KTEZ8WNMBSRJF"
+            "world_rule:01M76K5T87JC2SBGZX360CCQ05",
+            "scene:01M76K5THP9KRD4TR1A9QDPHMP"
           ],
           "message": "scene likely violates world rule 'Glass signal cost'; surrounding prose suggests violation (bytes 319..331)",
           "severity": "warning",
@@ -1551,9 +1545,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8Y736NMRXPK6HH71XYEB",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YA8P4Y8R8VX3SHM1FJY"
+            "canonical_fact:01M76K5TAJXFHJVSSZ5V0NZFQF",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5TP9H3NCQQKDRBNSWHRK"
           ],
           "message": "book 1 chapter 4 scene 1: 'height' conflicts with canonical value 'five feet four' (prose says '72 in': I stand six feet in my boots and still cannot reach the highest branch.) (bytes 194..266)",
           "severity": "warning",
@@ -1562,8 +1556,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8Y6Z9P6AH8R1WR2PN3VA",
-            "scene:01M76H8YCAFAW7952TXV4GXYZE"
+            "world_rule:01M76K5T87JC2SBGZX360CCQ05",
+            "scene:01M76K5TW30GHWFKP0ACPKJVVM"
           ],
           "message": "scene likely violates world rule 'Glass signal cost'; surrounding prose suggests violation (bytes 280..292)",
           "severity": "warning",
@@ -1572,9 +1566,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8Y75XN9BWZZRGB557NSP",
-            "character:01M76H8Y6QMRRM67XC9XPHTMVH",
-            "scene:01M76H8YDAK4DBSGB2B8T25WK3"
+            "canonical_fact:01M76K5TAZ82ZW1E6G5JZMA1K0",
+            "character:01M76K5T4SCK0S0BWZK766HC91",
+            "scene:01M76K5TZAZ3C64MQD2JQRCXG9"
           ],
           "message": "book 1 chapter 7 scene 1: 'sight' conflicts with canonical value 'blind' (prose says 'sighted': Rook saw the crack in the glass before I did.) (bytes 191..237)",
           "severity": "warning",
@@ -1583,8 +1577,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8Y6Z9P6AH8R1WR2PN3VA",
-            "scene:01M76H8YG9KTHHNVVGBAXGCG2C"
+            "world_rule:01M76K5T87JC2SBGZX360CCQ05",
+            "scene:01M76K5V61FVYRRAAVQ93D9TE8"
           ],
           "message": "scene likely violates world rule 'Glass signal cost'; surrounding prose suggests violation (bytes 235..250)",
           "severity": "warning",
@@ -1593,9 +1587,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M76H8Y74YDDBRTGVJZZTKHW8",
-            "character:01M76H8Y6N38TDSTVS89F6CZYD",
-            "scene:01M76H8YG9KTHHNVVGBAXGCG2C"
+            "canonical_fact:01M76K5TAX9PFBD5ZR90Z9MM9C",
+            "character:01M76K5T4HA38355KBXJZ78NXM",
+            "scene:01M76K5V61FVYRRAAVQ93D9TE8"
           ],
           "message": "book 1 chapter 10 scene 1: 'scar' conflicts with canonical value 'burn on the right forearm' (prose says 'unscarred': The burn scar on my right forearm is gone, and the skin is smooth.) (bytes 275..342)",
           "severity": "warning",
@@ -1604,8 +1598,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M76H8Y6Z9P6AH8R1WR2PN3VA",
-            "scene:01M76H8YM984G4XAZ4H6EPDNBD"
+            "world_rule:01M76K5T87JC2SBGZX360CCQ05",
+            "scene:01M76K5VFVEE6EJK0M800BK1WB"
           ],
           "message": "scene likely violates world rule 'Glass signal cost'; surrounding prose suggests violation (bytes 293..305)",
           "severity": "warning",
@@ -1614,74 +1608,72 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2",
-            "scene:01M76H8Y8783QN3F13EF7M9BKW"
+            "canonical_fact:01M76K5TABEY3E2TM66TYH45B0",
+            "scene:01M76K5TG7Z4P9VCN9JSH8MSTE"
           ],
-          "message": "book 1 chapter 2 scene 1: paraphrased secret fact 'canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (Everyone at the south wall already knew that Cassian had cut the roots.)",
+          "message": "book 1 chapter 2 scene 1: paraphrased secret fact 'canonical_fact:01M76K5TABEY3E2TM66TYH45B0' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (Everyone at the south wall already knew that Cassian had cut the roots.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2",
-            "scene:01M76H8YDAK4DBSGB2B8T25WK3"
+            "canonical_fact:01M76K5TABEY3E2TM66TYH45B0",
+            "scene:01M76K5TZAZ3C64MQD2JQRCXG9"
           ],
-          "message": "book 1 chapter 7 scene 1: paraphrased secret fact 'canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (A picker says Cassian cut the roots and the whole row goes quiet.)",
+          "message": "book 1 chapter 7 scene 1: paraphrased secret fact 'canonical_fact:01M76K5TABEY3E2TM66TYH45B0' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (A picker says Cassian cut the roots and the whole row goes quiet.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2",
-            "scene:01M76H8YH9J5HHH7P4H6CZM6XJ"
+            "canonical_fact:01M76K5TABEY3E2TM66TYH45B0",
+            "scene:01M76K5V8F816SJGE6MC7N2C2D"
           ],
-          "message": "book 1 chapter 11 scene 1: paraphrased secret fact 'canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The pickers' notice board says Cassian cut the roots and sold the copper.)",
+          "message": "book 1 chapter 11 scene 1: paraphrased secret fact 'canonical_fact:01M76K5TABEY3E2TM66TYH45B0' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The pickers' notice board says Cassian cut the roots and sold the copper.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         },
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2",
-            "scene:01M76H8YM984G4XAZ4H6EPDNBD"
+            "canonical_fact:01M76K5TABEY3E2TM66TYH45B0",
+            "scene:01M76K5VFVEE6EJK0M800BK1WB"
           ],
-          "message": "book 1 chapter 14 scene 1: paraphrased secret fact 'canonical_fact:01M76H8Y71NMYME2ZV9T9GF5P2' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The carrier says Cassian cut the roots before I show her the logbook.)",
+          "message": "book 1 chapter 14 scene 1: paraphrased secret fact 'canonical_fact:01M76K5TABEY3E2TM66TYH45B0' is disclosed through a generic/reported/written channel \u2014 no recorded reveal before this scene (The carrier says Cassian cut the roots before I show her the logbook.)",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
         }
       ],
       "errors_by_kind": {
-        "truncated": 1,
         "unknown_candidate": 1
       },
       "verdicts": {
-        "compatible": 201,
+        "compatible": 231,
         "contradiction": 6,
-        "insufficient": 79
+        "insufficient": 58
       },
       "confidence_buckets": [
         0,
         0,
         0,
-        0,
-        286
+        2,
+        293
       ],
       "discard_reasons": {
         "dedupe": 6,
-        "not_contradiction": 280,
+        "not_contradiction": 289,
         "verification_rejected": 1
       },
       "stop_reasons": {
-        "success": 66,
-        "truncated": 2
+        "success": 68
       },
       "semantic_issues": [],
       "semantic_warning_count": 0,
       "control_warnings_by_check_type": {},
       "model_calls": 68,
-      "judgments": 286,
+      "judgments": 295,
       "would_be_warnings": 0,
       "would_be_infos": 0,
       "semantic_control_warnings": 0,
@@ -1691,14 +1683,14 @@
       "repair_rate": 0.0294,
       "repaired_scene_rate": 0.1525,
       "per_call_receipts": 68,
-      "p95_prompt_tokens": 2153.0,
-      "p95_output_tokens": 723.0,
-      "p95_latency_ms": 1863.0,
-      "p95_output_chars": 1364.0,
-      "input_tokens": 93338,
-      "output_tokens": 26563,
-      "tokens_per_scene": 2032.22,
-      "tokens_per_chapter": 3996.7,
+      "p95_prompt_tokens": 2037.0,
+      "p95_output_tokens": 654.0,
+      "p95_latency_ms": 1804.0,
+      "p95_output_chars": 1260.0,
+      "input_tokens": 92214,
+      "output_tokens": 25230,
+      "tokens_per_scene": 1990.58,
+      "tokens_per_chapter": 3914.8,
       "evidence_anchor_validity": 1.0
     }
   }
