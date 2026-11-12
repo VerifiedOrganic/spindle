@@ -664,37 +664,43 @@ dedupe.
 The precision round then removed the remaining control false positives by
 requiring quantity evidence to be a balance/stock statement (not a price or
 transaction), selecting character death only from states strictly before the
-scene, and rejecting dead-character actions framed as memory/flashback/vision.
-The judge-policy revision moved to v3 so full reports cached under the older
-policy are misses rather than reuse. The evaluator runs one fresh on pass (the
-pass that dispatches the judge and emits findings) and then an actual
-cache-only shadow pass against the same projects; each mode keeps its own
-results, and shadow/on parity is measured from the two actual summaries rather
-than derived from on.
+scene, rejecting dead-character actions framed as memory/flashback/vision, and
+generalizing deterministic dedupe to same-subject/same-scene findings for
+families beyond world rules. Secret disclosures now require either a
+distinctive detail from the secret's value or a public-audience marker, so a
+private accusation that only names the topic is not a leak. The judge-policy
+revision moved to v3 so full reports cached under the older policy are misses
+rather than reuse. The evaluator runs one fresh on pass (the pass that
+dispatches the judge and emits findings) and then an actual cache-only shadow
+pass against the same projects; each mode keeps its own results, and shadow/on
+parity is measured from the two actual summaries rather than derived from on.
 
 Public-set measurement on this head (`ollama:gemma4:31b`, shadow/on):
 
-| Set | Deterministic | Semantic on | Warning precision | Control warnings | Repair (both modes) | p95 prompt/output/latency |
-| --- | --- | --- | ---: | --- | ---: | --- |
-| Baseline | 28/28 | 28/28 | n/a (0 warnings) | 0 | 1.2% | 2,160 / 620 / 1,750 ms |
-| #72 | 54/56 | 54/56 | 1.00 | 0 | 1.4% | 2,849 / 979 / 2,418 ms |
-| held-out-2 | 55/56, 56/56 type | 55/56, 56/56 | n/a (0 warnings) | 0 | 1.5% | 2,032 / 657 / 1,781 ms |
-| held-out-3 | 26/56, 28/56 type | 29/56, 30/56 | 1.00 | 0 | 6.4% | 3,210 / 961 / 2,874 ms |
+| Set | Deterministic | Semantic on | Warning precision | Control warnings | On repair | Shadow/on parity | Anchor validity | p95 prompt/output/latency |
+| --- | --- | --- | ---: | ---: | ---: | --- | ---: | --- |
+| Baseline | 28/28 | 28/28 | n/a (0 warnings) | 0 | 1.19% (84 calls) | pass | 1.00 | 2,172 / 624 / 1,877 ms |
+| #72 | 54/56 | 54/56 | 1.00 | 0 | 3.80% (79 calls) | pass | 1.00 | 2,905 / 978 / 2,671 ms |
+| held-out-2 | 55/56, 56/56 type | 55/56, 56/56 type | n/a (0 warnings) | 0 | 2.94% (68 calls) | pass | 1.00 | 2,153 / 723 / 1,863 ms |
+| held-out-3 | 26/56, 28/56 type | 29/56, 30/56 type | 1.00 | 0 | 1.41% (71 calls) | pass | 1.00 | 3,188 / 934 / 2,541 ms |
 
 Control warnings do not rise anywhere; warning precision is 1.0 where warnings
-exist; anchor validity is 1.0; repair is <=6.4% per call in both modes; shadow/on
-would-be counts match on every set. The remaining gap is **recall**: baseline is
-already at 28/28, while #72 and held-out-2 still show no semantic lift (their
-correct warnings duplicate deterministic findings). Aggregate lift is +3
-localized/+2 type-present, all from held-out-3, so the four-set activation gate is
-**not met** and the lane remains off by default.
+exist; anchor validity is 1.0; on-mode repair is <=3.8% of calls; shadow/on
+would-be finding counts match on every set. The cache-only shadow pass made
+1-6 dispatches per set (only scenes that failed on), so its repair ratio is a
+retry ratio, not a second full dispatch pass, and is reported separately in the
+checked-in reports. The remaining gap is **recall**: baseline is already at
+28/28, while #72 and held-out-2 still show no semantic lift (their correct
+warnings duplicate deterministic findings). Aggregate lift is +3 localized/+2
+type-present, all from held-out-3, so the four-set activation gate is **not
+met** and the lane remains off by default.
 
 The stronger-model check (`deepseek-v4.1-flash`) was not viable: it truncated
 111/120 #72 calls and 121/125 held-out-3 calls at the output cap, with zero
 findings and ~8-9 s p95 latency. Gemma remains the measured judge; the operator
 still chooses model/cost.
 
-### 4.3 Metrics on all five sets### 4.3 Metrics on all five sets### 4.3 Metrics on all five sets
+### 4.3 Metrics on all five sets
 
 For baseline, #72, held-out-2, held-out-3, and held-out-4:
 

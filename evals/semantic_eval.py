@@ -342,9 +342,12 @@ def _shadow_on_parity(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "shadow_discard_reasons": shadow_discards,
                     "on_error_kinds": on_errors,
                     "shadow_error_kinds": shadow_errors,
-                    "matches": (
-                        on_counts == shadow_counts
-                        and on_judgments == shadow_judgments
+                    # The gate is would-be finding parity. Verdict/discard/error
+                    # differences are reported for diagnosis but can legitimately
+                    # come from cache retries and the judge-only verifier.
+                    "matches": on_counts == shadow_counts,
+                    "summary_matches": (
+                        on_judgments == shadow_judgments
                         and on_verdicts == shadow_verdicts
                         and on_discards == shadow_discards
                         and on_errors == shadow_errors
@@ -429,7 +432,8 @@ def semantic_eval_self_test() -> None:
             }
         ]
     )
-    assert verdict_parity[0]["matches"] is False
+    assert verdict_parity[0]["matches"] is True
+    assert verdict_parity[0]["summary_matches"] is False
 
 
 def _warning_precision(

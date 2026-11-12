@@ -1,532 +1,157 @@
 {
+  "set": "baseline",
   "judge_identity": "ollama:gemma4:31b",
-  "modes": {
-    "on": {
-      "cache_hit_rate": 0.0,
-      "calls_per_candidate_scene": 1.025,
-      "candidate_scene_count": 80,
-      "confidence_buckets": [
-        0,
-        2,
-        0,
-        0,
-        443
+  "shadow_on_parity": [
+    {
+      "name": "ashfall_expedition",
+      "variant": "control",
+      "on_warnings": 0,
+      "on_infos": 0,
+      "shadow_warnings": 0,
+      "shadow_infos": 0,
+      "on_judgments": 108,
+      "shadow_judgments": 112,
+      "on_verdicts": {
+        "compatible": 106,
+        "insufficient": 2
+      },
+      "shadow_verdicts": {
+        "compatible": 109,
+        "insufficient": 3
+      },
+      "on_discard_reasons": {
+        "not_contradiction": 108
+      },
+      "shadow_discard_reasons": {
+        "not_contradiction": 112
+      },
+      "on_error_kinds": [
+        "unknown_candidate"
       ],
-      "control_warnings_by_check_type": {
-        "world_rule_compliance": 2
-      },
-      "deterministic": {
-        "control_count": 3,
-        "localized": 28,
-        "planted": 28,
-        "type_present": 28
-      },
-      "discard_reasons": {
-        "dedupe": 1,
-        "not_contradiction": 444
-      },
-      "errors_by_kind": {
-        "unknown_candidate": 1
-      },
-      "evidence_anchor_validity": 1.0,
-      "input_tokens": 133990,
-      "issues": [
-        {
-          "check_type": "world_rule_compliance",
-          "entity_ids": [
-            "world_rule:01M769JJ1CDBF7YTYGGYFW8ZEG"
-          ],
-          "message": "world rule 'Soulforge Blood Toll' is not clearly demonstrated in its establishing chapter",
-          "severity": "warning",
-          "suggested_action": "revise the establishing scenes so the rule is shown on page"
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "entity_ids": [
-            "world_rule:01M769JJ1CDBF7YTYGGYFW8ZEG",
-            "scene:01M769JJVKG83FENSX2C0Z6PQA"
-          ],
-          "message": "scene references world rule 'Soulforge Blood Toll' (no violation context detected) (bytes 180..187)",
-          "severity": "info",
-          "suggested_action": "revise scene prose or supporting canon records"
-        },
-        {
-          "check_type": "chronology",
-          "entity_ids": [
-            "scene:01M769JKFTMBH8NFFB6XRCXBAM",
-            "scene:01M769JKH4W6WHCDQJ20BCQVEN"
-          ],
-          "message": "scene is set earlier in story time (day 4) than the previous scene on thread 'main' but is not marked as a flashback",
-          "severity": "warning",
-          "suggested_action": "set temporal_mode to 'flashback'/'concurrent' or correct the scene's day_index"
-        },
-        {
-          "check_type": "temporal_coherence",
-          "entity_ids": [
-            "scene:01M769JKXNJ8HVESJV8K5867B7"
-          ],
-          "message": "the scene's time-of-day contradicts itself (first light after night) within one continuous passage",
-          "severity": "warning",
-          "suggested_action": "reconcile the contradicting time-of-day references, or mark an intended rewind with temporal_mode \"flashback\""
-        },
-        {
-          "check_type": "quantity_drift",
-          "entity_ids": [
-            "character:01M769JK75TYKKCH5ZSKF90G98"
-          ],
-          "message": "coin for 'character:01M769JK75TYKKCH5ZSKF90G98' jumped 4 tiers (scraping \u2192 princely) without a change_reason",
-          "severity": "warning",
-          "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
-        },
-        {
-          "check_type": "affordability",
-          "entity_ids": [
-            "scene:01M769JKKJPK4CTPHXAMFQTMMJ",
-            "character:01M769JK75TYKKCH5ZSKF90G98"
-          ],
-          "message": "scene names purchases totalling 5000 base units for Bram Thorne, above their tracked coin of 15 base units",
-          "severity": "warning",
-          "suggested_action": "confirm the character can afford this, or update their tracked amount"
-        },
-        {
-          "check_type": "knowledge_timing",
-          "entity_ids": [
-            "scene:01M769JKD7CVCQT5P5ZM6TPDK1",
-            "character:01M769JK75TYKKCH5ZSKF90G98"
-          ],
-          "message": "scene has 'Bram Thorne' reference knowledge they do not learn until book 1 chapter 15",
-          "severity": "warning",
-          "suggested_action": "move the reveal, or record the character learning this earlier"
-        },
-        {
-          "check_type": "knowledge_timing",
-          "entity_ids": [
-            "knowledge_fact:01M769JM4DN632G87M952W853D",
-            "character:01M769JK78S026TMMQK7KS4Q7Y",
-            "scene:01M769JKEGVE77ARHXCJ7S95XR"
-          ],
-          "message": "book 1 chapter 6 scene 1: 'Caelen Dravos' references 'Commander Varek poisoned the well at Salt Spire' before learning it in book 1 chapter 16 (paraphrased: 'Before retreating from the arch, Caelen Dravos warned the guards that Varek had already tainted the drinking water beneath the Salt Spire.')",
-          "severity": "warning",
-          "suggested_action": "move the reveal, or record the character learning this earlier"
-        },
-        {
-          "check_type": "world_rule_compliance",
-          "entity_ids": [
-            "world_rule:01M769JK83JYW1E5QQGQPBGZSC"
-          ],
-          "message": "world rule 'Soulforge Blood Toll' is not clearly demonstrated in its establishing chapter",
-          "severity": "warning",
-          "suggested_action": "revise the establishing scenes so the rule is shown on page"
-        },
-        {
-          "check_type": "retcon_reachability",
-          "entity_ids": [
-            "character:01M769JK75TYKKCH5ZSKF90G98",
-            "scene:01M769JKD7CVCQT5P5ZM6TPDK1"
-          ],
-          "message": "scene has 'Bram Thorne' reference knowledge they do not learn until book 1 chapter 15",
-          "severity": "warning",
-          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
-        },
-        {
-          "check_type": "retcon_reachability",
-          "entity_ids": [
-            "character:01M769JK78S026TMMQK7KS4Q7Y",
-            "scene:01M769JKEGVE77ARHXCJ7S95XR"
-          ],
-          "message": "book 1 chapter 6 scene 1: 'Caelen Dravos' references 'Commander Varek poisoned the well at Salt Spire' before learning it in book 1 chapter 16 (paraphrased: 'Before retreating from the arch, Caelen Dravos warned the guards that Varek had already tainted the drinking water beneath the Salt Spire.')",
-          "severity": "warning",
-          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
-        },
-        {
-          "check_type": "retcon_reachability",
-          "entity_ids": [
-            "character:01M769JK721MJJZJAYVHAC4FDQ",
-            "scene:01M769JKMWB0HD7V3TKPDZ6F92"
-          ],
-          "message": "book 1 chapter 11 scene 1 includes 'Lyra Voss' acting after status 'dead'",
-          "severity": "warning",
-          "suggested_action": "revise so the deceased character does not act, or update their status"
-        },
-        {
-          "check_type": "dead_character_acting",
-          "entity_ids": [
-            "character:01M769JK721MJJZJAYVHAC4FDQ",
-            "scene:01M769JKMWB0HD7V3TKPDZ6F92"
-          ],
-          "message": "book 1 chapter 11 scene 1 includes 'Lyra Voss' acting after status 'dead'",
-          "severity": "warning",
-          "suggested_action": "revise so the deceased character does not act, or update their status"
-        },
-        {
-          "check_type": "retcon_reachability",
-          "entity_ids": [
-            "character:01M769JK721MJJZJAYVHAC4FDQ",
-            "scene:01M769JKYXH4CCG0HG90V6F3E6"
-          ],
-          "message": "book 1 chapter 19 scene 1 includes 'Lyra Voss' acting after status 'dead'",
-          "severity": "warning",
-          "suggested_action": "revise so the deceased character does not act, or update their status"
-        },
-        {
-          "check_type": "dead_character_acting",
-          "entity_ids": [
-            "character:01M769JK721MJJZJAYVHAC4FDQ",
-            "scene:01M769JKYXH4CCG0HG90V6F3E6"
-          ],
-          "message": "book 1 chapter 19 scene 1 includes 'Lyra Voss' acting after status 'dead'",
-          "severity": "warning",
-          "suggested_action": "revise so the deceased character does not act, or update their status"
-        },
-        {
-          "check_type": "canonical_fact_prose_drift",
-          "entity_ids": [
-            "canonical_fact:01M769JM1G9XMD8E4CW5DBXG55",
-            "character:01M769JK6XBTMDQZ9844W8EB21",
-            "scene:01M769JKBZ14NMTFE48PE2E562"
-          ],
-          "message": "book 1 chapter 4 scene 1: 'Mara eye color' conflicts with canonical value 'amber' (prose says 'blue': In the mirror beside the lectern, Mara eye color gleamed a vivid cerulean blue rather than its usual hue.) (bytes 427..533)",
-          "severity": "warning",
-          "suggested_action": "revise scene prose or supporting canon records"
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "entity_ids": [
-            "world_rule:01M769JK83JYW1E5QQGQPBGZSC",
-            "scene:01M769JKJCRDCJ1JMKWY031291"
-          ],
-          "message": "scene likely violates world rule 'Soulforge Blood Toll'; surrounding prose suggests violation (bytes 48..55)",
-          "severity": "warning",
-          "suggested_action": "revise scene prose or supporting canon records"
-        },
-        {
-          "check_type": "canonical_fact_prose_drift",
-          "entity_ids": [
-            "canonical_fact:01M769JM1HGXKM1T44QEEXNQZ8",
-            "character:01M769JK6XBTMDQZ9844W8EB21",
-            "scene:01M769JKMWB0HD7V3TKPDZ6F92"
-          ],
-          "message": "book 1 chapter 11 scene 1: 'Mara left hand prosthetic' conflicts with canonical value 'articulated iron gauntlet' (prose says 'flesh-and-blood': Mara Vance flexed the five bare, unscarred fingers of her flesh-and-blood left hand.) (bytes 519..604)",
-          "severity": "warning",
-          "suggested_action": "revise scene prose or supporting canon records"
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "entity_ids": [
-            "world_rule:01M769JK83JYW1E5QQGQPBGZSC",
-            "scene:01M769JKQDHCSM3MDB8MS7JZSZ"
-          ],
-          "message": "scene likely violates world rule 'Soulforge Blood Toll'; surrounding prose suggests violation (bytes 366..373)",
-          "severity": "warning",
-          "suggested_action": "revise scene prose or supporting canon records"
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "entity_ids": [
-            "world_rule:01M769JK83JYW1E5QQGQPBGZSC",
-            "scene:01M769JKV58V4QYS3BSP65V8N8"
-          ],
-          "message": "scene references world rule 'Soulforge Blood Toll' (no violation context detected) (bytes 180..187)",
-          "severity": "info",
-          "suggested_action": "revise scene prose or supporting canon records"
-        },
-        {
-          "check_type": "secret_leak",
-          "entity_ids": [
-            "canonical_fact:01M769JM1J0BSMXE8GEPEH57WJ",
-            "character:01M769JK75TYKKCH5ZSKF90G98",
-            "scene:01M769JKRQ5CCKJKG0DCDCHW6C"
-          ],
-          "message": "scene (book 1, chapter 14 scene 1): Bram Thorne speaks secret fact 'royal_lineage' ('Valerius') \u2014 no recorded reveal to Bram Thorne before this scene",
-          "severity": "warning",
-          "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the dialogue"
-        },
-        {
-          "check_type": "secret_leak",
-          "entity_ids": [
-            "canonical_fact:01M769JM1KNXR8MR9B4VHZ14T3",
-            "character:01M769JK78S026TMMQK7KS4Q7Y",
-            "scene:01M769JKWB27T2GJMFCVKY4PN4"
-          ],
-          "message": "book 1 chapter 17 scene 1: Caelen Dravos narrates secret fact 'vault_passphrase' ('obsidiancrown') outside dialogue \u2014 no recorded reveal to Caelen Dravos before this scene",
-          "severity": "warning",
-          "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the narration"
-        },
-        {
-          "check_type": "world_rule_compliance",
-          "entity_ids": [
-            "world_rule:01M769JM86KZYAG5F3B85179K5"
-          ],
-          "message": "world rule 'Neural Splice Cooldown' is not clearly demonstrated in its establishing chapter",
-          "severity": "warning",
-          "suggested_action": "revise the establishing scenes so the rule is shown on page"
-        },
-        {
-          "check_type": "chronology",
-          "entity_ids": [
-            "scene:01M769JRPJ1ER0G47MYYGTE5K8",
-            "scene:01M769JRR41J63HM98BTH9TACT"
-          ],
-          "message": "scene is set earlier in story time (day 12) than the previous scene on thread 'main' but is not marked as a flashback",
-          "severity": "warning",
-          "suggested_action": "set temporal_mode to 'flashback'/'concurrent' or correct the scene's day_index"
-        },
-        {
-          "check_type": "temporal_coherence",
-          "entity_ids": [
-            "scene:01M769JS8SZP8G59YKB6YJ4DVA"
-          ],
-          "message": "the scene's time-of-day contradicts itself (morning after night) within one continuous passage",
-          "severity": "warning",
-          "suggested_action": "reconcile the contradicting time-of-day references, or mark an intended rewind with temporal_mode \"flashback\""
-        },
-        {
-          "check_type": "quantity_drift",
-          "entity_ids": [
-            "character:01M769JQTBNESECM68X7GTE3BD"
-          ],
-          "message": "credits for 'character:01M769JQTBNESECM68X7GTE3BD' jumped 4 tiers (strapped \u2192 syndicate) without a change_reason",
-          "severity": "warning",
-          "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
-        },
-        {
-          "check_type": "affordability",
-          "entity_ids": [
-            "scene:01M769JRTZW4E384AN6S8G7SQ1",
-            "character:01M769JQTBNESECM68X7GTE3BD"
-          ],
-          "message": "scene names purchases totalling 40006 base units for Milo Vance, above their tracked credits of 25 base units",
-          "severity": "warning",
-          "suggested_action": "confirm the character can afford this, or update their tracked amount"
-        },
-        {
-          "check_type": "knowledge_timing",
-          "entity_ids": [
-            "scene:01M769JRHNGC7MSPXZ3VXNTQKZ",
-            "character:01M769JQTBNESECM68X7GTE3BD"
-          ],
-          "message": "scene has 'Milo Vance' reference knowledge they do not learn until book 1 chapter 15",
-          "severity": "warning",
-          "suggested_action": "move the reveal, or record the character learning this earlier"
-        },
-        {
-          "check_type": "knowledge_timing",
-          "entity_ids": [
-            "knowledge_fact:01M769JSHB5341DXNNDM2P74VS",
-            "character:01M769JQT6R5V8PKFAVXM03HCA",
-            "scene:01M769JRN10QKEEK6ZX9ARGH93"
-          ],
-          "message": "book 1 chapter 6 scene 1: 'Kira Sato' references 'Director Cassel vented Cryo Vault Seven' before learning it in book 1 chapter 16 (paraphrased: 'Kira Sato quietly warned Elena Rostova that Director Cassel had personally ordered the depressurization of the cryo vault.')",
-          "severity": "warning",
-          "suggested_action": "move the reveal, or record the character learning this earlier"
-        },
-        {
-          "check_type": "world_rule_compliance",
-          "entity_ids": [
-            "world_rule:01M769JQW8AKTPFKT1EMWH5263"
-          ],
-          "message": "world rule 'Neural Splice Cooldown' is not clearly demonstrated in its establishing chapter",
-          "severity": "warning",
-          "suggested_action": "revise the establishing scenes so the rule is shown on page"
-        },
-        {
-          "check_type": "retcon_reachability",
-          "entity_ids": [
-            "character:01M769JQTBNESECM68X7GTE3BD",
-            "scene:01M769JRHNGC7MSPXZ3VXNTQKZ"
-          ],
-          "message": "scene has 'Milo Vance' reference knowledge they do not learn until book 1 chapter 15",
-          "severity": "warning",
-          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
-        },
-        {
-          "check_type": "retcon_reachability",
-          "entity_ids": [
-            "character:01M769JQT6R5V8PKFAVXM03HCA",
-            "scene:01M769JRN10QKEEK6ZX9ARGH93"
-          ],
-          "message": "book 1 chapter 6 scene 1: 'Kira Sato' references 'Director Cassel vented Cryo Vault Seven' before learning it in book 1 chapter 16 (paraphrased: 'Kira Sato quietly warned Elena Rostova that Director Cassel had personally ordered the depressurization of the cryo vault.')",
-          "severity": "warning",
-          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
-        },
-        {
-          "check_type": "retcon_reachability",
-          "entity_ids": [
-            "character:01M769JQT0T351V12XS3GJZ1YH",
-            "scene:01M769JRWEDQXRQ29JM9ZAGRCB"
-          ],
-          "message": "book 1 chapter 11 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
-          "severity": "warning",
-          "suggested_action": "revise so the deceased character does not act, or update their status"
-        },
-        {
-          "check_type": "dead_character_acting",
-          "entity_ids": [
-            "character:01M769JQT0T351V12XS3GJZ1YH",
-            "scene:01M769JRWEDQXRQ29JM9ZAGRCB"
-          ],
-          "message": "book 1 chapter 11 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
-          "severity": "warning",
-          "suggested_action": "revise so the deceased character does not act, or update their status"
-        },
-        {
-          "check_type": "retcon_reachability",
-          "entity_ids": [
-            "character:01M769JQT0T351V12XS3GJZ1YH",
-            "scene:01M769JSAZSQ99H0P8HA98ZY45"
-          ],
-          "message": "book 1 chapter 19 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
-          "severity": "warning",
-          "suggested_action": "revise so the deceased character does not act, or update their status"
-        },
-        {
-          "check_type": "dead_character_acting",
-          "entity_ids": [
-            "character:01M769JQT0T351V12XS3GJZ1YH",
-            "scene:01M769JSAZSQ99H0P8HA98ZY45"
-          ],
-          "message": "book 1 chapter 19 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
-          "severity": "warning",
-          "suggested_action": "revise so the deceased character does not act, or update their status"
-        },
-        {
-          "check_type": "canonical_fact_prose_drift",
-          "entity_ids": [
-            "canonical_fact:01M769JSE4RWB3YXAJF9RE411T",
-            "character:01M769JQRPEMEZKSP47RR8BBB9",
-            "scene:01M769JREHQRHBFM6AMVG6GHX8"
-          ],
-          "message": "book 1 chapter 4 scene 1: 'Elena badge clearance' conflicts with canonical value 'silver-inspector' (prose says 'bronze-provisional': Under the console lamp, Elena badge clearance read bronze-provisional instead of its registered tier.) (bytes 350..452)",
-          "severity": "warning",
-          "suggested_action": "revise scene prose or supporting canon records"
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "entity_ids": [
-            "world_rule:01M769JQW8AKTPFKT1EMWH5263",
-            "scene:01M769JRSKP6S4R7G98V0ZSMK1"
-          ],
-          "message": "scene likely violates world rule 'Neural Splice Cooldown'; surrounding prose suggests violation (bytes 56..63)",
-          "severity": "warning",
-          "suggested_action": "revise scene prose or supporting canon records"
-        },
-        {
-          "check_type": "canonical_fact_prose_drift",
-          "entity_ids": [
-            "canonical_fact:01M769JSE5NA3EXJR7PDTA5H5F",
-            "character:01M769JQRPEMEZKSP47RR8BBB9",
-            "scene:01M769JRWEDQXRQ29JM9ZAGRCB"
-          ],
-          "message": "book 1 chapter 11 scene 1: 'Elena natural eyes' conflicts with canonical value 'unaugmented biological eyes' (prose says 'cybernetic': Elena Rostova adjusted the crimson-tinted monocle over her cybernetic right eye.) (bytes 449..530)",
-          "severity": "warning",
-          "suggested_action": "revise scene prose or supporting canon records"
-        },
-        {
-          "check_type": "world_rule_semantic_drift",
-          "entity_ids": [
-            "world_rule:01M769JQW8AKTPFKT1EMWH5263",
-            "scene:01M769JRZT85A86VF9GB8B1JXH"
-          ],
-          "message": "scene likely violates world rule 'Neural Splice Cooldown'; surrounding prose suggests violation (bytes 301..308)",
-          "severity": "warning",
-          "suggested_action": "revise scene prose or supporting canon records"
-        },
-        {
-          "check_type": "secret_leak",
-          "entity_ids": [
-            "canonical_fact:01M769JSE71YTMJV4CNXC2XFFK",
-            "character:01M769JQTBNESECM68X7GTE3BD",
-            "scene:01M769JS1B51FH5CEXV2F5BD8S"
-          ],
-          "message": "scene (book 1, chapter 14 scene 1): Milo Vance speaks secret fact 'operation_codename' ('Starlight') \u2014 no recorded reveal to Milo Vance before this scene",
-          "severity": "warning",
-          "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the dialogue"
-        },
-        {
-          "check_type": "secret_leak",
-          "entity_ids": [
-            "canonical_fact:01M769JSE8ZK8700TFZ2KP2CG8",
-            "character:01M769JQT6R5V8PKFAVXM03HCA",
-            "scene:01M769JS6WJB31S911SFYZGS3Y"
-          ],
-          "message": "book 1 chapter 17 scene 1: Kira Sato narrates secret fact 'override_key' ('heliosseven') outside dialogue \u2014 no recorded reveal to Kira Sato before this scene",
-          "severity": "warning",
-          "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the narration"
-        }
-      ],
-      "judgments": 445,
-      "model_calls": 82,
-      "output_tokens": 36341,
-      "p95_latency_ms": 1702.0,
-      "p95_output_chars": 1087.0,
-      "p95_output_tokens": 620.0,
-      "p95_prompt_tokens": 2167.0,
-      "per_call_receipts": 82,
-      "repair_rate": 0.0122,
-      "repaired_scene_rate": 0.025,
-      "semantic_control_warnings": 0,
-      "semantic_issues": [],
-      "semantic_on": {
-        "control_count": 3,
-        "localized": 28,
-        "planted": 28,
-        "type_present": 28
-      },
-      "semantic_only": {
-        "control_count": 0,
-        "localized": 0,
-        "planted": 28,
-        "type_present": 0
-      },
-      "semantic_warning_count": 0,
-      "semantic_warning_precision": null,
-      "stop_reasons": {
-        "success": 82
-      },
-      "tokens_per_chapter": 4258.27,
-      "tokens_per_scene": 2129.14,
-      "verdicts": {
-        "compatible": 382,
-        "contradiction": 1,
-        "insufficient": 62
-      },
-      "would_be_infos": 0,
-      "would_be_warnings": 0
+      "shadow_error_kinds": [],
+      "matches": true,
+      "summary_matches": false
     },
-    "shadow": {
-      "cache_hit_rate": 0.9875,
-      "calls_per_candidate_scene": 1.025,
-      "candidate_scene_count": 80,
-      "confidence_buckets": [
-        0,
-        2,
-        0,
-        0,
-        443
-      ],
-      "control_warnings_by_check_type": {
-        "world_rule_compliance": 2
+    {
+      "name": "ashfall_expedition",
+      "variant": "planted",
+      "on_warnings": 0,
+      "on_infos": 0,
+      "shadow_warnings": 0,
+      "shadow_infos": 0,
+      "on_judgments": 112,
+      "shadow_judgments": 112,
+      "on_verdicts": {
+        "compatible": 100,
+        "contradiction": 1,
+        "insufficient": 11
       },
-      "deterministic": {
-        "control_count": 3,
-        "localized": 28,
-        "planted": 28,
-        "type_present": 28
+      "shadow_verdicts": {
+        "compatible": 100,
+        "contradiction": 1,
+        "insufficient": 11
       },
-      "discard_reasons": {
+      "on_discard_reasons": {
         "dedupe": 1,
-        "not_contradiction": 444
+        "not_contradiction": 111
       },
-      "errors_by_kind": {
-        "unknown_candidate": 1
+      "shadow_discard_reasons": {
+        "dedupe": 1,
+        "not_contradiction": 111
       },
-      "evidence_anchor_validity": 1.0,
-      "input_tokens": 133990,
+      "on_error_kinds": [],
+      "shadow_error_kinds": [],
+      "matches": true,
+      "summary_matches": true
+    },
+    {
+      "name": "veridian_station",
+      "variant": "control",
+      "on_warnings": 0,
+      "on_infos": 0,
+      "shadow_warnings": 0,
+      "shadow_infos": 0,
+      "on_judgments": 114,
+      "shadow_judgments": 114,
+      "on_verdicts": {
+        "compatible": 109,
+        "insufficient": 5
+      },
+      "shadow_verdicts": {
+        "compatible": 109,
+        "insufficient": 5
+      },
+      "on_discard_reasons": {
+        "not_contradiction": 114
+      },
+      "shadow_discard_reasons": {
+        "not_contradiction": 114
+      },
+      "on_error_kinds": [],
+      "shadow_error_kinds": [],
+      "matches": true,
+      "summary_matches": true
+    },
+    {
+      "name": "veridian_station",
+      "variant": "planted",
+      "on_warnings": 0,
+      "on_infos": 0,
+      "shadow_warnings": 0,
+      "shadow_infos": 0,
+      "on_judgments": 115,
+      "shadow_judgments": 115,
+      "on_verdicts": {
+        "compatible": 105,
+        "contradiction": 2,
+        "insufficient": 8
+      },
+      "shadow_verdicts": {
+        "compatible": 105,
+        "contradiction": 2,
+        "insufficient": 8
+      },
+      "on_discard_reasons": {
+        "dedupe": 2,
+        "not_contradiction": 113
+      },
+      "shadow_discard_reasons": {
+        "dedupe": 2,
+        "not_contradiction": 113
+      },
+      "on_error_kinds": [],
+      "shadow_error_kinds": [],
+      "matches": true,
+      "summary_matches": true
+    }
+  ],
+  "shadow_on_parity_ok": true,
+  "modes": {
+    "shadow": {
+      "deterministic": {
+        "localized": 28,
+        "type_present": 28,
+        "planted": 28,
+        "control_count": 3
+      },
+      "semantic_on": {
+        "localized": 28,
+        "type_present": 28,
+        "planted": 28,
+        "control_count": 3
+      },
+      "semantic_only": {
+        "localized": 0,
+        "type_present": 0,
+        "planted": 28,
+        "control_count": 0
+      },
+      "semantic_warning_precision": null,
       "issues": [
         {
           "check_type": "world_rule_compliance",
           "entity_ids": [
-            "world_rule:01M769JJ1CDBF7YTYGGYFW8ZEG"
+            "world_rule:01M76GYDF10CZ3WB2T1D9G80CD"
           ],
           "message": "world rule 'Soulforge Blood Toll' is not clearly demonstrated in its establishing chapter",
           "severity": "warning",
@@ -535,8 +160,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M769JJ1CDBF7YTYGGYFW8ZEG",
-            "scene:01M769JJVKG83FENSX2C0Z6PQA"
+            "world_rule:01M76GYDF10CZ3WB2T1D9G80CD",
+            "scene:01M76GYE5Z8M7RVSQH7FTYQBQT"
           ],
           "message": "scene references world rule 'Soulforge Blood Toll' (no violation context detected) (bytes 180..187)",
           "severity": "info",
@@ -545,8 +170,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M769JKFTMBH8NFFB6XRCXBAM",
-            "scene:01M769JKH4W6WHCDQJ20BCQVEN"
+            "scene:01M76GYESF0JW34HYV8QAHMBP6",
+            "scene:01M76GYETNA1J9Y5SD3QV7CTMK"
           ],
           "message": "scene is set earlier in story time (day 4) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -555,7 +180,7 @@
         {
           "check_type": "temporal_coherence",
           "entity_ids": [
-            "scene:01M769JKXNJ8HVESJV8K5867B7"
+            "scene:01M76GYF6TZ0W88GHC029D1QB1"
           ],
           "message": "the scene's time-of-day contradicts itself (first light after night) within one continuous passage",
           "severity": "warning",
@@ -564,17 +189,17 @@
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M769JK75TYKKCH5ZSKF90G98"
+            "character:01M76GYEGA5DADJTDXE428ASK1"
           ],
-          "message": "coin for 'character:01M769JK75TYKKCH5ZSKF90G98' jumped 4 tiers (scraping \u2192 princely) without a change_reason",
+          "message": "coin for 'character:01M76GYEGA5DADJTDXE428ASK1' jumped 4 tiers (scraping \u2192 princely) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M769JKKJPK4CTPHXAMFQTMMJ",
-            "character:01M769JK75TYKKCH5ZSKF90G98"
+            "scene:01M76GYEX0B2GNFRNWGS7KP7KD",
+            "character:01M76GYEGA5DADJTDXE428ASK1"
           ],
           "message": "scene names purchases totalling 5000 base units for Bram Thorne, above their tracked coin of 15 base units",
           "severity": "warning",
@@ -583,8 +208,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M769JKD7CVCQT5P5ZM6TPDK1",
-            "character:01M769JK75TYKKCH5ZSKF90G98"
+            "scene:01M76GYEPYF4ZCAZEYK8J4S2HE",
+            "character:01M76GYEGA5DADJTDXE428ASK1"
           ],
           "message": "scene has 'Bram Thorne' reference knowledge they do not learn until book 1 chapter 15",
           "severity": "warning",
@@ -593,9 +218,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M769JM4DN632G87M952W853D",
-            "character:01M769JK78S026TMMQK7KS4Q7Y",
-            "scene:01M769JKEGVE77ARHXCJ7S95XR"
+            "knowledge_fact:01M76GYFDE8GWTATRDKPT2HM23",
+            "character:01M76GYEGD5G8VKT0FKF82DVB4",
+            "scene:01M76GYER7MAYFAPQHTGA5BAPW"
           ],
           "message": "book 1 chapter 6 scene 1: 'Caelen Dravos' references 'Commander Varek poisoned the well at Salt Spire' before learning it in book 1 chapter 16 (paraphrased: 'Before retreating from the arch, Caelen Dravos warned the guards that Varek had already tainted the drinking water beneath the Salt Spire.')",
           "severity": "warning",
@@ -604,7 +229,7 @@
         {
           "check_type": "world_rule_compliance",
           "entity_ids": [
-            "world_rule:01M769JK83JYW1E5QQGQPBGZSC"
+            "world_rule:01M76GYEHH0ZK99G46SYM7XVGV"
           ],
           "message": "world rule 'Soulforge Blood Toll' is not clearly demonstrated in its establishing chapter",
           "severity": "warning",
@@ -613,8 +238,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M769JK75TYKKCH5ZSKF90G98",
-            "scene:01M769JKD7CVCQT5P5ZM6TPDK1"
+            "character:01M76GYEGA5DADJTDXE428ASK1",
+            "scene:01M76GYEPYF4ZCAZEYK8J4S2HE"
           ],
           "message": "scene has 'Bram Thorne' reference knowledge they do not learn until book 1 chapter 15",
           "severity": "warning",
@@ -623,8 +248,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M769JK78S026TMMQK7KS4Q7Y",
-            "scene:01M769JKEGVE77ARHXCJ7S95XR"
+            "character:01M76GYEGD5G8VKT0FKF82DVB4",
+            "scene:01M76GYER7MAYFAPQHTGA5BAPW"
           ],
           "message": "book 1 chapter 6 scene 1: 'Caelen Dravos' references 'Commander Varek poisoned the well at Salt Spire' before learning it in book 1 chapter 16 (paraphrased: 'Before retreating from the arch, Caelen Dravos warned the guards that Varek had already tainted the drinking water beneath the Salt Spire.')",
           "severity": "warning",
@@ -633,8 +258,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M769JK721MJJZJAYVHAC4FDQ",
-            "scene:01M769JKMWB0HD7V3TKPDZ6F92"
+            "character:01M76GYEG7C6RFHA6BG2F2QJVC",
+            "scene:01M76GYEY75WYQV4D79QZSCX41"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Lyra Voss' acting after status 'dead'",
           "severity": "warning",
@@ -643,8 +268,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M769JK721MJJZJAYVHAC4FDQ",
-            "scene:01M769JKMWB0HD7V3TKPDZ6F92"
+            "character:01M76GYEG7C6RFHA6BG2F2QJVC",
+            "scene:01M76GYEY75WYQV4D79QZSCX41"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Lyra Voss' acting after status 'dead'",
           "severity": "warning",
@@ -653,8 +278,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M769JK721MJJZJAYVHAC4FDQ",
-            "scene:01M769JKYXH4CCG0HG90V6F3E6"
+            "character:01M76GYEG7C6RFHA6BG2F2QJVC",
+            "scene:01M76GYF81R1BXT1DVT3FPTCAG"
           ],
           "message": "book 1 chapter 19 scene 1 includes 'Lyra Voss' acting after status 'dead'",
           "severity": "warning",
@@ -663,8 +288,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M769JK721MJJZJAYVHAC4FDQ",
-            "scene:01M769JKYXH4CCG0HG90V6F3E6"
+            "character:01M76GYEG7C6RFHA6BG2F2QJVC",
+            "scene:01M76GYF81R1BXT1DVT3FPTCAG"
           ],
           "message": "book 1 chapter 19 scene 1 includes 'Lyra Voss' acting after status 'dead'",
           "severity": "warning",
@@ -673,9 +298,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M769JM1G9XMD8E4CW5DBXG55",
-            "character:01M769JK6XBTMDQZ9844W8EB21",
-            "scene:01M769JKBZ14NMTFE48PE2E562"
+            "canonical_fact:01M76GYFAGQYHT1BN5JM8G97XD",
+            "character:01M76GYEG266ASW2DG3TJ4M07X",
+            "scene:01M76GYENQ501RFTBYPVS7QCD6"
           ],
           "message": "book 1 chapter 4 scene 1: 'Mara eye color' conflicts with canonical value 'amber' (prose says 'blue': In the mirror beside the lectern, Mara eye color gleamed a vivid cerulean blue rather than its usual hue.) (bytes 427..533)",
           "severity": "warning",
@@ -684,8 +309,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M769JK83JYW1E5QQGQPBGZSC",
-            "scene:01M769JKJCRDCJ1JMKWY031291"
+            "world_rule:01M76GYEHH0ZK99G46SYM7XVGV",
+            "scene:01M76GYEVTVPN8TMDX0SZ0WNGN"
           ],
           "message": "scene likely violates world rule 'Soulforge Blood Toll'; surrounding prose suggests violation (bytes 48..55)",
           "severity": "warning",
@@ -694,9 +319,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M769JM1HGXKM1T44QEEXNQZ8",
-            "character:01M769JK6XBTMDQZ9844W8EB21",
-            "scene:01M769JKMWB0HD7V3TKPDZ6F92"
+            "canonical_fact:01M76GYFAH22WD9FE1WQ3PKBS1",
+            "character:01M76GYEG266ASW2DG3TJ4M07X",
+            "scene:01M76GYEY75WYQV4D79QZSCX41"
           ],
           "message": "book 1 chapter 11 scene 1: 'Mara left hand prosthetic' conflicts with canonical value 'articulated iron gauntlet' (prose says 'flesh-and-blood': Mara Vance flexed the five bare, unscarred fingers of her flesh-and-blood left hand.) (bytes 519..604)",
           "severity": "warning",
@@ -705,8 +330,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M769JK83JYW1E5QQGQPBGZSC",
-            "scene:01M769JKQDHCSM3MDB8MS7JZSZ"
+            "world_rule:01M76GYEHH0ZK99G46SYM7XVGV",
+            "scene:01M76GYF0NK0F08ERJ1055JVQD"
           ],
           "message": "scene likely violates world rule 'Soulforge Blood Toll'; surrounding prose suggests violation (bytes 366..373)",
           "severity": "warning",
@@ -715,8 +340,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M769JK83JYW1E5QQGQPBGZSC",
-            "scene:01M769JKV58V4QYS3BSP65V8N8"
+            "world_rule:01M76GYEHH0ZK99G46SYM7XVGV",
+            "scene:01M76GYF4CECMBJRWZE26AAJS1"
           ],
           "message": "scene references world rule 'Soulforge Blood Toll' (no violation context detected) (bytes 180..187)",
           "severity": "info",
@@ -725,9 +350,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M769JM1J0BSMXE8GEPEH57WJ",
-            "character:01M769JK75TYKKCH5ZSKF90G98",
-            "scene:01M769JKRQ5CCKJKG0DCDCHW6C"
+            "canonical_fact:01M76GYFAJZSED44AES5KC7261",
+            "character:01M76GYEGA5DADJTDXE428ASK1",
+            "scene:01M76GYF1XRB3BVGJHGBT2PN5T"
           ],
           "message": "scene (book 1, chapter 14 scene 1): Bram Thorne speaks secret fact 'royal_lineage' ('Valerius') \u2014 no recorded reveal to Bram Thorne before this scene",
           "severity": "warning",
@@ -736,9 +361,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M769JM1KNXR8MR9B4VHZ14T3",
-            "character:01M769JK78S026TMMQK7KS4Q7Y",
-            "scene:01M769JKWB27T2GJMFCVKY4PN4"
+            "canonical_fact:01M76GYFAM76P18SWTZJRJ2V7F",
+            "character:01M76GYEGD5G8VKT0FKF82DVB4",
+            "scene:01M76GYF5H0CGNSJ7RCZN1MS63"
           ],
           "message": "book 1 chapter 17 scene 1: Caelen Dravos narrates secret fact 'vault_passphrase' ('obsidiancrown') outside dialogue \u2014 no recorded reveal to Caelen Dravos before this scene",
           "severity": "warning",
@@ -747,7 +372,7 @@
         {
           "check_type": "world_rule_compliance",
           "entity_ids": [
-            "world_rule:01M769JM86KZYAG5F3B85179K5"
+            "world_rule:01M76GYFEGNF9M09CAT4MBSKR8"
           ],
           "message": "world rule 'Neural Splice Cooldown' is not clearly demonstrated in its establishing chapter",
           "severity": "warning",
@@ -756,8 +381,8 @@
         {
           "check_type": "chronology",
           "entity_ids": [
-            "scene:01M769JRPJ1ER0G47MYYGTE5K8",
-            "scene:01M769JRR41J63HM98BTH9TACT"
+            "scene:01M76GYGT6N73Y28BAMB0TBSMZ",
+            "scene:01M76GYGVYBEMHSYD9BVM5MDWV"
           ],
           "message": "scene is set earlier in story time (day 12) than the previous scene on thread 'main' but is not marked as a flashback",
           "severity": "warning",
@@ -766,7 +391,7 @@
         {
           "check_type": "temporal_coherence",
           "entity_ids": [
-            "scene:01M769JS8SZP8G59YKB6YJ4DVA"
+            "scene:01M76GYHBWJRVFRJPEM5H28SEM"
           ],
           "message": "the scene's time-of-day contradicts itself (morning after night) within one continuous passage",
           "severity": "warning",
@@ -775,17 +400,17 @@
         {
           "check_type": "quantity_drift",
           "entity_ids": [
-            "character:01M769JQTBNESECM68X7GTE3BD"
+            "character:01M76GYGF2P12WDHMGNV4BHH8J"
           ],
-          "message": "credits for 'character:01M769JQTBNESECM68X7GTE3BD' jumped 4 tiers (strapped \u2192 syndicate) without a change_reason",
+          "message": "credits for 'character:01M76GYGF2P12WDHMGNV4BHH8J' jumped 4 tiers (strapped \u2192 syndicate) without a change_reason",
           "severity": "warning",
           "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
         },
         {
           "check_type": "affordability",
           "entity_ids": [
-            "scene:01M769JRTZW4E384AN6S8G7SQ1",
-            "character:01M769JQTBNESECM68X7GTE3BD"
+            "scene:01M76GYGZ8GT591VTBBR5B1CBH",
+            "character:01M76GYGF2P12WDHMGNV4BHH8J"
           ],
           "message": "scene names purchases totalling 40006 base units for Milo Vance, above their tracked credits of 25 base units",
           "severity": "warning",
@@ -794,8 +419,8 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "scene:01M769JRHNGC7MSPXZ3VXNTQKZ",
-            "character:01M769JQTBNESECM68X7GTE3BD"
+            "scene:01M76GYGPSFG0KFC2DYS4D86WR",
+            "character:01M76GYGF2P12WDHMGNV4BHH8J"
           ],
           "message": "scene has 'Milo Vance' reference knowledge they do not learn until book 1 chapter 15",
           "severity": "warning",
@@ -804,9 +429,9 @@
         {
           "check_type": "knowledge_timing",
           "entity_ids": [
-            "knowledge_fact:01M769JSHB5341DXNNDM2P74VS",
-            "character:01M769JQT6R5V8PKFAVXM03HCA",
-            "scene:01M769JRN10QKEEK6ZX9ARGH93"
+            "knowledge_fact:01M76GYHKTBS18PV3VG0YKRF49",
+            "character:01M76GYGF0TTD6QHGN7T5076BM",
+            "scene:01M76GYGRFF02JQPHDYQSZRF4Q"
           ],
           "message": "book 1 chapter 6 scene 1: 'Kira Sato' references 'Director Cassel vented Cryo Vault Seven' before learning it in book 1 chapter 16 (paraphrased: 'Kira Sato quietly warned Elena Rostova that Director Cassel had personally ordered the depressurization of the cryo vault.')",
           "severity": "warning",
@@ -815,7 +440,7 @@
         {
           "check_type": "world_rule_compliance",
           "entity_ids": [
-            "world_rule:01M769JQW8AKTPFKT1EMWH5263"
+            "world_rule:01M76GYGFMTY1RVF9ZA6Y5174K"
           ],
           "message": "world rule 'Neural Splice Cooldown' is not clearly demonstrated in its establishing chapter",
           "severity": "warning",
@@ -824,8 +449,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M769JQTBNESECM68X7GTE3BD",
-            "scene:01M769JRHNGC7MSPXZ3VXNTQKZ"
+            "character:01M76GYGF2P12WDHMGNV4BHH8J",
+            "scene:01M76GYGPSFG0KFC2DYS4D86WR"
           ],
           "message": "scene has 'Milo Vance' reference knowledge they do not learn until book 1 chapter 15",
           "severity": "warning",
@@ -834,8 +459,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M769JQT6R5V8PKFAVXM03HCA",
-            "scene:01M769JRN10QKEEK6ZX9ARGH93"
+            "character:01M76GYGF0TTD6QHGN7T5076BM",
+            "scene:01M76GYGRFF02JQPHDYQSZRF4Q"
           ],
           "message": "book 1 chapter 6 scene 1: 'Kira Sato' references 'Director Cassel vented Cryo Vault Seven' before learning it in book 1 chapter 16 (paraphrased: 'Kira Sato quietly warned Elena Rostova that Director Cassel had personally ordered the depressurization of the cryo vault.')",
           "severity": "warning",
@@ -844,8 +469,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M769JQT0T351V12XS3GJZ1YH",
-            "scene:01M769JRWEDQXRQ29JM9ZAGRCB"
+            "character:01M76GYGEWDVP0X0F4JX2GX94X",
+            "scene:01M76GYH1B0DV18V63FK1YHP51"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
           "severity": "warning",
@@ -854,8 +479,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M769JQT0T351V12XS3GJZ1YH",
-            "scene:01M769JRWEDQXRQ29JM9ZAGRCB"
+            "character:01M76GYGEWDVP0X0F4JX2GX94X",
+            "scene:01M76GYH1B0DV18V63FK1YHP51"
           ],
           "message": "book 1 chapter 11 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
           "severity": "warning",
@@ -864,8 +489,8 @@
         {
           "check_type": "retcon_reachability",
           "entity_ids": [
-            "character:01M769JQT0T351V12XS3GJZ1YH",
-            "scene:01M769JSAZSQ99H0P8HA98ZY45"
+            "character:01M76GYGEWDVP0X0F4JX2GX94X",
+            "scene:01M76GYHDA0FAN7EW51A95JMWJ"
           ],
           "message": "book 1 chapter 19 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
           "severity": "warning",
@@ -874,8 +499,8 @@
         {
           "check_type": "dead_character_acting",
           "entity_ids": [
-            "character:01M769JQT0T351V12XS3GJZ1YH",
-            "scene:01M769JSAZSQ99H0P8HA98ZY45"
+            "character:01M76GYGEWDVP0X0F4JX2GX94X",
+            "scene:01M76GYHDA0FAN7EW51A95JMWJ"
           ],
           "message": "book 1 chapter 19 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
           "severity": "warning",
@@ -884,9 +509,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M769JSE4RWB3YXAJF9RE411T",
-            "character:01M769JQRPEMEZKSP47RR8BBB9",
-            "scene:01M769JREHQRHBFM6AMVG6GHX8"
+            "canonical_fact:01M76GYHGENAR3MC8RJH71G4RF",
+            "character:01M76GYGERXNSNTZ0RJVXN7Z8M",
+            "scene:01M76GYGNDS44CZZAXH85BBE3S"
           ],
           "message": "book 1 chapter 4 scene 1: 'Elena badge clearance' conflicts with canonical value 'silver-inspector' (prose says 'bronze-provisional': Under the console lamp, Elena badge clearance read bronze-provisional instead of its registered tier.) (bytes 350..452)",
           "severity": "warning",
@@ -895,8 +520,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M769JQW8AKTPFKT1EMWH5263",
-            "scene:01M769JRSKP6S4R7G98V0ZSMK1"
+            "world_rule:01M76GYGFMTY1RVF9ZA6Y5174K",
+            "scene:01M76GYGXWB11VQ99KKX4X1557"
           ],
           "message": "scene likely violates world rule 'Neural Splice Cooldown'; surrounding prose suggests violation (bytes 56..63)",
           "severity": "warning",
@@ -905,9 +530,9 @@
         {
           "check_type": "canonical_fact_prose_drift",
           "entity_ids": [
-            "canonical_fact:01M769JSE5NA3EXJR7PDTA5H5F",
-            "character:01M769JQRPEMEZKSP47RR8BBB9",
-            "scene:01M769JRWEDQXRQ29JM9ZAGRCB"
+            "canonical_fact:01M76GYHGGBFKHE5PB7C1DBJ9A",
+            "character:01M76GYGERXNSNTZ0RJVXN7Z8M",
+            "scene:01M76GYH1B0DV18V63FK1YHP51"
           ],
           "message": "book 1 chapter 11 scene 1: 'Elena natural eyes' conflicts with canonical value 'unaugmented biological eyes' (prose says 'cybernetic': Elena Rostova adjusted the crimson-tinted monocle over her cybernetic right eye.) (bytes 449..530)",
           "severity": "warning",
@@ -916,8 +541,8 @@
         {
           "check_type": "world_rule_semantic_drift",
           "entity_ids": [
-            "world_rule:01M769JQW8AKTPFKT1EMWH5263",
-            "scene:01M769JRZT85A86VF9GB8B1JXH"
+            "world_rule:01M76GYGFMTY1RVF9ZA6Y5174K",
+            "scene:01M76GYH4K7W7DSB4SCZF42KGH"
           ],
           "message": "scene likely violates world rule 'Neural Splice Cooldown'; surrounding prose suggests violation (bytes 301..308)",
           "severity": "warning",
@@ -926,9 +551,9 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M769JSE71YTMJV4CNXC2XFFK",
-            "character:01M769JQTBNESECM68X7GTE3BD",
-            "scene:01M769JS1B51FH5CEXV2F5BD8S"
+            "canonical_fact:01M76GYHGJ7MHMPF2HSGM0VMTK",
+            "character:01M76GYGF2P12WDHMGNV4BHH8J",
+            "scene:01M76GYH65B9SY44932QVGRX0Y"
           ],
           "message": "scene (book 1, chapter 14 scene 1): Milo Vance speaks secret fact 'operation_codename' ('Starlight') \u2014 no recorded reveal to Milo Vance before this scene",
           "severity": "warning",
@@ -937,54 +562,552 @@
         {
           "check_type": "secret_leak",
           "entity_ids": [
-            "canonical_fact:01M769JSE8ZK8700TFZ2KP2CG8",
-            "character:01M769JQT6R5V8PKFAVXM03HCA",
-            "scene:01M769JS6WJB31S911SFYZGS3Y"
+            "canonical_fact:01M76GYHGM218YYDQ19VCPG4G0",
+            "character:01M76GYGF0TTD6QHGN7T5076BM",
+            "scene:01M76GYHACAAP61BJ564YK95Z6"
           ],
           "message": "book 1 chapter 17 scene 1: Kira Sato narrates secret fact 'override_key' ('heliosseven') outside dialogue \u2014 no recorded reveal to Kira Sato before this scene",
           "severity": "warning",
           "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the narration"
         }
       ],
-      "judgments": 445,
-      "model_calls": 82,
-      "output_tokens": 36341,
-      "p95_latency_ms": 1702.0,
-      "p95_output_chars": 1087.0,
-      "p95_output_tokens": 620.0,
-      "p95_prompt_tokens": 2167.0,
-      "per_call_receipts": 82,
-      "repair_rate": 0.0122,
-      "repaired_scene_rate": 0.025,
-      "semantic_control_warnings": 0,
+      "errors_by_kind": {},
+      "verdicts": {
+        "compatible": 423,
+        "contradiction": 3,
+        "insufficient": 27
+      },
+      "confidence_buckets": [
+        0,
+        0,
+        1,
+        0,
+        452
+      ],
+      "discard_reasons": {
+        "dedupe": 3,
+        "not_contradiction": 450
+      },
+      "stop_reasons": {
+        "success": 1
+      },
       "semantic_issues": [],
-      "semantic_on": {
-        "control_count": 3,
+      "semantic_warning_count": 0,
+      "control_warnings_by_check_type": {
+        "world_rule_compliance": 2
+      },
+      "model_calls": 1,
+      "judgments": 453,
+      "would_be_warnings": 0,
+      "would_be_infos": 0,
+      "semantic_control_warnings": 0,
+      "candidate_scene_count": 80,
+      "calls_per_candidate_scene": 0.0125,
+      "cache_hit_rate": 0.9875,
+      "repair_rate": 0.0,
+      "repaired_scene_rate": 0.0,
+      "per_call_receipts": 1,
+      "p95_prompt_tokens": 1327.0,
+      "p95_output_tokens": 303.0,
+      "p95_latency_ms": 1016.0,
+      "p95_output_chars": 557.0,
+      "input_tokens": 1327,
+      "output_tokens": 303,
+      "tokens_per_scene": 20.38,
+      "tokens_per_chapter": 40.75,
+      "evidence_anchor_validity": 1.0
+    },
+    "on": {
+      "deterministic": {
         "localized": 28,
+        "type_present": 28,
         "planted": 28,
-        "type_present": 28
+        "control_count": 3
+      },
+      "semantic_on": {
+        "localized": 28,
+        "type_present": 28,
+        "planted": 28,
+        "control_count": 3
       },
       "semantic_only": {
-        "control_count": 0,
         "localized": 0,
+        "type_present": 0,
         "planted": 28,
-        "type_present": 0
+        "control_count": 0
       },
-      "semantic_warning_count": 0,
       "semantic_warning_precision": null,
-      "stop_reasons": {
-        "success": 82
+      "issues": [
+        {
+          "check_type": "world_rule_compliance",
+          "entity_ids": [
+            "world_rule:01M76GYDF10CZ3WB2T1D9G80CD"
+          ],
+          "message": "world rule 'Soulforge Blood Toll' is not clearly demonstrated in its establishing chapter",
+          "severity": "warning",
+          "suggested_action": "revise the establishing scenes so the rule is shown on page"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M76GYDF10CZ3WB2T1D9G80CD",
+            "scene:01M76GYE5Z8M7RVSQH7FTYQBQT"
+          ],
+          "message": "scene references world rule 'Soulforge Blood Toll' (no violation context detected) (bytes 180..187)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "chronology",
+          "entity_ids": [
+            "scene:01M76GYESF0JW34HYV8QAHMBP6",
+            "scene:01M76GYETNA1J9Y5SD3QV7CTMK"
+          ],
+          "message": "scene is set earlier in story time (day 4) than the previous scene on thread 'main' but is not marked as a flashback",
+          "severity": "warning",
+          "suggested_action": "set temporal_mode to 'flashback'/'concurrent' or correct the scene's day_index"
+        },
+        {
+          "check_type": "temporal_coherence",
+          "entity_ids": [
+            "scene:01M76GYF6TZ0W88GHC029D1QB1"
+          ],
+          "message": "the scene's time-of-day contradicts itself (first light after night) within one continuous passage",
+          "severity": "warning",
+          "suggested_action": "reconcile the contradicting time-of-day references, or mark an intended rewind with temporal_mode \"flashback\""
+        },
+        {
+          "check_type": "quantity_drift",
+          "entity_ids": [
+            "character:01M76GYEGA5DADJTDXE428ASK1"
+          ],
+          "message": "coin for 'character:01M76GYEGA5DADJTDXE428ASK1' jumped 4 tiers (scraping \u2192 princely) without a change_reason",
+          "severity": "warning",
+          "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
+        },
+        {
+          "check_type": "affordability",
+          "entity_ids": [
+            "scene:01M76GYEX0B2GNFRNWGS7KP7KD",
+            "character:01M76GYEGA5DADJTDXE428ASK1"
+          ],
+          "message": "scene names purchases totalling 5000 base units for Bram Thorne, above their tracked coin of 15 base units",
+          "severity": "warning",
+          "suggested_action": "confirm the character can afford this, or update their tracked amount"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "scene:01M76GYEPYF4ZCAZEYK8J4S2HE",
+            "character:01M76GYEGA5DADJTDXE428ASK1"
+          ],
+          "message": "scene has 'Bram Thorne' reference knowledge they do not learn until book 1 chapter 15",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "knowledge_fact:01M76GYFDE8GWTATRDKPT2HM23",
+            "character:01M76GYEGD5G8VKT0FKF82DVB4",
+            "scene:01M76GYER7MAYFAPQHTGA5BAPW"
+          ],
+          "message": "book 1 chapter 6 scene 1: 'Caelen Dravos' references 'Commander Varek poisoned the well at Salt Spire' before learning it in book 1 chapter 16 (paraphrased: 'Before retreating from the arch, Caelen Dravos warned the guards that Varek had already tainted the drinking water beneath the Salt Spire.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "world_rule_compliance",
+          "entity_ids": [
+            "world_rule:01M76GYEHH0ZK99G46SYM7XVGV"
+          ],
+          "message": "world rule 'Soulforge Blood Toll' is not clearly demonstrated in its establishing chapter",
+          "severity": "warning",
+          "suggested_action": "revise the establishing scenes so the rule is shown on page"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M76GYEGA5DADJTDXE428ASK1",
+            "scene:01M76GYEPYF4ZCAZEYK8J4S2HE"
+          ],
+          "message": "scene has 'Bram Thorne' reference knowledge they do not learn until book 1 chapter 15",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M76GYEGD5G8VKT0FKF82DVB4",
+            "scene:01M76GYER7MAYFAPQHTGA5BAPW"
+          ],
+          "message": "book 1 chapter 6 scene 1: 'Caelen Dravos' references 'Commander Varek poisoned the well at Salt Spire' before learning it in book 1 chapter 16 (paraphrased: 'Before retreating from the arch, Caelen Dravos warned the guards that Varek had already tainted the drinking water beneath the Salt Spire.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M76GYEG7C6RFHA6BG2F2QJVC",
+            "scene:01M76GYEY75WYQV4D79QZSCX41"
+          ],
+          "message": "book 1 chapter 11 scene 1 includes 'Lyra Voss' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M76GYEG7C6RFHA6BG2F2QJVC",
+            "scene:01M76GYEY75WYQV4D79QZSCX41"
+          ],
+          "message": "book 1 chapter 11 scene 1 includes 'Lyra Voss' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M76GYEG7C6RFHA6BG2F2QJVC",
+            "scene:01M76GYF81R1BXT1DVT3FPTCAG"
+          ],
+          "message": "book 1 chapter 19 scene 1 includes 'Lyra Voss' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M76GYEG7C6RFHA6BG2F2QJVC",
+            "scene:01M76GYF81R1BXT1DVT3FPTCAG"
+          ],
+          "message": "book 1 chapter 19 scene 1 includes 'Lyra Voss' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M76GYFAGQYHT1BN5JM8G97XD",
+            "character:01M76GYEG266ASW2DG3TJ4M07X",
+            "scene:01M76GYENQ501RFTBYPVS7QCD6"
+          ],
+          "message": "book 1 chapter 4 scene 1: 'Mara eye color' conflicts with canonical value 'amber' (prose says 'blue': In the mirror beside the lectern, Mara eye color gleamed a vivid cerulean blue rather than its usual hue.) (bytes 427..533)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M76GYEHH0ZK99G46SYM7XVGV",
+            "scene:01M76GYEVTVPN8TMDX0SZ0WNGN"
+          ],
+          "message": "scene likely violates world rule 'Soulforge Blood Toll'; surrounding prose suggests violation (bytes 48..55)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M76GYFAH22WD9FE1WQ3PKBS1",
+            "character:01M76GYEG266ASW2DG3TJ4M07X",
+            "scene:01M76GYEY75WYQV4D79QZSCX41"
+          ],
+          "message": "book 1 chapter 11 scene 1: 'Mara left hand prosthetic' conflicts with canonical value 'articulated iron gauntlet' (prose says 'flesh-and-blood': Mara Vance flexed the five bare, unscarred fingers of her flesh-and-blood left hand.) (bytes 519..604)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M76GYEHH0ZK99G46SYM7XVGV",
+            "scene:01M76GYF0NK0F08ERJ1055JVQD"
+          ],
+          "message": "scene likely violates world rule 'Soulforge Blood Toll'; surrounding prose suggests violation (bytes 366..373)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M76GYEHH0ZK99G46SYM7XVGV",
+            "scene:01M76GYF4CECMBJRWZE26AAJS1"
+          ],
+          "message": "scene references world rule 'Soulforge Blood Toll' (no violation context detected) (bytes 180..187)",
+          "severity": "info",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "secret_leak",
+          "entity_ids": [
+            "canonical_fact:01M76GYFAJZSED44AES5KC7261",
+            "character:01M76GYEGA5DADJTDXE428ASK1",
+            "scene:01M76GYF1XRB3BVGJHGBT2PN5T"
+          ],
+          "message": "scene (book 1, chapter 14 scene 1): Bram Thorne speaks secret fact 'royal_lineage' ('Valerius') \u2014 no recorded reveal to Bram Thorne before this scene",
+          "severity": "warning",
+          "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the dialogue"
+        },
+        {
+          "check_type": "secret_leak",
+          "entity_ids": [
+            "canonical_fact:01M76GYFAM76P18SWTZJRJ2V7F",
+            "character:01M76GYEGD5G8VKT0FKF82DVB4",
+            "scene:01M76GYF5H0CGNSJ7RCZN1MS63"
+          ],
+          "message": "book 1 chapter 17 scene 1: Caelen Dravos narrates secret fact 'vault_passphrase' ('obsidiancrown') outside dialogue \u2014 no recorded reveal to Caelen Dravos before this scene",
+          "severity": "warning",
+          "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the narration"
+        },
+        {
+          "check_type": "world_rule_compliance",
+          "entity_ids": [
+            "world_rule:01M76GYFEGNF9M09CAT4MBSKR8"
+          ],
+          "message": "world rule 'Neural Splice Cooldown' is not clearly demonstrated in its establishing chapter",
+          "severity": "warning",
+          "suggested_action": "revise the establishing scenes so the rule is shown on page"
+        },
+        {
+          "check_type": "chronology",
+          "entity_ids": [
+            "scene:01M76GYGT6N73Y28BAMB0TBSMZ",
+            "scene:01M76GYGVYBEMHSYD9BVM5MDWV"
+          ],
+          "message": "scene is set earlier in story time (day 12) than the previous scene on thread 'main' but is not marked as a flashback",
+          "severity": "warning",
+          "suggested_action": "set temporal_mode to 'flashback'/'concurrent' or correct the scene's day_index"
+        },
+        {
+          "check_type": "temporal_coherence",
+          "entity_ids": [
+            "scene:01M76GYHBWJRVFRJPEM5H28SEM"
+          ],
+          "message": "the scene's time-of-day contradicts itself (morning after night) within one continuous passage",
+          "severity": "warning",
+          "suggested_action": "reconcile the contradicting time-of-day references, or mark an intended rewind with temporal_mode \"flashback\""
+        },
+        {
+          "check_type": "quantity_drift",
+          "entity_ids": [
+            "character:01M76GYGF2P12WDHMGNV4BHH8J"
+          ],
+          "message": "credits for 'character:01M76GYGF2P12WDHMGNV4BHH8J' jumped 4 tiers (strapped \u2192 syndicate) without a change_reason",
+          "severity": "warning",
+          "suggested_action": "record a change_reason for the jump or stage it across intermediate bands"
+        },
+        {
+          "check_type": "affordability",
+          "entity_ids": [
+            "scene:01M76GYGZ8GT591VTBBR5B1CBH",
+            "character:01M76GYGF2P12WDHMGNV4BHH8J"
+          ],
+          "message": "scene names purchases totalling 40006 base units for Milo Vance, above their tracked credits of 25 base units",
+          "severity": "warning",
+          "suggested_action": "confirm the character can afford this, or update their tracked amount"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "scene:01M76GYGPSFG0KFC2DYS4D86WR",
+            "character:01M76GYGF2P12WDHMGNV4BHH8J"
+          ],
+          "message": "scene has 'Milo Vance' reference knowledge they do not learn until book 1 chapter 15",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "knowledge_timing",
+          "entity_ids": [
+            "knowledge_fact:01M76GYHKTBS18PV3VG0YKRF49",
+            "character:01M76GYGF0TTD6QHGN7T5076BM",
+            "scene:01M76GYGRFF02JQPHDYQSZRF4Q"
+          ],
+          "message": "book 1 chapter 6 scene 1: 'Kira Sato' references 'Director Cassel vented Cryo Vault Seven' before learning it in book 1 chapter 16 (paraphrased: 'Kira Sato quietly warned Elena Rostova that Director Cassel had personally ordered the depressurization of the cryo vault.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier"
+        },
+        {
+          "check_type": "world_rule_compliance",
+          "entity_ids": [
+            "world_rule:01M76GYGFMTY1RVF9ZA6Y5174K"
+          ],
+          "message": "world rule 'Neural Splice Cooldown' is not clearly demonstrated in its establishing chapter",
+          "severity": "warning",
+          "suggested_action": "revise the establishing scenes so the rule is shown on page"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M76GYGF2P12WDHMGNV4BHH8J",
+            "scene:01M76GYGPSFG0KFC2DYS4D86WR"
+          ],
+          "message": "scene has 'Milo Vance' reference knowledge they do not learn until book 1 chapter 15",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M76GYGF0TTD6QHGN7T5076BM",
+            "scene:01M76GYGRFF02JQPHDYQSZRF4Q"
+          ],
+          "message": "book 1 chapter 6 scene 1: 'Kira Sato' references 'Director Cassel vented Cryo Vault Seven' before learning it in book 1 chapter 16 (paraphrased: 'Kira Sato quietly warned Elena Rostova that Director Cassel had personally ordered the depressurization of the cryo vault.')",
+          "severity": "warning",
+          "suggested_action": "move the reveal, or record the character learning this earlier (record_knowledge)"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M76GYGEWDVP0X0F4JX2GX94X",
+            "scene:01M76GYH1B0DV18V63FK1YHP51"
+          ],
+          "message": "book 1 chapter 11 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M76GYGEWDVP0X0F4JX2GX94X",
+            "scene:01M76GYH1B0DV18V63FK1YHP51"
+          ],
+          "message": "book 1 chapter 11 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "retcon_reachability",
+          "entity_ids": [
+            "character:01M76GYGEWDVP0X0F4JX2GX94X",
+            "scene:01M76GYHDA0FAN7EW51A95JMWJ"
+          ],
+          "message": "book 1 chapter 19 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "dead_character_acting",
+          "entity_ids": [
+            "character:01M76GYGEWDVP0X0F4JX2GX94X",
+            "scene:01M76GYHDA0FAN7EW51A95JMWJ"
+          ],
+          "message": "book 1 chapter 19 scene 1 includes 'Soren Lindqvist' acting after status 'dead'",
+          "severity": "warning",
+          "suggested_action": "revise so the deceased character does not act, or update their status"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M76GYHGENAR3MC8RJH71G4RF",
+            "character:01M76GYGERXNSNTZ0RJVXN7Z8M",
+            "scene:01M76GYGNDS44CZZAXH85BBE3S"
+          ],
+          "message": "book 1 chapter 4 scene 1: 'Elena badge clearance' conflicts with canonical value 'silver-inspector' (prose says 'bronze-provisional': Under the console lamp, Elena badge clearance read bronze-provisional instead of its registered tier.) (bytes 350..452)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M76GYGFMTY1RVF9ZA6Y5174K",
+            "scene:01M76GYGXWB11VQ99KKX4X1557"
+          ],
+          "message": "scene likely violates world rule 'Neural Splice Cooldown'; surrounding prose suggests violation (bytes 56..63)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "canonical_fact_prose_drift",
+          "entity_ids": [
+            "canonical_fact:01M76GYHGGBFKHE5PB7C1DBJ9A",
+            "character:01M76GYGERXNSNTZ0RJVXN7Z8M",
+            "scene:01M76GYH1B0DV18V63FK1YHP51"
+          ],
+          "message": "book 1 chapter 11 scene 1: 'Elena natural eyes' conflicts with canonical value 'unaugmented biological eyes' (prose says 'cybernetic': Elena Rostova adjusted the crimson-tinted monocle over her cybernetic right eye.) (bytes 449..530)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "world_rule_semantic_drift",
+          "entity_ids": [
+            "world_rule:01M76GYGFMTY1RVF9ZA6Y5174K",
+            "scene:01M76GYH4K7W7DSB4SCZF42KGH"
+          ],
+          "message": "scene likely violates world rule 'Neural Splice Cooldown'; surrounding prose suggests violation (bytes 301..308)",
+          "severity": "warning",
+          "suggested_action": "revise scene prose or supporting canon records"
+        },
+        {
+          "check_type": "secret_leak",
+          "entity_ids": [
+            "canonical_fact:01M76GYHGJ7MHMPF2HSGM0VMTK",
+            "character:01M76GYGF2P12WDHMGNV4BHH8J",
+            "scene:01M76GYH65B9SY44932QVGRX0Y"
+          ],
+          "message": "scene (book 1, chapter 14 scene 1): Milo Vance speaks secret fact 'operation_codename' ('Starlight') \u2014 no recorded reveal to Milo Vance before this scene",
+          "severity": "warning",
+          "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the dialogue"
+        },
+        {
+          "check_type": "secret_leak",
+          "entity_ids": [
+            "canonical_fact:01M76GYHGM218YYDQ19VCPG4G0",
+            "character:01M76GYGF0TTD6QHGN7T5076BM",
+            "scene:01M76GYHACAAP61BJ564YK95Z6"
+          ],
+          "message": "book 1 chapter 17 scene 1: Kira Sato narrates secret fact 'override_key' ('heliosseven') outside dialogue \u2014 no recorded reveal to Kira Sato before this scene",
+          "severity": "warning",
+          "suggested_action": "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the narration"
+        }
+      ],
+      "errors_by_kind": {
+        "unknown_candidate": 1
       },
-      "tokens_per_chapter": 4258.27,
-      "tokens_per_scene": 2129.14,
       "verdicts": {
-        "compatible": 382,
-        "contradiction": 1,
-        "insufficient": 62
+        "compatible": 420,
+        "contradiction": 3,
+        "insufficient": 26
       },
+      "confidence_buckets": [
+        0,
+        0,
+        1,
+        0,
+        448
+      ],
+      "discard_reasons": {
+        "dedupe": 3,
+        "not_contradiction": 446
+      },
+      "stop_reasons": {
+        "success": 84
+      },
+      "semantic_issues": [],
+      "semantic_warning_count": 0,
+      "control_warnings_by_check_type": {
+        "world_rule_compliance": 2
+      },
+      "model_calls": 84,
+      "judgments": 449,
+      "would_be_warnings": 0,
       "would_be_infos": 0,
-      "would_be_warnings": 0
+      "semantic_control_warnings": 0,
+      "candidate_scene_count": 80,
+      "calls_per_candidate_scene": 1.05,
+      "cache_hit_rate": 0.0,
+      "repair_rate": 0.0119,
+      "repaired_scene_rate": 0.05,
+      "per_call_receipts": 84,
+      "p95_prompt_tokens": 2172.0,
+      "p95_output_tokens": 624.0,
+      "p95_latency_ms": 1877.0,
+      "p95_output_chars": 1083.0,
+      "input_tokens": 134562,
+      "output_tokens": 36117,
+      "tokens_per_scene": 2133.49,
+      "tokens_per_chapter": 4266.98,
+      "evidence_anchor_validity": 1.0
     }
-  },
-  "set": "baseline"
+  }
 }
