@@ -681,15 +681,15 @@ Public-set measurement on this head (`ollama:gemma4:31b`, shadow/on):
 
 | Set | Deterministic | Semantic on | Warning precision | Control warnings | On repair | Shadow/on parity | Anchor validity | p95 prompt/output/latency |
 | --- | --- | --- | ---: | ---: | ---: | --- | ---: | --- |
-| Baseline | 28/28 | 28/28 | n/a (0 warnings) | 0 | 2.33% (86 calls) | pass | 1.00 | 2,189 / 626 / 1,727 ms |
-| #72 | 54/56 | 54/56 | 1.00 | 0 | 2.63% (76 calls) | pass | 1.00 | 2,861 / 969 / 2,522 ms |
-| held-out-2 | 55/56, 56/56 type | 55/56, 56/56 type | n/a (0 warnings) | 0 | 2.94% (68 calls) | pass | 1.00 | 2,037 / 654 / 1,804 ms |
-| held-out-3 | 26/56, 28/56 type | 29/56, 30/56 type | 1.00 | 0 | 4.17% (72 calls) | pass | 1.00 | 3,189 / 972 / 2,669 ms |
+| Baseline | 28/28 | 28/28 | n/a (0 warnings) | 0 | 1.18% (85 calls) | pass | 1.00 | 2,173 / 627 / 1,797 ms |
+| #72 | 54/56 | 54/56 | 1.00 | 0 | 2.63% (76 calls) | pass | 1.00 | 2,893 / 1,036 / 2,507 ms |
+| held-out-2 | 55/56, 56/56 type | 55/56, 56/56 type | n/a (0 warnings) | 0 | 0.00% (66 calls) | pass | 1.00 | 2,029 / 646 / 1,734 ms |
+| held-out-3 | 26/56, 28/56 type | 29/56, 30/56 type | 1.00 | 0 | 4.17% (72 calls) | pass | 1.00 | 3,216 / 951 / 2,466 ms |
 
 Control warnings do not rise anywhere; warning precision is 1.0 where warnings
 exist; anchor validity is 1.0; on-mode repair is <=4.17% of calls; shadow/on
 would-be finding counts match on every set. The cache-only shadow pass made
-1-2 dispatches per set (only scenes that failed on), so its repair ratio is a
+0-6 dispatches per set (only scenes that failed on), so its repair ratio is a
 retry ratio, not a second full dispatch pass, and is reported separately in the
 checked-in reports. The remaining gap is **recall**: baseline is already at
 28/28, while #72 and held-out-2 still show no semantic lift (their correct

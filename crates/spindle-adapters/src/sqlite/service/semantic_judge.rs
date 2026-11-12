@@ -1393,30 +1393,32 @@ fn deterministic_issue_matches(
         return quoted_rule_name(&candidate.constraint)
             .is_some_and(|name| issue.message.contains(name));
     }
-    // Secret findings also carry the secret fact id in the deterministic
-    // issue. Requiring that identity keeps two different secrets involving the
-    // same outsider in one scene from collapsing into one suppression.
-    if candidate.check_type == "secret_leak" {
-        let fact_matches = candidate
-            .canon_refs
-            .iter()
-            .any(|reference| issue.entity_ids.contains(&reference.id));
-        return fact_matches
-            && (candidate.subject_ids.is_empty()
-                || candidate
-                    .subject_ids
-                    .iter()
-                    .any(|subject| issue.entity_ids.contains(subject)));
-    }
-    // Every other family dedupes on the same scene and check type plus the
-    // candidate subject. Without the subject check, two dead characters (or
-    // two quantity subjects) acting in one scene would collapse into one
-    // finding. A candidate with no subject ids falls back to scene + type.
-    candidate.subject_ids.is_empty()
+    let subject_matches = candidate.subject_ids.is_empty()
         || candidate
             .subject_ids
             .iter()
-            .any(|subject| issue.entity_ids.contains(subject))
+            .any(|subject| issue.entity_ids.contains(subject));
+    let canon_matches = candidate
+        .canon_refs
+        .iter()
+        .any(|reference| issue.entity_ids.contains(&reference.id));
+    match candidate.check_type.as_str() {
+        // A secret finding also carries the secret fact id in the
+        // deterministic issue. Requiring that identity keeps two different
+        // secrets involving the same outsider from collapsing.
+        "secret_leak" => canon_matches && subject_matches,
+        // Death is scene-scoped: the deterministic issue carries the character
+        // and scene, which is the whole conflict identity.
+        "dead_character_acting" => subject_matches,
+        // These families can have several independent facts/events in one
+        // scene. Suppress only when the deterministic issue names the same
+        // canonical record; otherwise keep the semantic finding rather than
+        // hiding an independent conflict.
+        "knowledge_timing" | "temporal_coherence" | "quantity_drift" => {
+            canon_matches && subject_matches
+        }
+        _ => false,
+    }
 }
 
 fn quoted_rule_name(constraint: &str) -> Option<&str> {
@@ -1810,6 +1812,107 @@ agent = "judge"
         assert!(!deterministic_issue_matches(
             &issue,
             &other_subject,
+            "scene:1"
+        ));
+    }
+
+    #[test]
+    fn temporal_dedupe_requires_the_same_event_identity() {
+        use spindle_core::models::ConsistencyIssue;
+        use spindle_core::semantic_continuity::SemanticCandidateV1;
+        let candidate = |table: &str, id: &str| SemanticCandidateV1 {
+            schema_version: SEMANTIC_CONTRACT_VERSION.into(),
+            candidate_id: "t".into(),
+            family: SemanticCandidateFamily::Timeline,
+            check_type: "temporal_coherence".into(),
+            canon_refs: vec![SemanticCanonRefV1 {
+                table: table.into(),
+                id: id.into(),
+                version: "v".into(),
+            }],
+            subject_ids: Vec::new(),
+            constraint: "timeline event 'b': an independent event".into(),
+            excerpt: "x".into(),
+            excerpt_start_byte: 0,
+            excerpt_end_byte: 1,
+            evidence_hints: Vec::new(),
+        };
+        let issue = ConsistencyIssue {
+            severity: "warning".into(),
+            check_type: "temporal_coherence".into(),
+            message: "scene:1: unrelated clock conflict".into(),
+            entity_ids: vec!["scene:1".into()],
+            suggested_action: None,
+            evidence: None,
+        };
+        // A subjectless timeline-event candidate is not covered by a
+        // scene-level deterministic finding for a different event.
+        assert!(!deterministic_issue_matches(
+            &issue,
+            &candidate("timeline_event", "event:b"),
+            "scene:1"
+        ));
+        // A scene-clock candidate is identified by the scene itself.
+        assert!(deterministic_issue_matches(
+            &issue,
+            &candidate("scene_clock", "scene:1"),
+            "scene:1"
+        ));
+    }
+
+    #[test]
+    fn knowledge_dedupe_requires_the_same_fact_identity() {
+        use spindle_core::models::ConsistencyIssue;
+        use spindle_core::semantic_continuity::SemanticCandidateV1;
+        let candidate = |fact: &str| SemanticCandidateV1 {
+            schema_version: SEMANTIC_CONTRACT_VERSION.into(),
+            candidate_id: format!("candidate:{fact}"),
+            family: SemanticCandidateFamily::Knowledge,
+            check_type: "knowledge_timing".into(),
+            canon_refs: vec![SemanticCanonRefV1 {
+                table: "knowledge_fact".into(),
+                id: fact.into(),
+                version: "v".into(),
+            }],
+            subject_ids: vec!["character:mara".into()],
+            constraint: format!("knowledge learned later: {fact}"),
+            excerpt: "x".into(),
+            excerpt_start_byte: 0,
+            excerpt_end_byte: 1,
+            evidence_hints: Vec::new(),
+        };
+        let issue = ConsistencyIssue {
+            severity: "warning".into(),
+            check_type: "knowledge_timing".into(),
+            message: "scene:1: Mara references knowledge before learning it".into(),
+            entity_ids: vec!["scene:1".into(), "character:mara".into()],
+            suggested_action: None,
+            evidence: None,
+        };
+        // The deterministic issue names the character but not the fact, so it
+        // cannot cover either independent fact.
+        assert!(!deterministic_issue_matches(
+            &issue,
+            &candidate("fact:a"),
+            "scene:1"
+        ));
+        assert!(!deterministic_issue_matches(
+            &issue,
+            &candidate("fact:b"),
+            "scene:1"
+        ));
+        let with_fact = ConsistencyIssue {
+            entity_ids: vec!["scene:1".into(), "character:mara".into(), "fact:a".into()],
+            ..issue
+        };
+        assert!(deterministic_issue_matches(
+            &with_fact,
+            &candidate("fact:a"),
+            "scene:1"
+        ));
+        assert!(!deterministic_issue_matches(
+            &with_fact,
+            &candidate("fact:b"),
             "scene:1"
         ));
     }
