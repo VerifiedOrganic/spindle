@@ -5,6 +5,7 @@
   "excluded_plants": [
     {
       "id": "vesta.dead_character_acting.nadi_ch8",
+      "manuscript_id": "vesta_station",
       "contradiction_type": "dead_character_acting",
       "reason": "Chapter 8 frames the line as an old voicemail recording made before the death, inside a scene about replaying old messages. A recorded voice made before the death is compatible with the death and is not a post-mortem action, so scoring it as a required dead_character_acting detection penalizes a correct detector."
     }
