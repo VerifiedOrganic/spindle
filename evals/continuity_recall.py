@@ -2950,6 +2950,7 @@ def main() -> int:
 
     if args.command == "held-out-4":
         from continuity_held_out_4 import run_held_out_4_benchmark
+        from continuity_held_out_4_ground_truth import apply_errata
 
         if accepted_dir is not None:
             raise RuntimeError("--accepted-artifacts-dir is not used by the held-out-4 corpus")
@@ -2958,6 +2959,7 @@ def main() -> int:
             deep_check=bool(args.deep),
             agent_config=agent_config,
         )
+        report = apply_errata(report)
     elif args.command == "held-out-3":
         from continuity_held_out_3 import run_held_out_3_benchmark
 

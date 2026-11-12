@@ -1,6 +1,6 @@
 {
   "benchmark": "continuity_recall_held_out_4",
-  "generated_at_utc": "2026-11-12T01:38:45+00:00",
+  "generated_at_utc": "2026-11-12T01:57:31+00:00",
   "corpus": {
     "corpus": "held-out-4",
     "corpus_manifest_sha256": "4273e4cb71647e36a18a74ac68c717c91a37ea0492678197a6517b3a81efae0e",
@@ -16,9 +16,9 @@
       "tier": "deterministic",
       "binary_sha256": "3ee27fb8856ddc2af6fea0b754dd0a8c68c006ed9440c34719281cb46d89f0fa",
       "elapsed_seconds": 11.215,
-      "total_planted": 56,
-      "total_detected": 30,
-      "overall_recall": 0.5357,
+      "total_planted": 55,
+      "total_detected": 29,
+      "overall_recall": 0.5273,
       "control_false_positive_count": 0,
       "control_findings_by_check_type": {},
       "per_type": {
@@ -29,10 +29,10 @@
           "recall": 0.375
         },
         "dead_character_acting": {
-          "planted": 8,
-          "localized": 7,
-          "type_present": 7,
-          "recall": 0.875
+          "planted": 7,
+          "localized": 6,
+          "type_present": 6,
+          "recall": 0.8571
         },
         "timeline_chronology_rewind": {
           "planted": 8,
@@ -123,9 +123,9 @@
         {
           "manuscript_id": "vesta_station",
           "chapters": 16,
-          "planted_total": 28,
-          "detected_total": 15,
-          "recall": 0.5357,
+          "planted_total": 27,
+          "detected_total": 14,
+          "recall": 0.5185,
           "control_false_positive_count": 0,
           "control_findings_by_check_type": {},
           "control_warnings_by_check_type": {},
@@ -137,10 +137,10 @@
               "recall": 0.5
             },
             "dead_character_acting": {
-              "planted": 4,
-              "localized": 3,
-              "type_present": 3,
-              "recall": 0.75
+              "planted": 3,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.6667
             },
             "timeline_chronology_rewind": {
               "planted": 4,
@@ -174,15 +174,22 @@
             }
           }
         }
-      ]
+      ],
+      "errata": {
+        "excluded_plant_ids": [
+          "vesta.dead_character_acting.nadi_ch8"
+        ],
+        "scored_plants": 55,
+        "corpus_manifest_sha256": "4273e4cb71647e36a18a74ac68c717c91a37ea0492678197a6517b3a81efae0e"
+      }
     },
     "deterministic_after": {
       "tier": "deterministic",
       "binary_sha256": "196a999047c4dbcad2a123420c5ed3a0cae9c95a7c91c3cee5e34560256a4fc4",
       "elapsed_seconds": 0.965,
-      "total_planted": 56,
-      "total_detected": 30,
-      "overall_recall": 0.5357,
+      "total_planted": 55,
+      "total_detected": 29,
+      "overall_recall": 0.5273,
       "control_false_positive_count": 0,
       "control_findings_by_check_type": {},
       "per_type": {
@@ -193,10 +200,10 @@
           "recall": 0.375
         },
         "dead_character_acting": {
-          "planted": 8,
-          "localized": 7,
-          "type_present": 7,
-          "recall": 0.875
+          "planted": 7,
+          "localized": 6,
+          "type_present": 6,
+          "recall": 0.8571
         },
         "timeline_chronology_rewind": {
           "planted": 8,
@@ -287,9 +294,9 @@
         {
           "manuscript_id": "vesta_station",
           "chapters": 16,
-          "planted_total": 28,
-          "detected_total": 15,
-          "recall": 0.5357,
+          "planted_total": 27,
+          "detected_total": 14,
+          "recall": 0.5185,
           "control_false_positive_count": 0,
           "control_findings_by_check_type": {},
           "control_warnings_by_check_type": {},
@@ -301,10 +308,10 @@
               "recall": 0.5
             },
             "dead_character_acting": {
-              "planted": 4,
-              "localized": 3,
-              "type_present": 3,
-              "recall": 0.75
+              "planted": 3,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.6667
             },
             "timeline_chronology_rewind": {
               "planted": 4,
@@ -338,7 +345,14 @@
             }
           }
         }
-      ]
+      ],
+      "errata": {
+        "excluded_plant_ids": [
+          "vesta.dead_character_acting.nadi_ch8"
+        ],
+        "scored_plants": 55,
+        "corpus_manifest_sha256": "4273e4cb71647e36a18a74ac68c717c91a37ea0492678197a6517b3a81efae0e"
+      }
     },
     "semantic": {
       "judge_identity": "ollama:gemma4:31b",
@@ -480,21 +494,21 @@
       "modes": {
         "on": {
           "deterministic": {
-            "localized": 30,
-            "type_present": 30,
-            "planted": 56,
+            "localized": 29,
+            "type_present": 29,
+            "planted": 55,
             "control_count": 0
           },
           "semantic_on": {
-            "localized": 31,
-            "type_present": 31,
-            "planted": 56,
+            "localized": 30,
+            "type_present": 30,
+            "planted": 55,
             "control_count": 0
           },
           "semantic_only": {
             "localized": 1,
             "type_present": 1,
-            "planted": 56,
+            "planted": 55,
             "control_count": 0
           },
           "deterministic_per_type": {
@@ -504,9 +518,9 @@
               "type_present": 3
             },
             "dead_character_acting": {
-              "planted": 8,
-              "localized": 7,
-              "type_present": 7
+              "planted": 7,
+              "localized": 6,
+              "type_present": 6
             },
             "timeline_chronology_rewind": {
               "planted": 8,
@@ -541,9 +555,9 @@
               "type_present": 3
             },
             "dead_character_acting": {
-              "planted": 8,
-              "localized": 7,
-              "type_present": 7
+              "planted": 7,
+              "localized": 6,
+              "type_present": 6
             },
             "timeline_chronology_rewind": {
               "planted": 8,
@@ -578,7 +592,7 @@
               "type_present": 0
             },
             "dead_character_acting": {
-              "planted": 8,
+              "planted": 7,
               "localized": 0,
               "type_present": 0
             },
@@ -659,21 +673,21 @@
         },
         "shadow": {
           "deterministic": {
-            "localized": 30,
-            "type_present": 30,
-            "planted": 56,
+            "localized": 29,
+            "type_present": 29,
+            "planted": 55,
             "control_count": 0
           },
           "semantic_on": {
-            "localized": 30,
-            "type_present": 30,
-            "planted": 56,
+            "localized": 29,
+            "type_present": 29,
+            "planted": 55,
             "control_count": 0
           },
           "semantic_only": {
             "localized": 0,
             "type_present": 0,
-            "planted": 56,
+            "planted": 55,
             "control_count": 0
           },
           "deterministic_per_type": {
@@ -683,9 +697,9 @@
               "type_present": 3
             },
             "dead_character_acting": {
-              "planted": 8,
-              "localized": 7,
-              "type_present": 7
+              "planted": 7,
+              "localized": 6,
+              "type_present": 6
             },
             "timeline_chronology_rewind": {
               "planted": 8,
@@ -720,9 +734,9 @@
               "type_present": 3
             },
             "dead_character_acting": {
-              "planted": 8,
-              "localized": 7,
-              "type_present": 7
+              "planted": 7,
+              "localized": 6,
+              "type_present": 6
             },
             "timeline_chronology_rewind": {
               "planted": 8,
@@ -757,7 +771,7 @@
               "type_present": 0
             },
             "dead_character_acting": {
-              "planted": 8,
+              "planted": 7,
               "localized": 0,
               "type_present": 0
             },
@@ -839,18 +853,40 @@
       "lift_semantic_on_minus_deterministic_after": {
         "localized": 1,
         "type_present": 1,
-        "planted": 56
+        "planted": 55
       },
       "lift_semantic_on_minus_within_run_deterministic": {
         "localized": 1,
         "type_present": 1
+      },
+      "errata": {
+        "excluded_plant_ids": [
+          "vesta.dead_character_acting.nadi_ch8"
+        ],
+        "scored_plants": 55,
+        "corpus_manifest_sha256": "4273e4cb71647e36a18a74ac68c717c91a37ea0492678197a6517b3a81efae0e"
       }
     }
+  },
+  "scoring_errata": {
+    "corpus": "held-out-4",
+    "corpus_manifest_sha256": "4273e4cb71647e36a18a74ac68c717c91a37ea0492678197a6517b3a81efae0e",
+    "frozen_corpus_module_sha256": "3d025fb94465b39a51828dc7870780065857abe5687ab74dbee66ab7b6a1817f",
+    "excluded_plants": [
+      {
+        "id": "vesta.dead_character_acting.nadi_ch8",
+        "contradiction_type": "dead_character_acting",
+        "reason": "Chapter 8 frames the line as an old voicemail recording made before the death, inside a scene about replaying old messages. A recorded voice made before the death is compatible with the death and is not a post-mortem action, so scoring it as a required dead_character_acting detection penalizes a correct detector."
+      }
+    ],
+    "scored_plants": 55
   },
   "measurement_notes": [
     "Judge: Ollama Cloud gemma4:31b through the OpenAI-compatible chat endpoint; the lane applies temperature 0 and seed 7.",
     "The native provider name 'ollama' loaded but did not resolve a model route (route_unavailable); the successful measurement used provider 'openai-compatible'.",
     "Two semantic attempts before the successful run made zero judge calls (rating_denied, then route_unavailable) and are excluded; only the successful run is reported.",
+    "Post-freeze scoring erratum: vesta.dead_character_acting.nadi_ch8 is a pre-death voicemail recording, not a post-mortem action. The frozen corpus bytes and hashes are unchanged; the exclusion is applied at scoring time, leaving 55 scored plants.",
+    "The excluded plant was detected by the deterministic lane in this run, so its exclusion removes one detected and one planted item from the before/after and semantic-on aggregates.",
     "Type-present equals localized for this corpus because score_manuscript localizes before counting; no separate broad-check-only credit exists.",
     "Shadow/on would-be warning counts match; planted summary differences are verifier discard bookkeeping, not finding-count mismatches."
   ]

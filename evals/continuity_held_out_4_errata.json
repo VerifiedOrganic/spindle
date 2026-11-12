@@ -1,0 +1,13 @@
+{
+  "corpus": "held-out-4",
+  "corpus_manifest_sha256": "4273e4cb71647e36a18a74ac68c717c91a37ea0492678197a6517b3a81efae0e",
+  "frozen_corpus_module_sha256": "3d025fb94465b39a51828dc7870780065857abe5687ab74dbee66ab7b6a1817f",
+  "excluded_plants": [
+    {
+      "id": "vesta.dead_character_acting.nadi_ch8",
+      "contradiction_type": "dead_character_acting",
+      "reason": "Chapter 8 frames the line as an old voicemail recording made before the death, inside a scene about replaying old messages. A recorded voice made before the death is compatible with the death and is not a post-mortem action, so scoring it as a required dead_character_acting detection penalizes a correct detector."
+    }
+  ],
+  "scored_plants": 55
+}

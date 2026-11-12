@@ -36,6 +36,7 @@ from continuity_held_out_4 import (
     CORPUS as H4_CORPUS,
     _seed_manuscript as seed_held_out_4_manuscript,
 )
+from continuity_held_out_4_ground_truth import filter_plants
 
 SET_COMMANDS = {
     "run": "baseline",
@@ -272,6 +273,7 @@ def _seed_reports(client: McpClient, set_name: str) -> tuple[list[dict[str, Any]
             planted_id, items = seed_held_out_4_manuscript(
                 client, manuscript, True, PlantedContradiction
             )
+            items = filter_plants(items)
             reports.append(
                 {
                     "name": manuscript["id"],
