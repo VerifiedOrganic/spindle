@@ -98,6 +98,7 @@ impl SqliteSpindleService {
                     message: issue.message,
                     entity_ids: issue.entity_ids,
                     suggested_action: issue.suggested_action,
+                    evidence: None,
                 });
             }
         }
@@ -141,6 +142,7 @@ impl SqliteSpindleService {
                         message: finding.message,
                         entity_ids: vec![scene.id.clone()],
                         suggested_action: Some(finding.suggested_action),
+                        evidence: None,
                     });
                 }
                 chapter_priors
@@ -169,6 +171,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "Draft the scene fully, or delete it if it is abandoned.".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -223,6 +226,7 @@ impl SqliteSpindleService {
                         message,
                         entity_ids: vec![promise.id.clone()],
                         suggested_action,
+                        evidence: None,
                     });
                 }
             }
@@ -260,6 +264,7 @@ impl SqliteSpindleService {
                     suggested_action: Some(
                         "create_pacing_config before using arc pacing checks".to_string(),
                     ),
+                    evidence: None,
                 });
             }
 
@@ -274,6 +279,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "create_character_arc should seed a pacing tracker".to_string(),
                         ),
+                        evidence: None,
                     });
                     continue;
                 };
@@ -291,6 +297,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "slow the arc or rebalance pacing constraints".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
 
@@ -306,6 +313,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "recalculate progress or mark the arc complete".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
 
@@ -321,6 +329,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "accelerate the arc or update pacing constraints".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
 
@@ -336,6 +345,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "consider cooling the arc before the next milestone".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -359,6 +369,7 @@ impl SqliteSpindleService {
                         message: format!("book {} has no pacing curve", missing_book),
                         entity_ids: vec![],
                         suggested_action: Some("create_pacing_curve for this book".to_string()),
+                        evidence: None,
                     });
                 }
             }
@@ -386,6 +397,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "fill the missing scene order or renumber the chapter".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
                 previous = Some(scene);
@@ -408,6 +420,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "save_summary after the chapter draft stabilizes".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -450,6 +463,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "merge duplicate events or differentiate their placement".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
                 previous_event = Some(event);
@@ -491,6 +505,7 @@ impl SqliteSpindleService {
                             "verify source and target events are oriented correctly for time travel"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -546,6 +561,7 @@ impl SqliteSpindleService {
                             "set temporal_mode to 'flashback'/'concurrent' or correct the scene's day_index"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
                 if !is_out_of_line {
@@ -657,6 +673,7 @@ impl SqliteSpindleService {
                                 "correct the elapsed-time phrase or the scene clock so the claimed gap matches the recorded timeline"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -842,6 +859,7 @@ impl SqliteSpindleService {
                                 "record a change_reason for the jump or stage it across intermediate bands"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                     prev = Some(state);
@@ -918,6 +936,7 @@ impl SqliteSpindleService {
                             suggested_action: Some(
                                 "reconcile the prices or correct the denomination used".to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1058,6 +1077,7 @@ impl SqliteSpindleService {
                                         "confirm the character can afford this, or update their tracked amount"
                                             .to_string(),
                                     ),
+                                    evidence: None,
                                 });
                                 break;
                             }
@@ -1075,6 +1095,7 @@ impl SqliteSpindleService {
                                 "name the spender or remove the price ambiguity before treating this as a contradiction"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1195,6 +1216,7 @@ impl SqliteSpindleService {
                                     "move the reveal, or record the character learning this earlier"
                                         .to_string(),
                                 ),
+                                evidence: None,
                             });
                             continue;
                         }
@@ -1210,6 +1232,7 @@ impl SqliteSpindleService {
                                 "move the reveal, or record the character learning this earlier"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1269,6 +1292,7 @@ impl SqliteSpindleService {
                             suggested_action: Some(
                                 "raise the stakes or add a turn; a sustained intensity drop reads as a sagging middle".to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1303,6 +1327,7 @@ impl SqliteSpindleService {
                                 "revise scene tone or update the reader contract boundary"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 } else {
@@ -1314,6 +1339,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "save_scene_draft with a tone value for continuity review".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1334,6 +1360,7 @@ impl SqliteSpindleService {
                     suggested_action: Some(
                         "write scenes before expecting rule compliance checks".to_string(),
                     ),
+                    evidence: None,
                 });
             }
 
@@ -1365,6 +1392,7 @@ impl SqliteSpindleService {
                             suggested_action: Some(
                                 "add or restore the establishing scene for this rule".to_string(),
                             ),
+                            evidence: None,
                         });
                         continue;
                     }
@@ -1385,6 +1413,7 @@ impl SqliteSpindleService {
                                 "revise the establishing scenes so the rule is shown on page"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1435,6 +1464,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "add example_lines so dialogue checks have a baseline".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
 
@@ -1454,6 +1484,7 @@ impl SqliteSpindleService {
                             "expand the emotional profile before relying on consistency checks"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
 
@@ -1485,6 +1516,7 @@ impl SqliteSpindleService {
                             ),
                             entity_ids: vec![current.id.clone()],
                             suggested_action: Some("consolidate duplicate state commits for this scene".to_string()),
+                            evidence: None,
                         });
                     }
                 }
@@ -1510,6 +1542,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "rewrite scene purposes as concrete choices or pressures".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1534,6 +1567,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "add more failed attempts before resolution".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
                 if conflict.resolution_summary.is_some() && steps == 0 {
@@ -1548,6 +1582,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "record the failed attempts or simplify the conflict model".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1579,6 +1614,7 @@ impl SqliteSpindleService {
                             "show the consequence on page or mark it intentionally deferred"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1596,6 +1632,7 @@ impl SqliteSpindleService {
                         ),
                         entity_ids: vec![scene.id.clone()],
                         suggested_action: Some("review scene tags and boundaries before finalizing".to_string()),
+                        evidence: None,
                     });
                 }
             }
@@ -1619,6 +1656,7 @@ impl SqliteSpindleService {
                     "restore or rescope the related scenes before running contradiction checks"
                         .to_string(),
                 ),
+                evidence: None,
             });
         }
 
@@ -1668,6 +1706,7 @@ impl SqliteSpindleService {
                                 "move the expiry later or revise the learned-at placement"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -1711,6 +1750,7 @@ impl SqliteSpindleService {
                             "set an expiry placement or clarify why the knowledge remains valid"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1843,6 +1883,7 @@ impl SqliteSpindleService {
                     suggested_action: Some(
                         "supersede the outdated fact (register_canonical_fact with supersedes_fact_id) or set distinct validity windows".to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }
@@ -1866,6 +1907,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "Link this claim to a parent note or source".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -1914,6 +1956,7 @@ impl SqliteSpindleService {
                             ),
                             entity_ids: vec![scene.id.clone()],
                             suggested_action: Some("Draft or save the scene with research references".to_string()),
+                            evidence: None,
                         });
                     }
                 }
@@ -1979,6 +2022,7 @@ impl SqliteSpindleService {
                                     "thin the motif in this chapter or raise max_uses_per_chapter"
                                         .to_string(),
                                 ),
+                                evidence: None,
                             });
                         }
                     }
@@ -1998,6 +2042,7 @@ impl SqliteSpindleService {
                         suggested_action: Some(
                             "annotate a scene with this motif or archive it".to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -2058,6 +2103,7 @@ impl SqliteSpindleService {
                                 "annotate a scene in that chapter with this theme or move the placement"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -2143,6 +2189,7 @@ impl SqliteSpindleService {
                                 "annotate a scene in that chapter with a connected conflict/theme, or revise the convergence point"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -2220,6 +2267,7 @@ impl SqliteSpindleService {
                                  milestone lands, or to move its placement"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     } else {
                         // max_chapter == milestone_chapter.
@@ -2236,6 +2284,7 @@ impl SqliteSpindleService {
                                  via update_arc_milestone"
                                     .to_string(),
                             ),
+                            evidence: None,
                         });
                     }
                 }
@@ -2299,6 +2348,7 @@ impl SqliteSpindleService {
                             "demonstrate the earlier escalation stage first, or correct the demonstration markers"
                                 .to_string(),
                         ),
+                        evidence: None,
                     });
                 }
             }
@@ -2435,6 +2485,7 @@ impl SqliteSpindleService {
                                         scene.id.clone(),
                                     ],
                                     suggested_action: Some(suggested_action("dialogue")),
+                                    evidence: None,
                                 });
                                 continue;
                             }
@@ -2476,6 +2527,7 @@ impl SqliteSpindleService {
                                     message: finding.message,
                                     entity_ids: finding.entity_ids,
                                     suggested_action: Some(suggested_action("narration")),
+                                    evidence: None,
                                 });
                             }
                         }
@@ -2539,6 +2591,7 @@ impl SqliteSpindleService {
                                         "record the reveal (record_knowledge with secret_of_fact_id) if intended, or revise the disclosure"
                                             .to_string(),
                                     ),
+                                    evidence: None,
                                 });
                             }
                         }
@@ -2712,8 +2765,233 @@ impl SqliteSpindleService {
             issues.retain(|issue| requested_severities.contains(issue.severity.as_str()));
         }
 
-        // Build per-validator scene groups for the Phase-4 issues so MCP
-        // callers can render them under their own headings.
+        let mut semantic_summary = None;
+        let mut semantic_scene_summaries: Vec<
+            spindle_core::semantic_continuity::SemanticSceneSummaryV1,
+        > = Vec::new();
+        if let Some(mode) = input.semantic_mode.filter(|mode| !mode.is_off()) {
+            let started = std::time::Instant::now();
+            let (requests, audit) = self
+                .semantic_requests_for_scenes(&project_id, &active_branch.id, &scenes)
+                .await?;
+            let scene_by_id: BTreeMap<&str, &crate::sqlite::records::Scene> = scenes
+                .iter()
+                .map(|scene| (scene.id.as_str(), scene))
+                .collect();
+            let mut summary = spindle_core::semantic_continuity::SemanticRunSummaryV1 {
+                mode,
+                scenes: scenes.len(),
+                candidate_scenes: audit.candidate_scene_count,
+                candidates: audit.candidate_count,
+                ..Default::default()
+            };
+            let mut coverage = spindle_core::models::AuditCoverage::new(
+                "semantic_continuity",
+                scenes.iter().map(|scene| scene.id.clone()),
+            );
+            let run_deadline = std::time::Duration::from_secs(
+                spindle_core::semantic_continuity::SEMANTIC_RUN_WALL_CLOCK_SECONDS,
+            );
+            let run_deadline_at = std::time::Instant::now() + run_deadline;
+            let mut host_reports: std::collections::BTreeMap<
+                &str,
+                &spindle_core::semantic_continuity::SemanticHostReportV1,
+            > = std::collections::BTreeMap::new();
+            for report in &input.semantic_host_reports {
+                if host_reports
+                    .insert(report.request_id.as_str(), report)
+                    .is_some()
+                {
+                    summary.errors.push(
+                        spindle_core::semantic_continuity::SemanticJudgeErrorV1::new(
+                            spindle_core::semantic_continuity::SemanticErrorKind::StaleHostRequest,
+                            "duplicate host report request_id",
+                        ),
+                    );
+                }
+            }
+            let requested_ids: BTreeSet<&str> = requests
+                .iter()
+                .map(|request| request.request_id.as_str())
+                .collect();
+            for report in &input.semantic_host_reports {
+                if !requested_ids.contains(report.request_id.as_str()) {
+                    summary.errors.push(
+                        spindle_core::semantic_continuity::SemanticJudgeErrorV1::new(
+                            spindle_core::semantic_continuity::SemanticErrorKind::StaleHostRequest,
+                            "host report does not match a current request",
+                        ),
+                    );
+                }
+            }
+            if requests.len() > spindle_core::semantic_continuity::SEMANTIC_MAX_SCENES_PER_RUN {
+                summary.errors.push(
+                    spindle_core::semantic_continuity::SemanticJudgeErrorV1::new(
+                        spindle_core::semantic_continuity::SemanticErrorKind::BudgetExceeded,
+                        "semantic run scene ceiling reached",
+                    ),
+                );
+                for request in requests
+                    .iter()
+                    .skip(spindle_core::semantic_continuity::SEMANTIC_MAX_SCENES_PER_RUN)
+                {
+                    coverage
+                        .not_evaluated_ids
+                        .push(request.candidate_set.scene_id.clone());
+                }
+            }
+            for request in requests
+                .iter()
+                .take(spindle_core::semantic_continuity::SEMANTIC_MAX_SCENES_PER_RUN)
+            {
+                if started.elapsed() >= run_deadline {
+                    summary.errors.push(
+                        spindle_core::semantic_continuity::SemanticJudgeErrorV1::new(
+                            spindle_core::semantic_continuity::SemanticErrorKind::BudgetExceeded,
+                            "semantic run wall-clock ceiling reached",
+                        ),
+                    );
+                    coverage
+                        .not_evaluated_ids
+                        .push(request.candidate_set.scene_id.clone());
+                    continue;
+                }
+                let Some(scene) = scene_by_id.get(request.candidate_set.scene_id.as_str()) else {
+                    continue;
+                };
+                if request.candidate_set.candidates.is_empty() {
+                    coverage
+                        .not_evaluated_ids
+                        .push(request.candidate_set.scene_id.clone());
+                    continue;
+                }
+                let scene_started = std::time::Instant::now();
+                let before = (
+                    summary.cache_hits,
+                    summary.model_calls,
+                    summary.input_tokens,
+                    summary.output_tokens,
+                    summary.errors.len(),
+                    summary.calls.len(),
+                );
+                let judged = if let Some(report) = host_reports.get(request.request_id.as_str()) {
+                    self.accept_semantic_host_report(
+                        request,
+                        report,
+                        &scene.full_text,
+                        &mut summary,
+                    )
+                    .await
+                } else {
+                    self.judge_semantic_scene(request, scene, &mut summary, run_deadline_at)
+                        .await
+                };
+                let scene_judgment_count =
+                    judged.as_ref().map_or(0, |report| report.judgments.len());
+                match judged {
+                    Ok(report) => {
+                        summary.judgments += report.judgments.len();
+                        let (warnings, infos, semantic_issues, outcome) =
+                            super::semantic_judge::semantic_issue_from_report(
+                                &report,
+                                request,
+                                mode == spindle_core::semantic_continuity::SemanticMode::On,
+                                &issues,
+                            );
+                        summary.warnings += warnings;
+                        summary.infos += infos;
+                        for (verdict, count) in outcome.verdicts {
+                            *summary.verdicts.entry(verdict).or_default() += count;
+                        }
+                        if summary.confidence_buckets.is_empty() {
+                            summary.confidence_buckets = vec![0; 5];
+                        }
+                        for (index, count) in outcome.confidence_buckets.iter().enumerate() {
+                            summary.confidence_buckets[index] += count;
+                        }
+                        for (reason, count) in outcome.discard_reasons {
+                            *summary.discard_reasons.entry(reason).or_default() += count;
+                        }
+                        issues.extend(semantic_issues);
+                        if !coverage
+                            .evaluated_ids
+                            .iter()
+                            .any(|id| id == &request.candidate_set.scene_id)
+                        {
+                            coverage
+                                .evaluated_ids
+                                .push(request.candidate_set.scene_id.clone());
+                        }
+                    }
+                    Err(error) => {
+                        summary.errors.push(error);
+                        if !coverage
+                            .not_evaluated_ids
+                            .iter()
+                            .any(|id| id == &request.candidate_set.scene_id)
+                        {
+                            coverage
+                                .not_evaluated_ids
+                                .push(request.candidate_set.scene_id.clone());
+                        }
+                    }
+                }
+                for call in &summary.calls[before.5..] {
+                    *summary
+                        .stop_reasons
+                        .entry(call.stop_reason.clone())
+                        .or_default() += 1;
+                }
+                let scene_warnings = summary.warnings.saturating_sub(
+                    semantic_scene_summaries
+                        .iter()
+                        .map(|scene| scene.warnings)
+                        .sum::<usize>(),
+                );
+                let scene_infos = summary.infos.saturating_sub(
+                    semantic_scene_summaries
+                        .iter()
+                        .map(|scene| scene.infos)
+                        .sum::<usize>(),
+                );
+                let scene_error = summary.errors.get(before.4).cloned();
+                semantic_scene_summaries.push(
+                    spindle_core::semantic_continuity::SemanticSceneSummaryV1 {
+                        scene_id: request.candidate_set.scene_id.clone(),
+                        candidates: request.candidate_set.candidates.len(),
+                        judgments: scene_judgment_count,
+                        warnings: scene_warnings,
+                        infos: scene_infos,
+                        cache_hit: summary.cache_hits > before.0,
+                        model_calls: summary.model_calls.saturating_sub(before.1),
+                        repaired: summary.model_calls.saturating_sub(before.1) > 1,
+                        input_tokens: summary.input_tokens.saturating_sub(before.2),
+                        output_tokens: summary.output_tokens.saturating_sub(before.3),
+                        elapsed_ms: scene_started.elapsed().as_millis() as u64,
+                        error: scene_error,
+                    },
+                );
+                if summary.input_tokens
+                    > spindle_core::semantic_continuity::SEMANTIC_MAX_RUN_INPUT_TOKENS as u64
+                {
+                    summary.errors.push(
+                        spindle_core::semantic_continuity::SemanticJudgeErrorV1::new(
+                            spindle_core::semantic_continuity::SemanticErrorKind::BudgetExceeded,
+                            "semantic run input-token ceiling reached",
+                        ),
+                    );
+                    break;
+                }
+            }
+            summary.elapsed_ms = started.elapsed().as_millis() as u64;
+            coverage.finish();
+            audit_coverage.push(coverage);
+            semantic_summary = Some(summary);
+        }
+
+        // Build per-validator scene groups from the final issue list so
+        // semantic findings are rendered under the same headings as
+        // deterministic findings.
         let report_sections = build_consistency_report_sections(&issues, &scenes);
 
         let summary = ConsistencySummary {
@@ -2759,6 +3037,8 @@ impl SqliteSpindleService {
             summary,
             report_sections,
             markdown,
+            semantic_summary,
+            semantic_scene_summaries,
         })
     }
 }

@@ -1,6 +1,35 @@
 # Changelog
 
-## Unreleased (0.4.0)
+## Unreleased
+
+### Fixed
+
+- Semantic continuity precision round (the lane still ships **off by
+  default**): quantity contradictions require balance/stock evidence,
+  dead-character state is selected only from strictly prior scenes,
+  memory/flashback/vision framing no longer reports a dead character as acting,
+  and secret disclosures require a distinctive value detail or a public
+  audience. Deterministic dedupe now covers same-subject/same-scene findings
+  beyond world rules. Shadow and on runs are measured from their own passes;
+  on-mode repairs are <=4.17% of calls, control warnings do not rise, warning
+  precision is 1.0 where warnings exist, and the judge-policy revision is
+  bumped so pre-change cached reports cannot bypass the new gates.
+
+## 0.4.0 — 2026-11-11
+
+### Added
+
+- An experimental semantic continuity lane: core candidate/judgment/evidence
+  contracts, deterministic candidate building, a compact judge transport with a
+  fail-closed contradiction verifier and validated-report caching (V0058),
+  host-report input, `semantic_mode=off|shadow|on` plumbing, and a public-set
+  evaluator. It ships **off by default**; `shadow` observes without changing
+  findings.
+- `commit_scene` accepts `prose_path` as an alternative to inline `full_text`
+  (exactly one), reading long prose from a workspace-relative UTF-8 file with
+  path confinement, a 2 MB cap, line-ending normalization, optional
+  `expected_sha256`, and a prose-source receipt. The primary resolves the file
+  for HTTP and secondary clients.
 
 ### Changed
 
@@ -13,10 +42,30 @@
   `create_style_revision_patch`. Stored history, scene versions, save points,
   and record IDs remain readable.
 
+### Upgrade notes
+
+- Back up `.spindle/` before the first 0.4.0 start: migration **V0058** runs on
+  the project database.
+- Legacy tool profiles were removed and unset now means generated
+  `workflow-write`. Set `SPINDLE_TOOL_PROFILE` explicitly if you relied on an
+  unset or legacy profile name.
+- For long scenes, write the prose to a workspace file and pass `prose_path` to
+  `commit_scene` instead of inline `full_text`.
+
+### Known limitations
+
+- The semantic continuity lane ships **off by default** and is experimental.
+  `semantic_mode=shadow` is available. Public-set results improve held-out-3
+  from 26/56 to 29/56 localized with warning precision 1.00, but activation
+  gates are not met: control false positives remain on baseline/held-out-2 and
+  aggregate lift is limited. Do not use `semantic_mode=on` in production yet.
+- Deterministic continuity recall is unchanged from 0.3.1.
+
 ## 0.3.1 — 2026-11-10
 
 ### Fixed
 
+- Character-state selection now uses SQLite rowid as the explicit recency tie-break at equal story positions, with created-at/id fallbacks; the recency key is retained in internal canon snapshots, and the retcon validator, subject snapshot and export paths share the newest-state rule instead of depending on load order.
 - `get_writer_state` now succeeds at its default budget and keeps the response
   within any requested budget, compacts required sections, and reports typed
   `omissions` with fetch hints.

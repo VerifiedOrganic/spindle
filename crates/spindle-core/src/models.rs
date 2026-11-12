@@ -3074,8 +3074,20 @@ pub struct CommitSceneInput {
     /// Expected current scene version; a mismatch rejects the commit as stale.
     #[serde(default)]
     pub expected_scene_version: Option<i32>,
-    /// Full scene prose. This text is persisted and never echoed back in the receipt.
+    /// Full scene prose. Exactly one of `full_text` or `prose_path` is required.
+    /// This text is persisted and never echoed back in the receipt.
+    #[serde(default)]
     pub full_text: String,
+    /// Workspace-relative path to a UTF-8 scene prose file. Exactly one of
+    /// `full_text` or `prose_path` is required. The path is resolved by the
+    /// primary process against the folder containing `.spindle/`; dotfiles and
+    /// `.spindle/` internals are rejected.
+    #[serde(default)]
+    pub prose_path: Option<String>,
+    /// Optional SHA-256 of the source bytes (file bytes, or inline UTF-8) for
+    /// integrity checking before the commit.
+    #[serde(default)]
+    pub expected_sha256: Option<String>,
     /// Concise scene summary.
     pub summary: String,
     /// Scene content rating.
@@ -3174,6 +3186,25 @@ pub struct CommitSceneCursor {
     pub scene_order: i32,
 }
 
+/// Where `commit_scene` read the prose and its integrity receipt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CommitSceneProseSource {
+    Inline,
+    File,
+}
+
+/// Prose source, relative path (file mode), raw byte count, and SHA-256.
+/// File hashes cover the raw bytes before line-ending normalization.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CommitSceneProseReceipt {
+    pub source: CommitSceneProseSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub byte_count: usize,
+    pub sha256: String,
+}
+
 /// Compact receipt returned by `commit_scene`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CommitSceneOutput {
@@ -3219,6 +3250,9 @@ pub struct CommitSceneOutput {
     /// Explanation when undo is limited or unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo_reason: Option<String>,
+    /// Prose source and integrity receipt; absent on pre-0.4 stored receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prose: Option<CommitSceneProseReceipt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6301,6 +6335,14 @@ pub struct CheckConsistencyInput {
     pub severity_filter: Vec<String>,
     #[serde(default)]
     pub deep_check: Option<bool>,
+    /// Additive semantic lane mode. Omitted means `off`; P2 builds candidate
+    /// requests/coverage only and never emits model findings.
+    #[serde(default)]
+    pub semantic_mode: Option<crate::semantic_continuity::SemanticMode>,
+    /// Optional host reports answering `prepare_semantic_continuity` requests.
+    /// Reports are validated and cached; no model call is made for them.
+    #[serde(default)]
+    pub semantic_host_reports: Vec<crate::semantic_continuity::SemanticHostReportV1>,
     /// Optional subject narrowing. Each entry is a record id of the form
     /// `<table>:<id>` (for example `character:abc123`). When non-empty, the
     /// check runs only against scenes that reference at least one listed
@@ -6332,6 +6374,10 @@ pub struct ConsistencyIssue {
     #[serde(default)]
     pub entity_ids: Vec<String>,
     pub suggested_action: Option<String>,
+    /// Exact scene evidence when a finding was produced by the semantic lane
+    /// or another evidence-anchored detector. Omitted for legacy findings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<crate::semantic_continuity::SemanticEvidenceSpanV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -6378,6 +6424,48 @@ pub struct CheckConsistencyOutput {
     /// budget would be exceeded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markdown: Option<String>,
+    /// Shadow/on semantic counters. Present only when the lane was invoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_summary: Option<crate::semantic_continuity::SemanticRunSummaryV1>,
+    /// Per-scene semantic counters for evaluator percentiles and coverage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic_scene_summaries: Vec<crate::semantic_continuity::SemanticSceneSummaryV1>,
+}
+
+/// Read-only request for the deterministic semantic candidate sets of every
+/// scene in scope. Makes no model call and changes no state.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareSemanticContinuityInput {
+    /// Record id returned by `create_project`.
+    pub project_id: String,
+    /// Story scope to prepare candidate sets for.
+    pub scope: ConsistencyScopeInput,
+    /// Optional subject narrowing, matching `check_consistency`.
+    #[serde(default)]
+    pub subjects: Vec<String>,
+}
+
+/// Candidate coverage summary for one prepare call. Empty candidate sets are
+/// honest coverage, not a clean semantic review.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticCandidateAudit {
+    /// Scenes considered in scope.
+    pub scene_count: usize,
+    /// Scenes with at least one candidate.
+    pub candidate_scene_count: usize,
+    /// Total candidates after ranking and caps.
+    pub candidate_count: usize,
+    /// Counts of family candidates omitted by a cap.
+    #[serde(default)]
+    pub omitted_by_family: std::collections::BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareSemanticContinuityOutput {
+    /// One read-only request per scene in scope.
+    pub requests: Vec<crate::semantic_continuity::SemanticHostRequestV1>,
+    /// Candidate coverage summary.
+    pub coverage: SemanticCandidateAudit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

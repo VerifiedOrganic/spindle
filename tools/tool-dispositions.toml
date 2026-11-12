@@ -898,6 +898,13 @@ review_by = "R"
 reason = "Current public API; declared by an owning skill or reference."
 
 [[tools]]
+name = "prepare_semantic_continuity"
+classification = "retained"
+owner = "authoring-supervisor, character-creator, editor, plot-architect, revision-manager, scene-writer, worldbuilder"
+review_by = "R"
+reason = "Current public API; read-only host-request surface declared by owning skills."
+
+[[tools]]
 name = "prepare_scene"
 classification = "retained"
 owner = "scene-writer"

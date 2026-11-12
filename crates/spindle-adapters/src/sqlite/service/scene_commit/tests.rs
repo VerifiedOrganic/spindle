@@ -1,15 +1,16 @@
 use super::*;
+use crate::sqlite::service::scene_commit::commit_scene_payload_hash;
 
 use spindle_core::models::{CharacterEmotionalProfileData, CharacterVoiceProfileData};
 use spindle_core::models::{
     CommitSceneCanonicalFactEntry, CommitSceneChapterSummary, CommitSceneCharacterStateEntry,
     CommitSceneCharacterStatePatch, CommitSceneContinuityPackage, CommitSceneInput,
-    CommitSceneKnowledgeEntry, CommitSceneQuantityStateEntry, CommitSceneRelationshipEntry,
-    CommitSceneStoryPlacement, CommitSceneTimelineEventEntry, ContentRating, CreateBranchInput,
-    CreateCharacterInput, CreateFutureKnowledgeInput, CreateLocationInput, CreateProjectInput,
-    CreateRelationshipInput, PrepareSceneInput, PrepareSceneIntent, ReaderContract,
-    RegisterCanonicalFactInput, SaveSceneDraftInput, SceneAuthorship, SceneBeatAnnotationInput,
-    SwitchBranchInput,
+    CommitSceneKnowledgeEntry, CommitSceneProseSource, CommitSceneQuantityStateEntry,
+    CommitSceneRelationshipEntry, CommitSceneStoryPlacement, CommitSceneTimelineEventEntry,
+    ContentRating, CreateBranchInput, CreateCharacterInput, CreateFutureKnowledgeInput,
+    CreateLocationInput, CreateProjectInput, CreateRelationshipInput, PrepareSceneInput,
+    PrepareSceneIntent, ReaderContract, RegisterCanonicalFactInput, SaveSceneDraftInput,
+    SceneAuthorship, SceneBeatAnnotationInput, SwitchBranchInput,
 };
 
 fn base_commit(project_id: &str, text: &str) -> CommitSceneInput {
@@ -25,6 +26,8 @@ fn base_commit(project_id: &str, text: &str) -> CommitSceneInput {
         scene_order: Some(1),
         expected_scene_version: None,
         full_text: text.to_string(),
+        prose_path: None,
+        expected_sha256: None,
         summary: "scene summary".to_string(),
         content_rating: ContentRating::General,
         location_id: None,
@@ -39,6 +42,35 @@ fn base_commit(project_id: &str, text: &str) -> CommitSceneInput {
         dry_run: false,
         idempotency_key: None,
     }
+}
+
+#[test]
+fn preserves_pre_0_4_inline_payload_hash() {
+    let input = base_commit("project:legacy", "Legacy inline prose.");
+    let mut legacy = serde_json::to_value(&input).unwrap();
+    if let Some(object) = legacy.as_object_mut() {
+        object.remove("dry_run");
+        object.remove("idempotency_key");
+        object.remove("prose_path");
+        object.remove("expected_sha256");
+    }
+    let legacy_hash = generation_sha256_hex(&serde_json::to_vec(&legacy).unwrap());
+    assert_eq!(commit_scene_payload_hash(&input).unwrap(), legacy_hash);
+}
+
+async fn fresh_workspace_service() -> (tempfile::TempDir, SqliteSpindleService) {
+    use crate::ai::ModelRouter;
+    use crate::sqlite::{Repository, SqlitePool};
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path().join("book");
+    let data_dir = root.join(".spindle");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let pool = SqlitePool::open(&data_dir.join("spindle.db"))
+        .await
+        .unwrap();
+    let repository = Repository::with_model_router(pool, data_dir, ModelRouter::local_only());
+    (temp, SqliteSpindleService::new(repository))
 }
 
 async fn project(svc: &SqliteSpindleService, name: &str) -> CreateProjectOutput {
@@ -85,6 +117,35 @@ async fn location(svc: &SqliteSpindleService, project_id: &str) -> String {
     .await
     .unwrap()
     .location_id
+}
+
+#[tokio::test]
+async fn commit_scene_file_prose_receipt_matches_inline() {
+    let (temp, svc) = fresh_workspace_service().await;
+    let root = temp.path().join("book");
+    std::fs::create_dir_all(root.join("scenes")).unwrap();
+    let prose = "The lockhouse was quiet.\nMara barred the door.\n";
+    std::fs::write(root.join("scenes/ch1.md"), prose).unwrap();
+    let project = project(&svc, "prose-path-receipt").await;
+
+    let mut inline = base_commit(&project.project_id, prose);
+    inline.scene_order = Some(1);
+    let inline = svc.commit_scene(inline).await.unwrap();
+    let inline_receipt = inline.prose.expect("inline prose receipt");
+
+    let mut file = base_commit(&project.project_id, "");
+    file.scene_order = Some(2);
+    file.prose_path = Some("scenes/ch1.md".to_string());
+    let file = svc.commit_scene(file).await.unwrap();
+    let file_receipt = file.prose.expect("file prose receipt");
+
+    assert_eq!(inline_receipt.source, CommitSceneProseSource::Inline);
+    assert_eq!(inline_receipt.path, None);
+    assert_eq!(file_receipt.source, CommitSceneProseSource::File);
+    assert_eq!(file_receipt.path.as_deref(), Some("scenes/ch1.md"));
+    assert_eq!(file_receipt.byte_count, prose.len());
+    assert_eq!(file_receipt.sha256, inline_receipt.sha256);
+    assert_eq!(file_receipt.byte_count, inline_receipt.byte_count);
 }
 
 #[tokio::test]

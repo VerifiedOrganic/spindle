@@ -88,6 +88,7 @@ impl SceneValidator for CanonicalFactConsistencyValidator {
                     severity: ValidatorSeverity::Warning,
                     message: finding.message,
                     byte_range: finding.byte_range,
+                    entity_ids: finding.entity_ids,
                 });
             }
         }
@@ -189,6 +190,7 @@ impl SceneValidator for WorldRuleComplianceValidator {
                     start: hit.byte_range.start,
                     end: hit.byte_range.end,
                 }),
+                entity_ids: vec![hit.rule_id.clone()],
             });
         }
         Ok(findings)
@@ -301,6 +303,7 @@ impl SceneValidator for VoiceDriftValidator {
                         start: r.start,
                         end: r.end,
                     }),
+                    entity_ids: vec![character.id.clone()],
                 });
             }
         }
@@ -343,6 +346,7 @@ impl SceneValidator for RetconReachabilityValidator {
                             intervention.title
                         ),
                         byte_range: Some(range),
+                        entity_ids: vec![intervention.intervention_id.clone()],
                     });
                 }
             }
@@ -409,6 +413,7 @@ impl SceneValidator for StyleComplianceValidator {
                 },
                 message: hit.message,
                 byte_range: None,
+                entity_ids: Vec::new(),
             })
             .collect())
     }

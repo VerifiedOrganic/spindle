@@ -53,6 +53,7 @@ impl SqliteSpindleService {
                 suggested_action: Some(
                     "Review the evidence-bound claim and ratify or reject it; do not treat a provisional claim as world truth.".into(),
                 ),
+                evidence: None,
             });
         }
         Ok(issues)

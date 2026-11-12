@@ -389,6 +389,10 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
             "check_consistency",
             "Run a structured consistency audit (includes scene_divergence and canonical_fact_consistency checks)",
         ),
+        tool::<PrepareSemanticContinuityInput, PrepareSemanticContinuityOutput>(
+            "prepare_semantic_continuity",
+            "Prepare read-only ranked semantic candidate sets for every scene in scope. Makes no model call; P2 emits no findings",
+        ),
         tool::<RegisterCanonicalFactInput, RegisterCanonicalFactOutput>(
             "register_canonical_fact",
             "Register a canonical story fact (pull result, stat change, item, ability) for contradiction detection. scene_id is optional: omit it to register a fact decided during planning but not yet dramatised (placed by book_number/chapter_number only), then attach it later with bind_canonical_fact_to_scene",
@@ -563,7 +567,7 @@ pub(super) fn build_all_tools() -> Vec<Tool> {
         ),
         tool::<CommitSceneInput, CommitSceneOutput>(
             "commit_scene",
-            "Atomically commit scene prose with its author-declared continuity package, beat annotations, optional chapter summary, and writer cursor; supports dry_run, stale-preparation checks, and idempotent retries",
+            "Atomically commit scene prose with its author-declared continuity package, beat annotations, optional chapter summary, and writer cursor; supports dry_run, stale-preparation checks, and idempotent retries. Pass exactly one of full_text or prose_path. For long or escape-heavy prose, write a UTF-8 file under the book workspace (outside .spindle and dotfiles) and pass its workspace-relative path with optional expected_sha256; HTTP/secondary calls resolve it on the primary's workspace",
         ),
         tool::<GetEntityInput, EntitySubjectSnapshot>(
             "get_entity",

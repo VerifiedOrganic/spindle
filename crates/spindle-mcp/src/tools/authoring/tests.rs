@@ -17,6 +17,7 @@ fn auto_strict_product_lock_requires_hard_count_zero() {
         message: "hard shelf `emotion_cocktail` over limit".into(),
         entity_ids: vec!["scene:1".into()],
         suggested_action: Some("rewrite from the beat".into()),
+        evidence: None,
     }];
     assert!(
         auto_strict_anti_slop_blocks(&hard),
@@ -28,6 +29,7 @@ fn auto_strict_product_lock_requires_hard_count_zero() {
         message: "stub".into(),
         entity_ids: vec![],
         suggested_action: None,
+        evidence: None,
     }];
     assert!(
         !auto_strict_anti_slop_blocks(&other),

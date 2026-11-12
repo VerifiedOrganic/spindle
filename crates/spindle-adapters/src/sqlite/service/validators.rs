@@ -574,15 +574,11 @@ impl SqliteSpindleService {
                     &spindle_core::character_mentions::unquoted_narration(&scene.full_text),
                     &["I".to_string()],
                 ));
-            let latest_state = states
-                .iter()
-                .filter(|state| state.character_id == *character_id)
-                .filter(|state| {
-                    let state_position =
-                        (state.book_number, state.chapter_number, state.scene_order);
-                    position_lte(state_position, scene_position)
-                })
-                .max_by_key(|state| (state.book_number, state.chapter_number, state.scene_order));
+            let latest_state = crate::sqlite::repository::select_latest_character_state(
+                states.iter(),
+                character_id,
+                scene_position,
+            );
             let state_position = latest_state
                 .map(|state| (state.book_number, state.chapter_number, state.scene_order));
             let current_scene_state = state_position == Some(scene_position);
@@ -603,7 +599,7 @@ impl SqliteSpindleService {
             // Canonical life_status facts are a second, independent death
             // store. Only facts strictly before this scene count; a later
             // explicit non-dead character state clears an older death.
-            let life_death = life_facts
+            let life_fact = life_facts
                 .iter()
                 .filter(|fact| fact.subject_id.as_deref() == Some(character_id.as_str()))
                 .filter(|fact| {
@@ -612,14 +608,8 @@ impl SqliteSpindleService {
                         "life_status" | "status" | "vital_status" | "vital" | "state" | "condition"
                     )
                 })
+                .filter(|fact| fact.scene_id.as_deref() != Some(scene.id.as_str()))
                 .filter_map(|fact| {
-                    let value = crate::format::canonical_fact_value(fact);
-                    if !is_dead_status(&value) {
-                        return None;
-                    }
-                    if fact.scene_id.as_deref() == Some(scene.id.as_str()) {
-                        return None;
-                    }
                     let fact_position = (fact.book_number, fact.chapter_number);
                     let scene_chapter = (scene.book_number, scene.chapter_number);
                     // Only an explicitly marked pre-story/backstory fact
@@ -636,9 +626,17 @@ impl SqliteSpindleService {
                     if fact_position >= scene_chapter && !story_start_fact {
                         return None;
                     }
-                    Some(((fact.book_number, fact.chapter_number, 0), value))
+                    Some((
+                        (fact.book_number, fact.chapter_number, 0),
+                        fact.created_at,
+                        fact.id.clone(),
+                        crate::format::canonical_fact_value(fact),
+                    ))
                 })
-                .max_by_key(|(position, _)| *position);
+                .max_by_key(|(position, created_at, id, _)| (*position, *created_at, id.clone()));
+            let life_death = life_fact.and_then(|(position, _, _, value)| {
+                is_dead_status(&value).then_some((position, value))
+            });
             // Canonical death + current-scene cast state is presence after
             // death even when the prose uses a pronoun or an unlisted verb.
             // Otherwise require a named/alive action to avoid mere mentions.
@@ -1020,6 +1018,7 @@ impl SqliteSpindleService {
                             "check_type": finding.check_type,
                             "message": finding.message,
                             "byte_range": finding.byte_range,
+                            "entity_ids": finding.entity_ids,
                         })
                     })
                     .collect::<Vec<_>>();
@@ -1066,14 +1065,19 @@ impl SqliteSpindleService {
                 if let Some(byte_range) = finding.byte_range {
                     message = format!("{message} (bytes {}..{})", byte_range.start, byte_range.end);
                 }
+                let mut entity_ids = finding.entity_ids;
+                if !entity_ids.iter().any(|id| id == &scene.scene_id) {
+                    entity_ids.push(scene.scene_id.clone());
+                }
                 issues.push(ConsistencyIssue {
                     severity: finding.severity.as_str().to_string(),
                     check_type: finding.check_type.to_string(),
                     message,
-                    entity_ids: vec![scene.scene_id.clone()],
+                    entity_ids,
                     suggested_action: Some(
                         "revise scene prose or supporting canon records".to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }
@@ -1224,6 +1228,7 @@ impl SqliteSpindleService {
                         "revise the scene, explain the exception on page, or update the rule if canon changed"
                             .to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }
@@ -1459,6 +1464,7 @@ impl SqliteSpindleService {
                          clocked scenes, or mark an intended rewind with temporal_mode \"flashback\""
                             .to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }
@@ -1502,6 +1508,7 @@ impl SqliteSpindleService {
                 suggested_action: Some(
                     "narrow the scope or resolve higher-urgency promises, then re-run".to_string(),
                 ),
+                evidence: None,
             });
         }
 
@@ -1585,6 +1592,7 @@ impl SqliteSpindleService {
                          reinforce the thread if it is not actually landed"
                             .to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }
@@ -1632,6 +1640,7 @@ impl SqliteSpindleService {
                 suggested_action: Some(
                     "narrow the scope to the scenes you want audited, then re-run".to_string(),
                 ),
+                evidence: None,
             });
         }
 
@@ -1688,6 +1697,7 @@ impl SqliteSpindleService {
                      divergence improves the story, update the plan's purpose to match"
                         .to_string(),
                 ),
+                evidence: None,
             });
         }
 
@@ -1732,6 +1742,7 @@ impl SqliteSpindleService {
                 suggested_action: Some(
                     "narrow the scope to the scenes you want audited, then re-run".to_string(),
                 ),
+                evidence: None,
             });
         }
 
@@ -1798,6 +1809,7 @@ impl SqliteSpindleService {
                          or revise the scene so the out-of-circle character does not act on the secret"
                             .to_string(),
                     ),
+                    evidence: None,
                 });
             }
         }
@@ -2795,5 +2807,86 @@ mod dead_action_tests {
             "A letter lay on the desk. Veyra opened the door.",
             &aliases
         ));
+    }
+}
+
+#[cfg(test)]
+mod state_selection_tests {
+    use crate::sqlite::records::CharacterState;
+    use chrono::Utc;
+    use std::collections::BTreeMap;
+
+    fn state(rowid: i64, status: &str) -> CharacterState {
+        CharacterState {
+            id: format!("character_state:{rowid:026}"),
+            project_id: "project:test".into(),
+            branch_id: "branch:test".into(),
+            character_id: "character:test".into(),
+            scene_id: None,
+            book_number: 1,
+            chapter_number: 1,
+            scene_order: 0,
+            emotional_state: BTreeMap::new(),
+            goals: Vec::new(),
+            status: vec![status.into()],
+            notes: Vec::new(),
+            source_summary: None,
+            created_at: Utc::now(),
+            rowid,
+        }
+    }
+
+    #[test]
+    fn newest_state_wins_at_the_same_position_in_either_load_order() {
+        let empty = state(1, "alive");
+        let dead = state(2, "life_status:dead");
+        let position = (1, 1, 0);
+        let forward = [empty.clone(), dead.clone()];
+        let reverse = [dead.clone(), empty];
+        for states in [forward.as_slice(), reverse.as_slice()] {
+            let selected = crate::sqlite::repository::select_latest_character_state(
+                states.iter(),
+                "character:test",
+                position,
+            )
+            .expect("a state");
+            assert_eq!(selected.rowid, 2, "newest row must win: {selected:?}");
+            assert_eq!(selected.status, vec!["life_status:dead".to_string()]);
+        }
+    }
+
+    #[test]
+    fn serialized_canon_state_preserves_rowid_recency() {
+        let mut older = state(1, "alive");
+        older.id = "character_state:zzzzzzzzzzzzzzzzzzzzzzzzzz".into();
+        older.created_at = Utc::now();
+        let mut newer = state(2, "life_status:dead");
+        newer.id = "character_state:aaaaaaaaaaaaaaaaaaaaaaaaaa".into();
+        newer.created_at = older.created_at;
+        let json = serde_json::to_string(&[older, newer]).unwrap();
+        let round_tripped: Vec<CharacterState> = serde_json::from_str(&json).unwrap();
+        let selected = crate::sqlite::repository::select_latest_character_state(
+            round_tripped.iter(),
+            "character:test",
+            (1, 1, 0),
+        )
+        .expect("a state");
+        assert_eq!(
+            selected.rowid, 2,
+            "rowid must survive canon serialization even when created_at and id ordering disagree"
+        );
+        assert_eq!(selected.status, vec!["life_status:dead".to_string()]);
+    }
+
+    #[test]
+    fn dead_state_severity_is_error_for_explicit_marker() {
+        let finding = spindle_core::models::RetconFinding::DeadCharacterAct {
+            character_id: "character:test".into(),
+            character_name: "Test Character".into(),
+            status: "life_status:dead".into(),
+            message: "action after death".into(),
+        };
+        let issue = crate::sqlite::service::retcon_finding_to_consistency_issue(&finding);
+        assert_eq!(issue.severity, "error");
     }
 }

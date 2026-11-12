@@ -619,6 +619,89 @@ only aggregate candidate/coverage counts before the final P4 measurement. The
 corpus is not edited after the P0 freeze; a second worker audits that the clean
 twins contain no unintentional contradictions.
 
+### 4.2.1 P4 public-set measurement (2026-11-11)
+
+Evaluator: `evals/continuity_recall.py <set> --semantic shadow --agent-config ...`
+with one judge config (`ollama:gemma4:31b`) held constant. The evaluator runs a
+shadow pass, then an on pass against the same projects; the on pass reuses the
+validated cache. Checked-in reports: `evals/results/semantic_p4_*.json`. P95 and
+repair figures are per actual dispatch receipt, including failed/timeout
+dispatches; scene summaries remain the cost totals.
+
+| Set | Deterministic recall | Semantic-on recall | Semantic warnings | Control warnings | Cache hit (on) | Repair rate (shadow/on) | p95 prompt/call | p95 output/call | p95 latency/call | Tokens/scene (on) |
+| --- | --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline | 28/28 | 28/28 | 0 | unchanged (2 warnings + 1 info) | 78.8% | 19.2% / 48.5% | 5,148 | 1,200 | 5,870 ms | 1,887 |
+| #72 | 54/56 | 54/56 | 0 | unchanged (0) | 48.4% | 34.0% / 50.0% | 6,609 | 1,200 | 6,637 ms | 6,862 |
+| held-out-2 | 55/56 localized, 56/56 type | 55/56, 56/56 | 0 | unchanged (0) | 59.3% | 29.8% / 48.9% | 4,775 | 1,200 | 3,060 ms | 3,500 |
+| held-out-3 | 26/56 localized, 28/56 type | 26/56, 28/56 | 0 | unchanged (0) | 34.4% | 39.6% / 50.0% | 6,878 | 1,200 | 4,111 ms | 9,526 |
+
+**Why zero semantic warnings reached even info:** the judge returned **no
+contradiction verdicts** on any public set. All validated judgments were
+`compatible` or `insufficient`, with every confidence in the highest bucket
+(>=0.85). The only discard reason recorded was `not_contradiction`; there were
+no evidence-anchor, canon-ref, threshold, or dedupe discards. Therefore nothing
+was discarded downstream: there was no contradiction to promote, downgrade, or
+emit. Truncation was common (shadow stop reasons: baseline 7, #72 52,
+held-out-2 10, held-out-3 75), and repair rates remain high, but successful calls
+also contained no contradiction. The public-set result fails the activation
+repair gate (<=10% of calls) and shows no semantic recall lift; warning precision
+is undefined (`null`, zero denominator) and evidence-anchor validity is vacuous
+(1.0 over zero issues). Control warnings did not rise. The lane stays **off by
+default**.
+
+Cost: the provider exposes no configured price, so only token and latency
+inputs are reported. Held-out-4 was not accessed.
+
+### 4.2.2 P4 fix: compact judge, verifier, and evidence gates
+
+The pre-fix public reports showed zero contradiction verdicts: the verbose report
+contract truncated at 1,200 output tokens, and successful calls defaulted to
+compatible/insufficient. The fix adds a compact per-candidate wire format,
+server-side evidence-span resolution, general family evidence gates, a
+contradiction-only verifier that fails closed, and canon/subject-aware evidence
+dedupe.
+
+The precision round then removed the remaining control false positives by
+requiring quantity evidence to be a balance/stock statement (not a price or
+transaction), selecting character death only from states strictly before the
+scene, rejecting dead-character actions framed as memory/flashback/vision, and
+generalizing deterministic dedupe to same-subject/same-scene findings for
+families beyond world rules (secret dedupe also requires the same secret fact,
+not just the same outsider). Secret disclosures now require either a
+distinctive detail from the secret's value or a public-audience marker, so a
+private accusation that only names the topic is not a leak. The family gates
+run on compact, full, and host reports before caching or emission. The
+judge-policy revision moved to v3 so full reports cached under the older policy
+are misses rather than reuse. The evaluator runs one fresh on pass (the pass that
+dispatches the judge and emits findings) and then an actual cache-only shadow
+pass against the same projects; each mode keeps its own results, and shadow/on
+parity is measured from the two actual summaries rather than derived from on.
+
+Public-set measurement on this head (`ollama:gemma4:31b`, shadow/on):
+
+| Set | Deterministic | Semantic on | Warning precision | Control warnings | On repair | Shadow/on parity | Anchor validity | p95 prompt/output/latency |
+| --- | --- | --- | ---: | ---: | ---: | --- | ---: | --- |
+| Baseline | 28/28 | 28/28 | n/a (0 warnings) | 0 | 1.18% (85 calls) | pass | 1.00 | 2,173 / 627 / 1,797 ms |
+| #72 | 54/56 | 54/56 | 1.00 | 0 | 2.63% (76 calls) | pass | 1.00 | 2,893 / 1,036 / 2,507 ms |
+| held-out-2 | 55/56, 56/56 type | 55/56, 56/56 type | n/a (0 warnings) | 0 | 0.00% (66 calls) | pass | 1.00 | 2,029 / 646 / 1,734 ms |
+| held-out-3 | 26/56, 28/56 type | 29/56, 30/56 type | 1.00 | 0 | 4.17% (72 calls) | pass | 1.00 | 3,216 / 951 / 2,466 ms |
+
+Control warnings do not rise anywhere; warning precision is 1.0 where warnings
+exist; anchor validity is 1.0; on-mode repair is <=4.17% of calls; shadow/on
+would-be finding counts match on every set. The cache-only shadow pass made
+0-6 dispatches per set (only scenes that failed on), so its repair ratio is a
+retry ratio, not a second full dispatch pass, and is reported separately in the
+checked-in reports. The remaining gap is **recall**: baseline is already at
+28/28, while #72 and held-out-2 still show no semantic lift (their correct
+warnings duplicate deterministic findings). Aggregate lift is +3 localized/+2
+type-present, all from held-out-3, so the four-set activation gate is **not
+met** and the lane remains off by default.
+
+The stronger-model check (`deepseek-v4.1-flash`) was not viable: it truncated
+111/120 #72 calls and 121/125 held-out-3 calls at the output cap, with zero
+findings and ~8-9 s p95 latency. Gemma remains the measured judge; the operator
+still chooses model/cost.
+
 ### 4.3 Metrics on all five sets
 
 For baseline, #72, held-out-2, held-out-3, and held-out-4:
