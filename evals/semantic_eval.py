@@ -18,6 +18,7 @@ from typing import Any
 
 from continuity_recall import (
     McpClient,
+    PlantedContradiction,
     issue_matches_contradiction,
     score_manuscript,
     seed_ashfall_manuscript,
@@ -31,12 +32,18 @@ from continuity_held_out_3 import (
     planted_contradictions,
     seed_manuscript,
 )
+from continuity_held_out_4 import (
+    CORPUS as H4_CORPUS,
+    _seed_manuscript as seed_held_out_4_manuscript,
+)
+from continuity_held_out_4_ground_truth import filter_plants
 
 SET_COMMANDS = {
     "run": "baseline",
     "held-out": "held-out-72",
     "held-out-2": "held-out-2",
     "held-out-3": "held-out-3",
+    "held-out-4": "held-out-4",
 }
 
 
@@ -195,7 +202,7 @@ def _metrics(
 def _score_report(set_name: str, report: dict[str, Any], issues_key: str) -> dict[str, Any]:
     control = report["control"][issues_key]
     planted = report["planted"][issues_key]
-    if set_name in ("baseline", "held-out-72"):
+    if set_name in ("baseline", "held-out-72", "held-out-4"):
         score = score_manuscript(
             manuscript_id=report["name"],
             chapter_count=report["chapters"],
@@ -208,6 +215,7 @@ def _score_report(set_name: str, report: dict[str, Any], issues_key: str) -> dic
             "type_present": score["detected_total"],
             "planted": score["planted_total"],
             "control_count": score["control_false_positive_count"],
+            "per_type": score["per_type"],
         }
     if set_name == "held-out-2":
         score = h2_score(planted, report["items"])
@@ -251,6 +259,25 @@ def _seed_reports(client: McpClient, set_name: str) -> tuple[list[dict[str, Any]
                 {
                     "name": spec["id"],
                     "chapters": 16,
+                    "items": items,
+                    "control_project": control_id,
+                    "planted_project": planted_id,
+                }
+            )
+        return reports, 32
+    if set_name == "held-out-4":
+        for manuscript in H4_CORPUS["manuscripts"]:
+            control_id, _ = seed_held_out_4_manuscript(
+                client, manuscript, False, PlantedContradiction
+            )
+            planted_id, items = seed_held_out_4_manuscript(
+                client, manuscript, True, PlantedContradiction
+            )
+            items = filter_plants(items)
+            reports.append(
+                {
+                    "name": manuscript["id"],
+                    "chapters": len(manuscript["chapters"]),
                     "items": items,
                     "control_project": control_id,
                     "planted_project": planted_id,
@@ -436,12 +463,34 @@ def semantic_eval_self_test() -> None:
     assert verdict_parity[0]["summary_matches"] is False
 
 
-def _warning_precision(
+def _merge_per_type(
+    aggregate: dict[str, dict[str, int]], per_type: dict[str, dict[str, Any]] | None
+) -> None:
+    """Sum one report's per-type counts into the run aggregate.
+
+    `score_manuscript` localizes before counting, so its per-type `detected`
+    count is the localized count; type-present is reported as the same value
+    because no separate broad-check credit exists for this corpus.
+    """
+    for check_type, row in (per_type or {}).items():
+        slot = aggregate.setdefault(
+            check_type, {"planted": 0, "localized": 0, "type_present": 0}
+        )
+        slot["planted"] += int(row["planted"])
+        slot["localized"] += int(row["detected"])
+        slot["type_present"] += int(row["detected"])
+
+
+def _warning_match_counts(
     set_name: str,
     reports: list[dict[str, Any]],
     mode: str,
-) -> float | None:
-    """TP/FP over semantic warning instances; info findings never count."""
+) -> tuple[int, int]:
+    """True/false-positive counts over semantic warning instances.
+
+    Info findings never count. Control warnings are all false positives; a
+    planted warning is a true positive only when it localizes to a plant.
+    """
     true_positive = 0
     false_positive = 0
     for report in reports:
@@ -457,7 +506,7 @@ def _warning_precision(
         ]
         false_positive += len(control_warnings)
         for warning in planted_warnings:
-            if set_name in ("baseline", "held-out-72"):
+            if set_name in ("baseline", "held-out-72", "held-out-4"):
                 matched = any(issue_matches_contradiction(warning, item) for item in report["items"])
             elif set_name == "held-out-2":
                 matched = h2_score([warning], report["items"])["localized_detected"] > 0
@@ -472,6 +521,16 @@ def _warning_precision(
                 true_positive += 1
             else:
                 false_positive += 1
+    return true_positive, false_positive
+
+
+def _warning_precision(
+    set_name: str,
+    reports: list[dict[str, Any]],
+    mode: str,
+) -> float | None:
+    """TP/FP over semantic warning instances; info findings never count."""
+    true_positive, false_positive = _warning_match_counts(set_name, reports, mode)
     matches = [True] * true_positive + [False] * false_positive
     return _precision_from_warning_matches(matches)
 
@@ -520,6 +579,9 @@ def run_semantic_set(
         mode_checks = []
         deterministic_scores = {"localized": 0, "type_present": 0, "planted": 0, "control_count": 0}
         semantic_scores = {"localized": 0, "type_present": 0, "planted": 0, "control_count": 0}
+        deterministic_per_type: dict[str, dict[str, int]] = {}
+        semantic_per_type: dict[str, dict[str, int]] = {}
+        semantic_only_per_type: dict[str, dict[str, int]] = {}
         for report in reports:
             deterministic = dict(report)
             deterministic["control"] = {"issues": _deterministic(report["control"][mode]["issues"])}
@@ -527,6 +589,7 @@ def run_semantic_set(
             det = _score_report(set_name, deterministic, "issues")
             for key in deterministic_scores:
                 deterministic_scores[key] += det[key]
+            _merge_per_type(deterministic_per_type, det.get("per_type"))
             full = {
                 **report,
                 "control": {"issues": report["control"][mode]["issues"]},
@@ -535,6 +598,7 @@ def run_semantic_set(
             semantic = _score_report(set_name, full, "issues")
             for key in semantic_scores:
                 semantic_scores[key] += semantic[key]
+            _merge_per_type(semantic_per_type, semantic.get("per_type"))
             mode_checks.extend([report["control"][mode], report["planted"][mode]])
         control_checks = [report["control"][mode] for report in reports]
         metrics = _metrics(mode_checks, chapters, control_checks)
@@ -547,11 +611,18 @@ def run_semantic_set(
             score = _score_report(set_name, filtered, "issues")
             for key in semantic_only:
                 semantic_only[key] += score[key]
+            _merge_per_type(semantic_only_per_type, score.get("per_type"))
+        warning_tp, warning_fp = _warning_match_counts(set_name, reports, mode)
         result["modes"][mode] = {
             "deterministic": deterministic_scores,
             "semantic_on": semantic_scores,
             "semantic_only": semantic_only,
+            "deterministic_per_type": deterministic_per_type,
+            "semantic_per_type": semantic_per_type,
+            "semantic_only_per_type": semantic_only_per_type,
             "semantic_warning_precision": _warning_precision(set_name, reports, mode),
+            "semantic_warning_true_positive": warning_tp,
+            "semantic_warning_false_positive": warning_fp,
             **metrics,
         }
     return result

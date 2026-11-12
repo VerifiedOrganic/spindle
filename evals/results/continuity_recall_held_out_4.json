@@ -1,0 +1,1727 @@
+{
+  "benchmark": "continuity_recall_held_out_4",
+  "generated_at_utc": "2026-11-12T02:15:10+00:00",
+  "corpus": {
+    "corpus": "held-out-4",
+    "corpus_manifest_sha256": "4273e4cb71647e36a18a74ac68c717c91a37ea0492678197a6517b3a81efae0e",
+    "corpus_module_sha256": "3d025fb94465b39a51828dc7870780065857abe5687ab74dbee66ab7b6a1817f",
+    "manuscript_count": 2,
+    "chapters_per_manuscript": [
+      16,
+      16
+    ],
+    "frozen_plants": 56,
+    "scored_plants": 55
+  },
+  "ground_truth_corrections": {
+    "frozen_corpus_manifest_sha256": "4273e4cb71647e36a18a74ac68c717c91a37ea0492678197a6517b3a81efae0e",
+    "frozen_corpus_module_sha256": "3d025fb94465b39a51828dc7870780065857abe5687ab74dbee66ab7b6a1817f",
+    "correction_file": "evals/continuity_held_out_4_errata.json",
+    "correction_sha256": "3129737b925ce3faebf5069798e5c80cd0d2ef1162d4a81aa1cb4363a94a6411",
+    "excluded_plants": [
+      {
+        "id": "vesta.dead_character_acting.nadi_ch8",
+        "manuscript_id": "vesta_station",
+        "contradiction_type": "dead_character_acting",
+        "reason": "Chapter 8 frames the line as an old voicemail recording made before the death, inside a scene about replaying old messages. A recorded voice made before the death is compatible with the death and is not a post-mortem action, so scoring it as a required dead_character_acting detection penalizes a correct detector."
+      }
+    ],
+    "detected_by_config": {
+      "deterministic_before": true,
+      "deterministic_after": true,
+      "semantic_deterministic": true,
+      "semantic_on": true
+    },
+    "effect": "The excluded plant was detected in every configuration, so its exclusion removes one detected and one planted item from each total. The frozen corpus bytes and manifest hash are unchanged."
+  },
+  "as_frozen": {
+    "deterministic_before": {
+      "tier": "deterministic",
+      "binary_sha256": "3ee27fb8856ddc2af6fea0b754dd0a8c68c006ed9440c34719281cb46d89f0fa",
+      "elapsed_seconds": 11.215,
+      "total_planted": 56,
+      "total_detected": 30,
+      "overall_recall": 0.5357,
+      "control_false_positive_count": 0,
+      "control_findings_by_check_type": {},
+      "per_type": {
+        "character_attribute": {
+          "planted": 8,
+          "localized": 3,
+          "type_present": 3,
+          "recall": 0.375
+        },
+        "dead_character_acting": {
+          "planted": 8,
+          "localized": 7,
+          "type_present": 7,
+          "recall": 0.875
+        },
+        "timeline_chronology_rewind": {
+          "planted": 8,
+          "localized": 4,
+          "type_present": 4,
+          "recall": 0.5
+        },
+        "knowledge_leak_before_learned": {
+          "planted": 8,
+          "localized": 7,
+          "type_present": 7,
+          "recall": 0.875
+        },
+        "world_rule_cost_violation": {
+          "planted": 8,
+          "localized": 6,
+          "type_present": 6,
+          "recall": 0.75
+        },
+        "quantity_affordability": {
+          "planted": 8,
+          "localized": 2,
+          "type_present": 2,
+          "recall": 0.25
+        },
+        "secret_leak": {
+          "planted": 8,
+          "localized": 1,
+          "type_present": 1,
+          "recall": 0.125
+        }
+      },
+      "manuscripts": [
+        {
+          "manuscript_id": "salt_almanac",
+          "chapters": 16,
+          "planted_total": 28,
+          "detected_total": 15,
+          "recall": 0.5357,
+          "control_false_positive_count": 0,
+          "control_findings_by_check_type": {},
+          "control_warnings_by_check_type": {},
+          "per_type": {
+            "character_attribute": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "dead_character_acting": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "timeline_chronology_rewind": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 4,
+              "localized": 3,
+              "type_present": 3,
+              "recall": 0.75
+            },
+            "world_rule_cost_violation": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "quantity_affordability": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "secret_leak": {
+              "planted": 4,
+              "localized": 0,
+              "type_present": 0,
+              "recall": 0.0
+            }
+          }
+        },
+        {
+          "manuscript_id": "vesta_station",
+          "chapters": 16,
+          "planted_total": 28,
+          "detected_total": 15,
+          "recall": 0.5357,
+          "control_false_positive_count": 0,
+          "control_findings_by_check_type": {},
+          "control_warnings_by_check_type": {},
+          "per_type": {
+            "character_attribute": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "dead_character_acting": {
+              "planted": 4,
+              "localized": 3,
+              "type_present": 3,
+              "recall": 0.75
+            },
+            "timeline_chronology_rewind": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "world_rule_cost_violation": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "quantity_affordability": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "secret_leak": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            }
+          }
+        }
+      ],
+      "errata": null
+    },
+    "deterministic_after": {
+      "tier": "deterministic",
+      "binary_sha256": "196a999047c4dbcad2a123420c5ed3a0cae9c95a7c91c3cee5e34560256a4fc4",
+      "elapsed_seconds": 0.965,
+      "total_planted": 56,
+      "total_detected": 30,
+      "overall_recall": 0.5357,
+      "control_false_positive_count": 0,
+      "control_findings_by_check_type": {},
+      "per_type": {
+        "character_attribute": {
+          "planted": 8,
+          "localized": 3,
+          "type_present": 3,
+          "recall": 0.375
+        },
+        "dead_character_acting": {
+          "planted": 8,
+          "localized": 7,
+          "type_present": 7,
+          "recall": 0.875
+        },
+        "timeline_chronology_rewind": {
+          "planted": 8,
+          "localized": 4,
+          "type_present": 4,
+          "recall": 0.5
+        },
+        "knowledge_leak_before_learned": {
+          "planted": 8,
+          "localized": 7,
+          "type_present": 7,
+          "recall": 0.875
+        },
+        "world_rule_cost_violation": {
+          "planted": 8,
+          "localized": 6,
+          "type_present": 6,
+          "recall": 0.75
+        },
+        "quantity_affordability": {
+          "planted": 8,
+          "localized": 2,
+          "type_present": 2,
+          "recall": 0.25
+        },
+        "secret_leak": {
+          "planted": 8,
+          "localized": 1,
+          "type_present": 1,
+          "recall": 0.125
+        }
+      },
+      "manuscripts": [
+        {
+          "manuscript_id": "salt_almanac",
+          "chapters": 16,
+          "planted_total": 28,
+          "detected_total": 15,
+          "recall": 0.5357,
+          "control_false_positive_count": 0,
+          "control_findings_by_check_type": {},
+          "control_warnings_by_check_type": {},
+          "per_type": {
+            "character_attribute": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "dead_character_acting": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "timeline_chronology_rewind": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 4,
+              "localized": 3,
+              "type_present": 3,
+              "recall": 0.75
+            },
+            "world_rule_cost_violation": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "quantity_affordability": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "secret_leak": {
+              "planted": 4,
+              "localized": 0,
+              "type_present": 0,
+              "recall": 0.0
+            }
+          }
+        },
+        {
+          "manuscript_id": "vesta_station",
+          "chapters": 16,
+          "planted_total": 28,
+          "detected_total": 15,
+          "recall": 0.5357,
+          "control_false_positive_count": 0,
+          "control_findings_by_check_type": {},
+          "control_warnings_by_check_type": {},
+          "per_type": {
+            "character_attribute": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "dead_character_acting": {
+              "planted": 4,
+              "localized": 3,
+              "type_present": 3,
+              "recall": 0.75
+            },
+            "timeline_chronology_rewind": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "world_rule_cost_violation": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "quantity_affordability": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "secret_leak": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            }
+          }
+        }
+      ],
+      "errata": null
+    },
+    "semantic": {
+      "judge_identity": "ollama:gemma4:31b",
+      "shadow_on_parity_ok": true,
+      "shadow_on_parity": [
+        {
+          "name": "salt_almanac",
+          "variant": "control",
+          "on_warnings": 0,
+          "on_infos": 0,
+          "shadow_warnings": 0,
+          "shadow_infos": 0,
+          "on_judgments": 106,
+          "shadow_judgments": 106,
+          "on_verdicts": {
+            "compatible": 106
+          },
+          "shadow_verdicts": {
+            "compatible": 106
+          },
+          "on_discard_reasons": {
+            "not_contradiction": 106
+          },
+          "shadow_discard_reasons": {
+            "not_contradiction": 106
+          },
+          "on_error_kinds": [
+            "unknown_candidate"
+          ],
+          "shadow_error_kinds": [
+            "unknown_candidate"
+          ],
+          "matches": true,
+          "summary_matches": true
+        },
+        {
+          "name": "salt_almanac",
+          "variant": "planted",
+          "on_warnings": 1,
+          "on_infos": 0,
+          "shadow_warnings": 1,
+          "shadow_infos": 0,
+          "on_judgments": 117,
+          "shadow_judgments": 117,
+          "on_verdicts": {
+            "compatible": 102,
+            "contradiction": 3,
+            "insufficient": 12
+          },
+          "shadow_verdicts": {
+            "compatible": 102,
+            "contradiction": 3,
+            "insufficient": 12
+          },
+          "on_discard_reasons": {
+            "dedupe": 2,
+            "not_contradiction": 114,
+            "verification_rejected": 1
+          },
+          "shadow_discard_reasons": {
+            "dedupe": 2,
+            "not_contradiction": 114
+          },
+          "on_error_kinds": [],
+          "shadow_error_kinds": [],
+          "matches": true,
+          "summary_matches": false
+        },
+        {
+          "name": "vesta_station",
+          "variant": "control",
+          "on_warnings": 0,
+          "on_infos": 0,
+          "shadow_warnings": 0,
+          "shadow_infos": 0,
+          "on_judgments": 154,
+          "shadow_judgments": 154,
+          "on_verdicts": {
+            "compatible": 152,
+            "insufficient": 2
+          },
+          "shadow_verdicts": {
+            "compatible": 152,
+            "insufficient": 2
+          },
+          "on_discard_reasons": {
+            "not_contradiction": 154
+          },
+          "shadow_discard_reasons": {
+            "not_contradiction": 154
+          },
+          "on_error_kinds": [
+            "unknown_candidate"
+          ],
+          "shadow_error_kinds": [
+            "unknown_candidate"
+          ],
+          "matches": true,
+          "summary_matches": true
+        },
+        {
+          "name": "vesta_station",
+          "variant": "planted",
+          "on_warnings": 1,
+          "on_infos": 0,
+          "shadow_warnings": 1,
+          "shadow_infos": 0,
+          "on_judgments": 158,
+          "shadow_judgments": 158,
+          "on_verdicts": {
+            "compatible": 152,
+            "contradiction": 2,
+            "insufficient": 4
+          },
+          "shadow_verdicts": {
+            "compatible": 152,
+            "contradiction": 2,
+            "insufficient": 4
+          },
+          "on_discard_reasons": {
+            "dedupe": 1,
+            "not_contradiction": 156,
+            "verification_rejected": 1
+          },
+          "shadow_discard_reasons": {
+            "dedupe": 1,
+            "not_contradiction": 156
+          },
+          "on_error_kinds": [
+            "unknown_candidate"
+          ],
+          "shadow_error_kinds": [
+            "unknown_candidate"
+          ],
+          "matches": true,
+          "summary_matches": false
+        }
+      ],
+      "modes": {
+        "on": {
+          "deterministic": {
+            "localized": 30,
+            "type_present": 30,
+            "planted": 56,
+            "control_count": 0
+          },
+          "semantic_on": {
+            "localized": 31,
+            "type_present": 31,
+            "planted": 56,
+            "control_count": 0
+          },
+          "semantic_only": {
+            "localized": 1,
+            "type_present": 1,
+            "planted": 56,
+            "control_count": 0
+          },
+          "deterministic_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 3,
+              "type_present": 3
+            },
+            "dead_character_acting": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 4,
+              "type_present": 4
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 6,
+              "type_present": 6
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 2,
+              "type_present": 2
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 1,
+              "type_present": 1
+            }
+          },
+          "semantic_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 3,
+              "type_present": 3
+            },
+            "dead_character_acting": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 4,
+              "type_present": 4
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 2,
+              "type_present": 2
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 1,
+              "type_present": 1
+            }
+          },
+          "semantic_only_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "dead_character_acting": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 1,
+              "type_present": 1
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            }
+          },
+          "semantic_warning_precision": 0.5,
+          "semantic_warning_true_positive": 1,
+          "semantic_warning_false_positive": 1,
+          "semantic_warning_count": 2,
+          "semantic_control_warnings": 0,
+          "control_warnings_by_check_type": {},
+          "evidence_anchor_validity": 1.0,
+          "repair_rate": 0.0779,
+          "repaired_scene_rate": 0.2031,
+          "per_call_receipts": 77,
+          "model_calls": 77,
+          "judgments": 535,
+          "candidate_scene_count": 64,
+          "calls_per_candidate_scene": 1.2031,
+          "p95_prompt_tokens": 3282.0,
+          "p95_output_tokens": 952.0,
+          "p95_latency_ms": 2430.0,
+          "p95_output_chars": 1749.0,
+          "input_tokens": 178786,
+          "output_tokens": 48546,
+          "tokens_per_scene": 3552.06,
+          "tokens_per_chapter": 7104.12,
+          "cache_hit_rate": 0.0,
+          "would_be_warnings": 2,
+          "would_be_infos": 0,
+          "errors_by_kind": {
+            "unknown_candidate": 3
+          },
+          "verdicts": {
+            "compatible": 512,
+            "contradiction": 5,
+            "insufficient": 18
+          },
+          "confidence_buckets": [
+            0,
+            0,
+            0,
+            0,
+            535
+          ],
+          "discard_reasons": {
+            "dedupe": 3,
+            "not_contradiction": 530,
+            "verification_rejected": 2
+          },
+          "stop_reasons": {
+            "success": 77
+          }
+        },
+        "shadow": {
+          "deterministic": {
+            "localized": 30,
+            "type_present": 30,
+            "planted": 56,
+            "control_count": 0
+          },
+          "semantic_on": {
+            "localized": 30,
+            "type_present": 30,
+            "planted": 56,
+            "control_count": 0
+          },
+          "semantic_only": {
+            "localized": 0,
+            "type_present": 0,
+            "planted": 56,
+            "control_count": 0
+          },
+          "deterministic_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 3,
+              "type_present": 3
+            },
+            "dead_character_acting": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 4,
+              "type_present": 4
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 6,
+              "type_present": 6
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 2,
+              "type_present": 2
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 1,
+              "type_present": 1
+            }
+          },
+          "semantic_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 3,
+              "type_present": 3
+            },
+            "dead_character_acting": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 4,
+              "type_present": 4
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 6,
+              "type_present": 6
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 2,
+              "type_present": 2
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 1,
+              "type_present": 1
+            }
+          },
+          "semantic_only_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "dead_character_acting": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            }
+          },
+          "semantic_warning_precision": null,
+          "semantic_warning_true_positive": 0,
+          "semantic_warning_false_positive": 0,
+          "semantic_warning_count": 0,
+          "semantic_control_warnings": 0,
+          "control_warnings_by_check_type": {},
+          "evidence_anchor_validity": 1.0,
+          "repair_rate": 0.5,
+          "repaired_scene_rate": 0.0469,
+          "per_call_receipts": 6,
+          "model_calls": 6,
+          "judgments": 535,
+          "candidate_scene_count": 64,
+          "calls_per_candidate_scene": 0.0938,
+          "p95_prompt_tokens": 3243.0,
+          "p95_output_tokens": 925.0,
+          "p95_latency_ms": 2422.0,
+          "p95_output_chars": 1610.0,
+          "input_tokens": 14550,
+          "output_tokens": 3878,
+          "tokens_per_scene": 287.94,
+          "tokens_per_chapter": 575.88,
+          "cache_hit_rate": 0.9531,
+          "would_be_warnings": 2,
+          "would_be_infos": 0,
+          "errors_by_kind": {
+            "unknown_candidate": 3
+          },
+          "verdicts": {
+            "compatible": 512,
+            "contradiction": 5,
+            "insufficient": 18
+          },
+          "confidence_buckets": [
+            0,
+            0,
+            0,
+            0,
+            535
+          ],
+          "discard_reasons": {
+            "dedupe": 3,
+            "not_contradiction": 530
+          },
+          "stop_reasons": {
+            "success": 6
+          }
+        }
+      },
+      "lift_semantic_on_minus_deterministic_after": {
+        "localized": 1,
+        "type_present": 1,
+        "planted": 56
+      }
+    }
+  },
+  "corrected": {
+    "deterministic_before": {
+      "tier": "deterministic",
+      "binary_sha256": "3ee27fb8856ddc2af6fea0b754dd0a8c68c006ed9440c34719281cb46d89f0fa",
+      "elapsed_seconds": 11.215,
+      "total_planted": 55,
+      "total_detected": 29,
+      "overall_recall": 0.5273,
+      "control_false_positive_count": 0,
+      "control_findings_by_check_type": {},
+      "per_type": {
+        "character_attribute": {
+          "planted": 8,
+          "localized": 3,
+          "type_present": 3,
+          "recall": 0.375
+        },
+        "dead_character_acting": {
+          "planted": 7,
+          "localized": 6,
+          "type_present": 6,
+          "recall": 0.8571
+        },
+        "timeline_chronology_rewind": {
+          "planted": 8,
+          "localized": 4,
+          "type_present": 4,
+          "recall": 0.5
+        },
+        "knowledge_leak_before_learned": {
+          "planted": 8,
+          "localized": 7,
+          "type_present": 7,
+          "recall": 0.875
+        },
+        "world_rule_cost_violation": {
+          "planted": 8,
+          "localized": 6,
+          "type_present": 6,
+          "recall": 0.75
+        },
+        "quantity_affordability": {
+          "planted": 8,
+          "localized": 2,
+          "type_present": 2,
+          "recall": 0.25
+        },
+        "secret_leak": {
+          "planted": 8,
+          "localized": 1,
+          "type_present": 1,
+          "recall": 0.125
+        }
+      },
+      "manuscripts": [
+        {
+          "manuscript_id": "salt_almanac",
+          "chapters": 16,
+          "planted_total": 28,
+          "detected_total": 15,
+          "recall": 0.5357,
+          "control_false_positive_count": 0,
+          "control_findings_by_check_type": {},
+          "control_warnings_by_check_type": {},
+          "per_type": {
+            "character_attribute": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "dead_character_acting": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "timeline_chronology_rewind": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 4,
+              "localized": 3,
+              "type_present": 3,
+              "recall": 0.75
+            },
+            "world_rule_cost_violation": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "quantity_affordability": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "secret_leak": {
+              "planted": 4,
+              "localized": 0,
+              "type_present": 0,
+              "recall": 0.0
+            }
+          }
+        },
+        {
+          "manuscript_id": "vesta_station",
+          "chapters": 16,
+          "planted_total": 27,
+          "detected_total": 14,
+          "recall": 0.5185,
+          "control_false_positive_count": 0,
+          "control_findings_by_check_type": {},
+          "control_warnings_by_check_type": {},
+          "per_type": {
+            "character_attribute": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "dead_character_acting": {
+              "planted": 3,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.6667
+            },
+            "timeline_chronology_rewind": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "world_rule_cost_violation": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "quantity_affordability": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "secret_leak": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            }
+          }
+        }
+      ],
+      "errata": {
+        "excluded_plant_ids": [
+          "vesta.dead_character_acting.nadi_ch8"
+        ],
+        "scored_plants": 55,
+        "corpus_manifest_sha256": "4273e4cb71647e36a18a74ac68c717c91a37ea0492678197a6517b3a81efae0e"
+      }
+    },
+    "deterministic_after": {
+      "tier": "deterministic",
+      "binary_sha256": "196a999047c4dbcad2a123420c5ed3a0cae9c95a7c91c3cee5e34560256a4fc4",
+      "elapsed_seconds": 0.965,
+      "total_planted": 55,
+      "total_detected": 29,
+      "overall_recall": 0.5273,
+      "control_false_positive_count": 0,
+      "control_findings_by_check_type": {},
+      "per_type": {
+        "character_attribute": {
+          "planted": 8,
+          "localized": 3,
+          "type_present": 3,
+          "recall": 0.375
+        },
+        "dead_character_acting": {
+          "planted": 7,
+          "localized": 6,
+          "type_present": 6,
+          "recall": 0.8571
+        },
+        "timeline_chronology_rewind": {
+          "planted": 8,
+          "localized": 4,
+          "type_present": 4,
+          "recall": 0.5
+        },
+        "knowledge_leak_before_learned": {
+          "planted": 8,
+          "localized": 7,
+          "type_present": 7,
+          "recall": 0.875
+        },
+        "world_rule_cost_violation": {
+          "planted": 8,
+          "localized": 6,
+          "type_present": 6,
+          "recall": 0.75
+        },
+        "quantity_affordability": {
+          "planted": 8,
+          "localized": 2,
+          "type_present": 2,
+          "recall": 0.25
+        },
+        "secret_leak": {
+          "planted": 8,
+          "localized": 1,
+          "type_present": 1,
+          "recall": 0.125
+        }
+      },
+      "manuscripts": [
+        {
+          "manuscript_id": "salt_almanac",
+          "chapters": 16,
+          "planted_total": 28,
+          "detected_total": 15,
+          "recall": 0.5357,
+          "control_false_positive_count": 0,
+          "control_findings_by_check_type": {},
+          "control_warnings_by_check_type": {},
+          "per_type": {
+            "character_attribute": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "dead_character_acting": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "timeline_chronology_rewind": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 4,
+              "localized": 3,
+              "type_present": 3,
+              "recall": 0.75
+            },
+            "world_rule_cost_violation": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "quantity_affordability": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "secret_leak": {
+              "planted": 4,
+              "localized": 0,
+              "type_present": 0,
+              "recall": 0.0
+            }
+          }
+        },
+        {
+          "manuscript_id": "vesta_station",
+          "chapters": 16,
+          "planted_total": 27,
+          "detected_total": 14,
+          "recall": 0.5185,
+          "control_false_positive_count": 0,
+          "control_findings_by_check_type": {},
+          "control_warnings_by_check_type": {},
+          "per_type": {
+            "character_attribute": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "dead_character_acting": {
+              "planted": 3,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.6667
+            },
+            "timeline_chronology_rewind": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 4,
+              "localized": 4,
+              "type_present": 4,
+              "recall": 1.0
+            },
+            "world_rule_cost_violation": {
+              "planted": 4,
+              "localized": 2,
+              "type_present": 2,
+              "recall": 0.5
+            },
+            "quantity_affordability": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            },
+            "secret_leak": {
+              "planted": 4,
+              "localized": 1,
+              "type_present": 1,
+              "recall": 0.25
+            }
+          }
+        }
+      ],
+      "errata": {
+        "excluded_plant_ids": [
+          "vesta.dead_character_acting.nadi_ch8"
+        ],
+        "scored_plants": 55,
+        "corpus_manifest_sha256": "4273e4cb71647e36a18a74ac68c717c91a37ea0492678197a6517b3a81efae0e"
+      }
+    },
+    "semantic": {
+      "judge_identity": "ollama:gemma4:31b",
+      "shadow_on_parity_ok": true,
+      "shadow_on_parity": [
+        {
+          "name": "salt_almanac",
+          "variant": "control",
+          "on_warnings": 0,
+          "on_infos": 0,
+          "shadow_warnings": 0,
+          "shadow_infos": 0,
+          "on_judgments": 106,
+          "shadow_judgments": 106,
+          "on_verdicts": {
+            "compatible": 106
+          },
+          "shadow_verdicts": {
+            "compatible": 106
+          },
+          "on_discard_reasons": {
+            "not_contradiction": 106
+          },
+          "shadow_discard_reasons": {
+            "not_contradiction": 106
+          },
+          "on_error_kinds": [
+            "unknown_candidate"
+          ],
+          "shadow_error_kinds": [
+            "unknown_candidate"
+          ],
+          "matches": true,
+          "summary_matches": true
+        },
+        {
+          "name": "salt_almanac",
+          "variant": "planted",
+          "on_warnings": 1,
+          "on_infos": 0,
+          "shadow_warnings": 1,
+          "shadow_infos": 0,
+          "on_judgments": 117,
+          "shadow_judgments": 117,
+          "on_verdicts": {
+            "compatible": 102,
+            "contradiction": 3,
+            "insufficient": 12
+          },
+          "shadow_verdicts": {
+            "compatible": 102,
+            "contradiction": 3,
+            "insufficient": 12
+          },
+          "on_discard_reasons": {
+            "dedupe": 2,
+            "not_contradiction": 114,
+            "verification_rejected": 1
+          },
+          "shadow_discard_reasons": {
+            "dedupe": 2,
+            "not_contradiction": 114
+          },
+          "on_error_kinds": [],
+          "shadow_error_kinds": [],
+          "matches": true,
+          "summary_matches": false
+        },
+        {
+          "name": "vesta_station",
+          "variant": "control",
+          "on_warnings": 0,
+          "on_infos": 0,
+          "shadow_warnings": 0,
+          "shadow_infos": 0,
+          "on_judgments": 154,
+          "shadow_judgments": 154,
+          "on_verdicts": {
+            "compatible": 152,
+            "insufficient": 2
+          },
+          "shadow_verdicts": {
+            "compatible": 152,
+            "insufficient": 2
+          },
+          "on_discard_reasons": {
+            "not_contradiction": 154
+          },
+          "shadow_discard_reasons": {
+            "not_contradiction": 154
+          },
+          "on_error_kinds": [
+            "unknown_candidate"
+          ],
+          "shadow_error_kinds": [
+            "unknown_candidate"
+          ],
+          "matches": true,
+          "summary_matches": true
+        },
+        {
+          "name": "vesta_station",
+          "variant": "planted",
+          "on_warnings": 1,
+          "on_infos": 0,
+          "shadow_warnings": 1,
+          "shadow_infos": 0,
+          "on_judgments": 158,
+          "shadow_judgments": 158,
+          "on_verdicts": {
+            "compatible": 152,
+            "contradiction": 2,
+            "insufficient": 4
+          },
+          "shadow_verdicts": {
+            "compatible": 152,
+            "contradiction": 2,
+            "insufficient": 4
+          },
+          "on_discard_reasons": {
+            "dedupe": 1,
+            "not_contradiction": 156,
+            "verification_rejected": 1
+          },
+          "shadow_discard_reasons": {
+            "dedupe": 1,
+            "not_contradiction": 156
+          },
+          "on_error_kinds": [
+            "unknown_candidate"
+          ],
+          "shadow_error_kinds": [
+            "unknown_candidate"
+          ],
+          "matches": true,
+          "summary_matches": false
+        }
+      ],
+      "modes": {
+        "on": {
+          "deterministic": {
+            "localized": 29,
+            "type_present": 29,
+            "planted": 55,
+            "control_count": 0
+          },
+          "semantic_on": {
+            "localized": 30,
+            "type_present": 30,
+            "planted": 55,
+            "control_count": 0
+          },
+          "semantic_only": {
+            "localized": 1,
+            "type_present": 1,
+            "planted": 55,
+            "control_count": 0
+          },
+          "deterministic_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 3,
+              "type_present": 3
+            },
+            "dead_character_acting": {
+              "planted": 7,
+              "localized": 6,
+              "type_present": 6
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 4,
+              "type_present": 4
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 6,
+              "type_present": 6
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 2,
+              "type_present": 2
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 1,
+              "type_present": 1
+            }
+          },
+          "semantic_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 3,
+              "type_present": 3
+            },
+            "dead_character_acting": {
+              "planted": 7,
+              "localized": 6,
+              "type_present": 6
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 4,
+              "type_present": 4
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 2,
+              "type_present": 2
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 1,
+              "type_present": 1
+            }
+          },
+          "semantic_only_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "dead_character_acting": {
+              "planted": 7,
+              "localized": 0,
+              "type_present": 0
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 1,
+              "type_present": 1
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            }
+          },
+          "semantic_warning_precision": 0.5,
+          "semantic_warning_true_positive": 1,
+          "semantic_warning_false_positive": 1,
+          "semantic_warning_count": 2,
+          "semantic_control_warnings": 0,
+          "control_warnings_by_check_type": {},
+          "evidence_anchor_validity": 1.0,
+          "repair_rate": 0.0779,
+          "repaired_scene_rate": 0.2031,
+          "per_call_receipts": 77,
+          "model_calls": 77,
+          "judgments": 535,
+          "candidate_scene_count": 64,
+          "calls_per_candidate_scene": 1.2031,
+          "p95_prompt_tokens": 3282.0,
+          "p95_output_tokens": 952.0,
+          "p95_latency_ms": 2430.0,
+          "p95_output_chars": 1749.0,
+          "input_tokens": 178786,
+          "output_tokens": 48546,
+          "tokens_per_scene": 3552.06,
+          "tokens_per_chapter": 7104.12,
+          "cache_hit_rate": 0.0,
+          "would_be_warnings": 2,
+          "would_be_infos": 0,
+          "errors_by_kind": {
+            "unknown_candidate": 3
+          },
+          "verdicts": {
+            "compatible": 512,
+            "contradiction": 5,
+            "insufficient": 18
+          },
+          "confidence_buckets": [
+            0,
+            0,
+            0,
+            0,
+            535
+          ],
+          "discard_reasons": {
+            "dedupe": 3,
+            "not_contradiction": 530,
+            "verification_rejected": 2
+          },
+          "stop_reasons": {
+            "success": 77
+          }
+        },
+        "shadow": {
+          "deterministic": {
+            "localized": 29,
+            "type_present": 29,
+            "planted": 55,
+            "control_count": 0
+          },
+          "semantic_on": {
+            "localized": 29,
+            "type_present": 29,
+            "planted": 55,
+            "control_count": 0
+          },
+          "semantic_only": {
+            "localized": 0,
+            "type_present": 0,
+            "planted": 55,
+            "control_count": 0
+          },
+          "deterministic_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 3,
+              "type_present": 3
+            },
+            "dead_character_acting": {
+              "planted": 7,
+              "localized": 6,
+              "type_present": 6
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 4,
+              "type_present": 4
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 6,
+              "type_present": 6
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 2,
+              "type_present": 2
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 1,
+              "type_present": 1
+            }
+          },
+          "semantic_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 3,
+              "type_present": 3
+            },
+            "dead_character_acting": {
+              "planted": 7,
+              "localized": 6,
+              "type_present": 6
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 4,
+              "type_present": 4
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 7,
+              "type_present": 7
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 6,
+              "type_present": 6
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 2,
+              "type_present": 2
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 1,
+              "type_present": 1
+            }
+          },
+          "semantic_only_per_type": {
+            "character_attribute": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "dead_character_acting": {
+              "planted": 7,
+              "localized": 0,
+              "type_present": 0
+            },
+            "timeline_chronology_rewind": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "knowledge_leak_before_learned": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "world_rule_cost_violation": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "quantity_affordability": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            },
+            "secret_leak": {
+              "planted": 8,
+              "localized": 0,
+              "type_present": 0
+            }
+          },
+          "semantic_warning_precision": null,
+          "semantic_warning_true_positive": 0,
+          "semantic_warning_false_positive": 0,
+          "semantic_warning_count": 0,
+          "semantic_control_warnings": 0,
+          "control_warnings_by_check_type": {},
+          "evidence_anchor_validity": 1.0,
+          "repair_rate": 0.5,
+          "repaired_scene_rate": 0.0469,
+          "per_call_receipts": 6,
+          "model_calls": 6,
+          "judgments": 535,
+          "candidate_scene_count": 64,
+          "calls_per_candidate_scene": 0.0938,
+          "p95_prompt_tokens": 3243.0,
+          "p95_output_tokens": 925.0,
+          "p95_latency_ms": 2422.0,
+          "p95_output_chars": 1610.0,
+          "input_tokens": 14550,
+          "output_tokens": 3878,
+          "tokens_per_scene": 287.94,
+          "tokens_per_chapter": 575.88,
+          "cache_hit_rate": 0.9531,
+          "would_be_warnings": 2,
+          "would_be_infos": 0,
+          "errors_by_kind": {
+            "unknown_candidate": 3
+          },
+          "verdicts": {
+            "compatible": 512,
+            "contradiction": 5,
+            "insufficient": 18
+          },
+          "confidence_buckets": [
+            0,
+            0,
+            0,
+            0,
+            535
+          ],
+          "discard_reasons": {
+            "dedupe": 3,
+            "not_contradiction": 530
+          },
+          "stop_reasons": {
+            "success": 6
+          }
+        }
+      },
+      "lift_semantic_on_minus_deterministic_after": {
+        "localized": 1,
+        "type_present": 1,
+        "planted": 55
+      }
+    }
+  },
+  "primary_aggregates": "corrected",
+  "measurement_notes": [
+    "Judge: Ollama Cloud gemma4:31b through the OpenAI-compatible chat endpoint; the lane applies temperature 0 and seed 7.",
+    "The native provider name 'ollama' loaded but did not resolve a model route (route_unavailable); the successful measurement used provider 'openai-compatible'.",
+    "Two semantic attempts before the successful run made zero judge calls (rating_denied, then route_unavailable) and are excluded; only the successful run is reported.",
+    "As-frozen aggregates use all 56 plants. Corrected aggregates exclude vesta.dead_character_acting.nadi_ch8, a pre-death voicemail recording, leaving 55 valid plants.",
+    "The excluded plant was detected by the deterministic lane in this run, so its exclusion removes one detected and one planted item from the before/after and semantic-on aggregates.",
+    "Type-present equals localized for this corpus because score_manuscript localizes before counting; no separate broad-check-only credit exists.",
+    "Shadow/on would-be warning counts match; planted summary differences are verifier discard bookkeeping, not finding-count mismatches."
+  ]
+}

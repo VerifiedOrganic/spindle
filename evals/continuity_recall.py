@@ -2686,10 +2686,13 @@ def run_self_test() -> None:
     from continuity_held_out import held_out_self_test
     from continuity_held_out_2 import held_out_2_self_test
     from continuity_held_out_3 import held_out_3_self_test
+    from continuity_held_out_4 import held_out_4_self_test
 
     held_out_self_test()
     held_out_2_self_test()
     held_out_3_self_test()
+    held_out_4_self_test()
+
     from semantic_eval import semantic_eval_self_test
 
     semantic_eval_self_test()
@@ -2874,11 +2877,15 @@ def main() -> int:
         "held-out-3",
         help="Run the blind held-out-3 continuity corpus against spindle-mcp",
     )
+    held_out_4_parser = subparsers.add_parser(
+        "held-out-4",
+        help="Run the blind held-out-4 continuity corpus against spindle-mcp",
+    )
     verify_prose_parser = subparsers.add_parser(
         "verify-accepted-prose",
         help="Run only the generated-accepted-prose continuity fixture against spindle-mcp",
     )
-    for p in (parser, run_parser, held_out_parser, held_out_2_parser, held_out_3_parser, verify_prose_parser):
+    for p in (parser, run_parser, held_out_parser, held_out_2_parser, held_out_3_parser, held_out_4_parser, verify_prose_parser):
         p.add_argument("--binary", help="Explicit benchmark artifact (bypasses automatic build)")
         p.add_argument("--no-build", action="store_true", default=argparse.SUPPRESS, help="Use an existing binary without building (may be stale)")
         p.add_argument("--output", help="Write JSON report to this file path")
@@ -2923,7 +2930,9 @@ def main() -> int:
         from semantic_eval import SET_COMMANDS, run_semantic_set
 
         if args.command not in SET_COMMANDS:
-            raise RuntimeError("--semantic is supported for run/held-out/held-out-2/held-out-3")
+            raise RuntimeError(
+                "--semantic is supported for run/held-out/held-out-2/held-out-3/held-out-4"
+            )
         if args.deep:
             raise RuntimeError("--semantic cannot be combined with --deep")
         if agent_config is None:
@@ -2939,7 +2948,19 @@ def main() -> int:
         print(json.dumps(report, indent=2))
         return 0
 
-    if args.command == "held-out-3":
+    if args.command == "held-out-4":
+        from continuity_held_out_4 import run_held_out_4_benchmark
+        from continuity_held_out_4_ground_truth import apply_errata
+
+        if accepted_dir is not None:
+            raise RuntimeError("--accepted-artifacts-dir is not used by the held-out-4 corpus")
+        report = run_held_out_4_benchmark(
+            binary=binary,
+            deep_check=bool(args.deep),
+            agent_config=agent_config,
+        )
+        report = apply_errata(report)
+    elif args.command == "held-out-3":
         from continuity_held_out_3 import run_held_out_3_benchmark
 
         if accepted_dir is not None:
