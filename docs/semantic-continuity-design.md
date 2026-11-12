@@ -665,10 +665,12 @@ The precision round then removed the remaining control false positives by
 requiring quantity evidence to be a balance/stock statement (not a price or
 transaction), selecting character death only from states strictly before the
 scene, and rejecting dead-character actions framed as memory/flashback/vision.
-The evaluator now runs one fresh on pass and derives shadow from the same
-validated reports; a cache-only shadow pass measures cache hits. This removes
-the on-pass repair inflation caused by retrying only shadow failures and makes
-shadow/on would-be counts identical.
+The judge-policy revision moved to v3 so full reports cached under the older
+policy are misses rather than reuse. The evaluator runs one fresh on pass (the
+pass that dispatches the judge and emits findings) and then an actual
+cache-only shadow pass against the same projects; each mode keeps its own
+results, and shadow/on parity is measured from the two actual summaries rather
+than derived from on.
 
 Public-set measurement on this head (`ollama:gemma4:31b`, shadow/on):
 

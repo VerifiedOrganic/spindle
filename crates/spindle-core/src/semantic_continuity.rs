@@ -16,7 +16,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const SEMANTIC_CONTRACT_VERSION: &str = "semantic-continuity-v1";
 /// Internal judge-policy revision. Included in the cache identity so policy
 /// changes cannot reuse reports produced by an older judge path.
-pub const SEMANTIC_JUDGE_POLICY_VERSION: &str = "semantic-judge-policy-v2";
+///
+/// Bumped to v3 when the quantity-balance and dead-character-framing evidence
+/// gates landed: full reports cached under v2 already contain expanded
+/// judgments and would otherwise skip those gates on a cache hit.
+pub const SEMANTIC_JUDGE_POLICY_VERSION: &str = "semantic-judge-policy-v3";
 
 /// Maximum number of candidates in one scene request.
 pub const SEMANTIC_MAX_CANDIDATES_PER_SCENE: usize = 12;
