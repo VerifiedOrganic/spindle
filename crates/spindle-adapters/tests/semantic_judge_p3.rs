@@ -52,7 +52,7 @@ async fn seeded_scene() -> (TempDir, SqliteSpindleService, String) {
         chapter_number: 1,
         chapter_id: None,
         scene_order: 1,
-        full_text: "Mara tried to ignore the moon-key rule and turned the moon key in daylight."
+        full_text: "Mara tried to ignore the moon-key rule and turned the moon key in daylight without paying."
             .into(),
         summary: "test".into(),
         content_rating: ContentRating::General,
@@ -70,8 +70,8 @@ fn host_report(
     svc_request: &spindle_core::semantic_continuity::SemanticHostRequestV1,
 ) -> SemanticHostReportV1 {
     let candidate = &svc_request.candidate_set.candidates[0];
-    let quote = "moon key";
-    let start = "Mara tried to ignore the moon-key rule and turned the moon key in daylight."
+    let quote = "turned the moon key in daylight without paying";
+    let start = "Mara tried to ignore the moon-key rule and turned the moon key in daylight without paying."
         .find(quote)
         .unwrap();
     let end = start + quote.len();
@@ -128,10 +128,9 @@ async fn host_report_emits_in_on_mode_and_shadow_counts_without_findings() {
     assert!(on.issues.iter().any(|issue| {
         issue.check_type == "world_rule_semantic_drift"
             && issue.message.contains("(semantic)")
-            && issue
-                .evidence
-                .as_ref()
-                .is_some_and(|span| span.exact_quote == "moon key")
+            && issue.evidence.as_ref().is_some_and(|span| {
+                span.exact_quote == "turned the moon key in daylight without paying"
+            })
     }));
     let summary = on.semantic_summary.expect("summary");
     assert_eq!(summary.warnings, 1);

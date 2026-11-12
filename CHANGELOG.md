@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Semantic continuity precision round (the lane still ships **off by
+  default**): quantity contradictions require balance/stock evidence,
+  dead-character state is selected only from strictly prior scenes,
+  memory/flashback/vision framing no longer reports a dead character as acting,
+  and secret disclosures require a distinctive value detail or a public
+  audience. Deterministic dedupe now covers same-subject/same-scene findings
+  beyond world rules. Shadow and on runs are measured from their own passes;
+  on-mode repairs are <=4.17% of calls, control warnings do not rise, warning
+  precision is 1.0 where warnings exist, and the judge-policy revision is
+  bumped so pre-change cached reports cannot bypass the new gates.
+
 ## 0.4.0 — 2026-11-11
 
 ### Added

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Semantic-on evaluation for the public continuity suites.
 
-Seeds each corpus once, runs `check_consistency` in shadow mode, then reruns
-the same projects in on mode (exercising the validated-report cache). Reports
+Seeds each corpus once, runs `check_consistency` in on mode (the pass that
+dispatches the judge and emits findings), then reruns the same projects in
+shadow mode against the validated-report cache. Each mode keeps its own
+results, so repair/cost metrics are never borrowed across passes; shadow/on
+would-be parity is measured from the two actual summaries. Reports
 deterministic-vs-semantic recall, precision/control counts, evidence validity,
 repairs, p95 tokens/latency, calls, cache hits, and totals per scene/chapter.
 """
@@ -292,6 +295,68 @@ def _precision_from_warning_matches(matches: list[bool]) -> float | None:
     return round(sum(1 for match in matches if match) / len(matches), 4)
 
 
+def _shadow_on_parity(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compare would-be finding counts from the actual shadow and on runs.
+
+    Both modes share the validated-report cache, so a mismatch means the shadow
+    path produced different would-be findings or failed where on succeeded.
+    """
+    parity: list[dict[str, Any]] = []
+    for report in reports:
+        for variant in ("control", "planted"):
+            on_summary = report[variant]["on"].get("semantic_summary") or {}
+            shadow_summary = report[variant]["shadow"].get("semantic_summary") or {}
+            on_counts = (
+                int(on_summary.get("warnings", 0)),
+                int(on_summary.get("infos", 0)),
+            )
+            shadow_counts = (
+                int(shadow_summary.get("warnings", 0)),
+                int(shadow_summary.get("infos", 0)),
+            )
+            on_judgments = int(on_summary.get("judgments", 0))
+            shadow_judgments = int(shadow_summary.get("judgments", 0))
+            on_verdicts = on_summary.get("verdicts") or {}
+            shadow_verdicts = shadow_summary.get("verdicts") or {}
+            on_discards = on_summary.get("discard_reasons") or {}
+            shadow_discards = shadow_summary.get("discard_reasons") or {}
+            on_errors = sorted(
+                error.get("kind", "unknown") for error in on_summary.get("errors") or []
+            )
+            shadow_errors = sorted(
+                error.get("kind", "unknown") for error in shadow_summary.get("errors") or []
+            )
+            parity.append(
+                {
+                    "name": report["name"],
+                    "variant": variant,
+                    "on_warnings": on_counts[0],
+                    "on_infos": on_counts[1],
+                    "shadow_warnings": shadow_counts[0],
+                    "shadow_infos": shadow_counts[1],
+                    "on_judgments": on_judgments,
+                    "shadow_judgments": shadow_judgments,
+                    "on_verdicts": on_verdicts,
+                    "shadow_verdicts": shadow_verdicts,
+                    "on_discard_reasons": on_discards,
+                    "shadow_discard_reasons": shadow_discards,
+                    "on_error_kinds": on_errors,
+                    "shadow_error_kinds": shadow_errors,
+                    # The gate is would-be finding parity. Verdict/discard/error
+                    # differences are reported for diagnosis but can legitimately
+                    # come from cache retries and the judge-only verifier.
+                    "matches": on_counts == shadow_counts,
+                    "summary_matches": (
+                        on_judgments == shadow_judgments
+                        and on_verdicts == shadow_verdicts
+                        and on_discards == shadow_discards
+                        and on_errors == shadow_errors
+                    ),
+                }
+            )
+    return parity
+
+
 def semantic_eval_self_test() -> None:
     fake = {
         "semantic_summary": {
@@ -326,6 +391,49 @@ def semantic_eval_self_test() -> None:
     # Info findings never enter this list, and one warning matching several
     # plants contributes exactly one boolean match.
     assert _precision_from_warning_matches([True, True, False]) == 0.6667
+    parity = _shadow_on_parity(
+        [
+            {
+                "name": "m",
+                "control": {
+                    "on": {"semantic_summary": {"warnings": 1, "infos": 0}},
+                    "shadow": {"semantic_summary": {"warnings": 1, "infos": 0}},
+                },
+                "planted": {
+                    "on": {"semantic_summary": {"warnings": 2, "infos": 1}},
+                    "shadow": {"semantic_summary": {"warnings": 2, "infos": 0}},
+                },
+            }
+        ]
+    )
+    assert parity[0]["matches"] is True
+    assert parity[1]["matches"] is False
+    verdict_parity = _shadow_on_parity(
+        [
+            {
+                "name": "v",
+                "control": {
+                    "on": {
+                        "semantic_summary": {
+                            "warnings": 1,
+                            "infos": 0,
+                            "verdicts": {"contradiction": 1},
+                        }
+                    },
+                    "shadow": {
+                        "semantic_summary": {
+                            "warnings": 1,
+                            "infos": 0,
+                            "verdicts": {"compatible": 1},
+                        }
+                    },
+                },
+                "planted": {"on": {"semantic_summary": {}}, "shadow": {"semantic_summary": {}}},
+            }
+        ]
+    )
+    assert verdict_parity[0]["matches"] is True
+    assert verdict_parity[0]["summary_matches"] is False
 
 
 def _warning_precision(
@@ -378,18 +486,34 @@ def run_semantic_set(
         client = McpClient(binary, Path(tmp), agent_config=agent_config)
         try:
             reports, chapters = _seed_reports(client, set_name)
+            # Run on first: this is the pass that dispatches the judge and
+            # emits findings, so its repair/cost receipts describe real
+            # on-mode calls. The shadow pass then runs against the same
+            # projects and the validated-report cache; its results are kept
+            # as its own, not copied from on.
             for report in reports:
-                report["control"] = {"shadow": _check(client, report["control_project"], "shadow")}
-                report["planted"] = {"shadow": _check(client, report["planted_project"], "shadow")}
+                report["control"] = {
+                    "on": _check(client, report["control_project"], "on")
+                }
+                report["planted"] = {
+                    "on": _check(client, report["planted_project"], "on")
+                }
             for report in reports:
-                report["control"]["on"] = _check(client, report["control_project"], "on")
-                report["planted"]["on"] = _check(client, report["planted_project"], "on")
+                report["control"]["shadow"] = _check(
+                    client, report["control_project"], "shadow"
+                )
+                report["planted"]["shadow"] = _check(
+                    client, report["planted_project"], "shadow"
+                )
         finally:
             client.close()
 
+    parity = _shadow_on_parity(reports)
     result: dict[str, Any] = {
         "set": set_name,
         "judge_identity": judge_identity,
+        "shadow_on_parity": parity,
+        "shadow_on_parity_ok": all(entry["matches"] for entry in parity),
         "modes": {},
     }
     for mode in ("shadow", "on"):
