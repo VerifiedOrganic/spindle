@@ -1,4 +1,5 @@
 use super::static_tool_names;
+use rmcp::model::{CallToolResult, Content};
 
 /// Tools that are operator-only. They remain in the registry and disposition
 /// ledger so existing operator clients can be migrated, but they are hidden from
@@ -22,7 +23,7 @@ pub(crate) fn is_operator_only(name: &str) -> bool {
 /// Tool names enabled by a generated profile. `None` means the profile is
 /// unknown and fails closed. The unset startup profile is resolved to
 /// `workflow-write` before the server constructs its router.
-pub(super) fn profile_allowed_tool_names(profile: &str) -> Option<&'static [&'static str]> {
+pub(crate) fn profile_allowed_tool_names(profile: &str) -> Option<&'static [&'static str]> {
     spindle_adapters::guidance::list_profiles()
         .iter()
         .find(|candidate| candidate.name == profile)
@@ -68,9 +69,26 @@ pub(crate) fn profile_has_tool(profile: Option<&str>, name: &str) -> bool {
 
 pub(crate) fn profile_help() -> String {
     format!(
-        "Select a startup profile with SPINDLE_TOOL_PROFILE. Profiles: {}. Unset starts the generated workflow-write profile; operator-only commands are CLI-only and denied on model transports. Run 'spindle-mcp profiles' for units and capabilities.",
+        "Select a startup profile with SPINDLE_TOOL_PROFILE, or switch a running session with the use_profile tool. Profiles: {}. Unset starts the generated workflow-write profile; operator-only commands are CLI-only and denied on model transports. Run 'spindle-mcp profiles' for units and capabilities.",
         profile_names().join(", ")
     )
+}
+
+/// Structured, model-readable rejection for a profile switch. The MCP tool
+/// result stays an ordinary error result, but `structuredContent.error.code`
+/// lets clients distinguish an unknown name from an unavailable proxy target.
+pub(crate) fn profile_switch_error(code: &str, profile: &str, message: &str) -> CallToolResult {
+    let structured = serde_json::json!({
+        "error": {
+            "code": code,
+            "profile": profile,
+            "message": message,
+            "available_profiles": profile_names(),
+        }
+    });
+    let mut result = CallToolResult::error(vec![Content::text(format!("Error: {message}"))]);
+    result.structured_content = Some(structured);
+    result
 }
 
 pub(crate) fn print_profiles(json: bool) {

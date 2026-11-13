@@ -132,12 +132,13 @@ mod profile_contract_tests {
                 "get_skill",
                 "get_reference",
                 "list_skills",
+                "use_profile",
             ] {
                 assert!(profile.tools.contains(&name), "{}: {name}", profile.name);
             }
         }
         let full = profiles.iter().find(|p| p.name == "full").unwrap();
-        assert_eq!(full.tools.len(), 176);
+        assert_eq!(full.tools.len(), 177);
         for profile in profiles {
             for tool in profile.tools {
                 assert!(

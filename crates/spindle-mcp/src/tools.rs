@@ -161,8 +161,10 @@ mod profiles;
 pub(crate) use profiles::OPERATOR_ONLY_TOOLS;
 pub(crate) use profiles::is_operator_only;
 pub(crate) use profiles::profile_names;
-use profiles::*;
-pub(crate) use profiles::{print_profiles, profile_has_tool, profile_help, validate_tool_profile};
+pub(crate) use profiles::{
+    print_profiles, profile_allowed_tool_names, profile_has_tool, profile_help,
+    profile_switch_error, validate_tool_profile,
+};
 mod authoring;
 use authoring::*;
 mod session;
@@ -199,6 +201,10 @@ pub struct ToolRouter {
     session_context: Arc<RwLock<SessionContext>>,
     serialization_state: Arc<ToolSerializationState>,
     tool_profile: Option<String>,
+    /// Session-scoped runtime profile state. `None` keeps the router's fixed
+    /// `tool_profile` (tests and exact per-request views); server sessions
+    /// attach shared state so `use_profile` can switch without reconnecting.
+    runtime_profile: Option<Arc<std::sync::RwLock<Option<String>>>>,
     /// Test-only ownership guard for the fixture's temporary data directory.
     /// Keeping it here lets the router's Drop remove the directory without
     /// changing every fixture call site.
@@ -270,27 +276,97 @@ impl ToolRouter {
             session_context: Arc::new(RwLock::new(SessionContext::default())),
             serialization_state,
             tool_profile,
+            runtime_profile: None,
             #[cfg(test)]
             temp_dir: None,
         }
     }
 
-    /// A view of this router with a different tool profile. The session
+    /// A view of this router with a different fixed tool profile. The session
     /// context and serialization state are shared, so `set_active_project`
-    /// and branch selection survive per-request profile selection.
+    /// and branch selection survive per-request profile selection. Runtime
+    /// switching is intentionally disabled in this view: internal-listener
+    /// profile overrides must stay exact.
     pub(crate) fn with_profile(&self, tool_profile: Option<String>) -> Self {
         Self {
             service: self.service.clone(),
             session_context: self.session_context.clone(),
             serialization_state: self.serialization_state.clone(),
             tool_profile,
+            runtime_profile: None,
             #[cfg(test)]
             temp_dir: self.temp_dir.clone(),
         }
     }
 
-    pub(crate) fn tool_profile(&self) -> Option<&str> {
-        self.tool_profile.as_deref()
+    /// A view of this router that shares the session's runtime profile state.
+    pub(crate) fn with_active_profile(&self) -> Self {
+        Self {
+            service: self.service.clone(),
+            session_context: self.session_context.clone(),
+            serialization_state: self.serialization_state.clone(),
+            tool_profile: self.tool_profile.clone(),
+            runtime_profile: self.runtime_profile.clone(),
+            #[cfg(test)]
+            temp_dir: self.temp_dir.clone(),
+        }
+    }
+
+    /// Attach session-scoped runtime profile state. Server constructors call
+    /// this once; per-request views share it through `with_active_profile`.
+    pub(crate) fn with_runtime_profile(
+        mut self,
+        runtime_profile: Arc<std::sync::RwLock<Option<String>>>,
+    ) -> Self {
+        self.runtime_profile = Some(runtime_profile);
+        self
+    }
+
+    /// The profile active for this router view: runtime state when attached,
+    /// otherwise the fixed profile.
+    pub(crate) fn current_profile(&self) -> Option<String> {
+        self.runtime_profile.as_ref().map_or_else(
+            || self.tool_profile.clone(),
+            |state| {
+                state
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone()
+            },
+        )
+    }
+
+    /// Switch this session's active profile and return the new discovery
+    /// summary. Unknown names fail with a structured `unknown_profile` error;
+    /// routers without session state reject the call.
+    fn switch_profile(&self, profile: &str) -> Result<UseProfileOutput, CallToolResult> {
+        let Some(state) = self.runtime_profile.as_ref() else {
+            return Err(profile_switch_error(
+                "profile_switch_unavailable",
+                profile,
+                "profile switching is only available in an MCP server session",
+            ));
+        };
+        if let Err(error) = validate_tool_profile(Some(profile)) {
+            return Err(profile_switch_error(
+                "unknown_profile",
+                profile,
+                &format!("{error:#}"),
+            ));
+        }
+        *state
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(profile.to_owned());
+        let tools: Vec<String> = self
+            .list_tools()
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        Ok(UseProfileOutput {
+            profile: profile.to_owned(),
+            tool_count: tools.len(),
+            tools,
+        })
     }
 
     #[cfg(test)]
@@ -318,10 +394,10 @@ impl ToolRouter {
                 .cloned()
                 .collect()
         };
-        let Some(profile) = self.tool_profile.as_deref() else {
+        let Some(profile) = self.current_profile() else {
             return visible(all);
         };
-        let Some(allowed) = profile_allowed_tool_names(profile) else {
+        let Some(allowed) = profile_allowed_tool_names(&profile) else {
             return Vec::new();
         };
         generated_tool_schemas()
@@ -334,7 +410,7 @@ impl ToolRouter {
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
-        profile_has_tool(self.tool_profile.as_deref(), name)
+        profile_has_tool(self.current_profile().as_deref(), name)
     }
 }
 

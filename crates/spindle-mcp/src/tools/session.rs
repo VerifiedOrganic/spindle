@@ -14,6 +14,7 @@ pub(super) fn tool_supports_session_project_default(name: &str) -> bool {
     !matches!(
         name,
         "set_active_project"
+            | "use_profile"
             | "planning_begin"
             | "planning_advance"
             | "planning_status"
@@ -37,6 +38,7 @@ pub(super) fn tool_requires_project_context(name: &str) -> bool {
         name,
         "create_project"
             | "list_projects"
+            | "use_profile"
             | "planning_begin"
             | "planning_advance"
             | "planning_status"

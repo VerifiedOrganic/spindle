@@ -762,6 +762,13 @@ impl ToolRouter {
                 },
                 Err(error) => Err(error),
             },
+            "use_profile" => match parse_arguments::<UseProfileInput>(arguments) {
+                Ok(input) => match self.switch_profile(&input.profile) {
+                    Ok(output) => structured_result(&output),
+                    Err(result) => Ok(result),
+                },
+                Err(error) => Err(error),
+            },
             "test_agent" => {
                 self.invoke(arguments, |input| self.service.test_agent(input))
                     .await

@@ -7789,6 +7789,22 @@ pub struct ListSkillsOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UseProfileInput {
+    /// Generated profile name to activate for this MCP session (for example "workflow-write", "research", or "full").
+    pub profile: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UseProfileOutput {
+    /// Active profile name after the switch.
+    pub profile: String,
+    /// Number of tools now visible in this session.
+    pub tool_count: usize,
+    /// Tool names now visible in this session, in discovery order.
+    pub tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GetSkillInput {
     /// Skill name as returned by `list_skills` (e.g. "scene-writer").
     pub name: String,

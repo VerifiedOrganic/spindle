@@ -637,7 +637,8 @@
       "get_writer_state",
       "list_projects",
       "list_skills",
-      "set_active_project"
+      "set_active_project",
+      "use_profile"
     ],
     "version": 1
   },

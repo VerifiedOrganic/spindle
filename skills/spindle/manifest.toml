@@ -2,7 +2,7 @@ version = 1
 name = "spindle"
 profiles = ["workflow-write", "workflow-authoring", "default"]
 requires_skills = []
-tools = ["get_reference", "get_skill", "get_writer_state", "list_projects", "list_skills", "set_active_project"]
+tools = ["get_reference", "get_skill", "get_writer_state", "list_projects", "list_skills", "set_active_project", "use_profile"]
 
 [[references]]
 name = "setup"
