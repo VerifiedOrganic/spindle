@@ -861,12 +861,13 @@ impl ModelRouter {
             return Ok(None);
         };
         let settings = format!(
-            "route={route_name}|adapter={}|model={}|max_tokens={:?}|temperature={:?}|reasoning_effort={:?}",
+            "route={route_name}|adapter={}|model={}|max_tokens={:?}|temperature={:?}|reasoning_effort={:?}|extra_body={}",
             route.adapter_kind,
             route.model_name,
             route.max_tokens,
             route.temperature,
-            route.reasoning_effort
+            route.reasoning_effort,
+            extra_body_digest(&route.extra_body)
         );
         if let Some(agent) = runtime.agents.get(&route.model_name) {
             Ok(Some(format!(
@@ -2727,6 +2728,20 @@ fn extra_body_as_json(table: Option<&toml::Table>) -> BTreeMap<String, serde_jso
         .collect()
 }
 
+/// Stable digest of the effective provider-specific request fields, used in
+/// route cache identities. The values themselves may be sensitive, so only the
+/// SHA-256 hex digest enters the identity string.
+fn extra_body_digest(extra: &BTreeMap<String, serde_json::Value>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    // `BTreeMap` iteration (and therefore serialization) is key-ordered.
+    match serde_json::to_vec(extra) {
+        Ok(bytes) => hasher.update(bytes),
+        Err(_) => hasher.update(b"<unserializable>"),
+    }
+    format!("sha256:{:x}", hasher.finalize())
+}
+
 fn runtime_from_loaded_config(
     client: &reqwest::Client,
     config: LoadedAgentConfig,
@@ -4249,6 +4264,82 @@ agent = "default-draft"
         let route =
             resolve_route(&runtime, "draft", Some("explicit")).expect("default still resolves");
         assert_eq!(route.model_name, "default-draft");
+    }
+
+    #[test]
+    fn resolved_route_identity_tracks_effective_extra_body_without_leaking_values() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("spindle.toml");
+        let identity = |agent_extra: &str, route_extra: &str| -> String {
+            std::fs::write(
+                &config_path,
+                format!(
+                    r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "shared"
+name = "Shared"
+provider = "openai-compatible"
+endpoint = "http://localhost:1/v1"
+model = "test-model"
+extra_body = {agent_extra}
+
+[[routing]]
+route = "draft"
+agent = "shared"
+
+[routing.extra_body]
+{route_extra}
+"####
+                ),
+            )
+            .expect("write config");
+            router
+                .configure(Some(&config_path.display().to_string()))
+                .expect("configure router");
+            router
+                .resolved_route_identity("draft", None)
+                .expect("identity")
+                .expect("configured route")
+        };
+
+        let base = identity(
+            r#"{ top_k = 10, api_key = "sk-secret-value" }"#,
+            r#"service_tier = "priority""#,
+        );
+        let same = identity(
+            r#"{ top_k = 10, api_key = "sk-secret-value" }"#,
+            r#"service_tier = "priority""#,
+        );
+        assert_eq!(base, same, "identity must be stable for unchanged config");
+
+        let agent_changed = identity(
+            r#"{ top_k = 11, api_key = "sk-secret-value" }"#,
+            r#"service_tier = "priority""#,
+        );
+        assert_ne!(
+            base, agent_changed,
+            "agent-level extra_body changes must invalidate the route identity"
+        );
+
+        let route_changed = identity(
+            r#"{ top_k = 10, api_key = "sk-secret-value" }"#,
+            r#"service_tier = "standard""#,
+        );
+        assert_ne!(
+            base, route_changed,
+            "route-level extra_body changes must invalidate the route identity"
+        );
+
+        assert!(
+            !base.contains("sk-secret-value")
+                && !base.contains("priority")
+                && !base.contains("top_k"),
+            "cache identity must carry only the extra_body digest: {base}"
+        );
     }
 
     #[tokio::test]
