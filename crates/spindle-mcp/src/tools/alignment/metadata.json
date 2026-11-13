@@ -2,6 +2,7 @@
   "authoring-supervisor": {
     "profiles": [
       "default",
+      "full",
       "workflow-authoring"
     ],
     "references": [],
@@ -56,6 +57,7 @@
   "bible-librarian": {
     "profiles": [
       "default",
+      "full",
       "release"
     ],
     "references": [],
@@ -117,7 +119,8 @@
   },
   "canon-steward": {
     "profiles": [
-      "default"
+      "default",
+      "full"
     ],
     "references": [],
     "requires_skills": [
@@ -145,6 +148,7 @@
   "character-creator": {
     "profiles": [
       "default",
+      "full",
       "worldbuilding"
     ],
     "references": [],
@@ -177,7 +181,8 @@
   },
   "continuity-editor": {
     "profiles": [
-      "default"
+      "default",
+      "full"
     ],
     "references": [],
     "requires_skills": [
@@ -225,6 +230,7 @@
   "editor": {
     "profiles": [
       "default",
+      "full",
       "release",
       "style"
     ],
@@ -233,6 +239,7 @@
         "name": "editor/style",
         "profiles": [
           "default",
+          "full",
           "style"
         ],
         "tools": [
@@ -287,6 +294,7 @@
   "manuscript-importer": {
     "profiles": [
       "default",
+      "full",
       "workflow-import"
     ],
     "references": [],
@@ -313,6 +321,7 @@
   },
   "new-book": {
     "profiles": [
+      "full",
       "new-book"
     ],
     "references": [],
@@ -334,6 +343,7 @@
   "plot-architect": {
     "profiles": [
       "default",
+      "full",
       "planning"
     ],
     "references": [],
@@ -382,6 +392,7 @@
   "researcher": {
     "profiles": [
       "default",
+      "full",
       "research"
     ],
     "references": [],
@@ -404,6 +415,7 @@
   "revision-manager": {
     "profiles": [
       "default",
+      "full",
       "revision"
     ],
     "references": [],
@@ -447,6 +459,7 @@
   "scene-writer": {
     "profiles": [
       "default",
+      "full",
       "workflow-authoring",
       "workflow-write"
     ],
@@ -455,6 +468,7 @@
         "name": "scene-writer/authoring-runs",
         "profiles": [
           "default",
+          "full",
           "workflow-authoring"
         ],
         "tools": [
@@ -471,6 +485,7 @@
         "name": "scene-writer/craft-and-voice",
         "profiles": [
           "default",
+          "full",
           "workflow-authoring",
           "workflow-write"
         ],
@@ -489,6 +504,7 @@
         "name": "scene-writer/drafting-packets",
         "profiles": [
           "default",
+          "full",
           "workflow-authoring",
           "workflow-write"
         ],
@@ -499,6 +515,7 @@
         "name": "scene-writer/offloaded-generation",
         "profiles": [
           "default",
+          "full",
           "workflow-authoring"
         ],
         "tools": [
@@ -513,6 +530,7 @@
         "name": "scene-writer/research-and-sources",
         "profiles": [
           "default",
+          "full",
           "workflow-authoring",
           "workflow-write"
         ],
@@ -578,6 +596,7 @@
   "spindle": {
     "profiles": [
       "default",
+      "full",
       "new-book",
       "planning",
       "release",
@@ -595,6 +614,7 @@
         "name": "spindle/setup",
         "profiles": [
           "default",
+          "full",
           "setup",
           "workflow-authoring",
           "workflow-write"
@@ -624,6 +644,7 @@
   "worldbuilder": {
     "profiles": [
       "default",
+      "full",
       "worldbuilding"
     ],
     "references": [],
