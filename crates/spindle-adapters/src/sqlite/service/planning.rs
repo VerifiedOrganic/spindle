@@ -1,6 +1,7 @@
 //! Initial planning staging, bounded route generation and human ratification.
 use super::*;
 use spindle_core::planning::*;
+use std::collections::BTreeMap;
 mod apply;
 mod entry;
 mod generate;
@@ -60,6 +61,17 @@ impl SqliteSpindleService {
             return Ok(report.proposals);
         }
         self.repository.decide_planning(input).await
+    }
+
+    pub async fn rebase_planning(
+        &self,
+        session_id: String,
+        scope: Option<PlanningScope>,
+        expected_hashes: BTreeMap<String, String>,
+    ) -> Result<Vec<PlanningProposal>> {
+        self.repository
+            .rebase_planning(session_id, scope, expected_hashes)
+            .await
     }
 
     pub async fn prepare_authoring_run(

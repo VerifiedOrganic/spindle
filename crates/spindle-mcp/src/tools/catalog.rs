@@ -707,11 +707,11 @@ pub(super) fn build_all_tools() -> Vec<CatalogTool> {
         ),
         tool::<PlanningStatusInput, PlanningStatusOutput>(
             "planning_status",
-            "Read compact planning status: active sessions, staged proposals, gate, findings, readiness and the real authoring prepare report. Omit session_id to reconnect to existing planning work. By default each proposal returns only proposal_id, level, status and payload_hash; pass include_payloads=true or name proposal_ids to fetch operations. Superseded and rejected proposals are omitted unless named.",
+            "Read compact planning status: active sessions, staged proposals, gate, findings, readiness and the real authoring prepare report. Omit session_id to reconnect to existing planning work. By default each proposal returns only proposal_id, level, status and payload_hash; pass include_payloads=true or name proposal_ids to fetch operations. Superseded and rejected proposals are omitted unless named. next_level is null when every required level is satisfied, including scene manifests already persisted by an accepted chapter plan.",
         ),
         tool::<PlanningDecideInput, PlanningDecideOutput>(
             "planning_decide",
-            "Record a human accept, reject, revise or supersede decision for staged planning proposals, or prepare the authoring run from a ready session. Revise supersedes the selected proposals so a replacement can be staged. Requires exact proposal hashes for decisions and never drafts prose.",
+            "Record a human accept, reject, revise or supersede decision for staged planning proposals, rebase staged proposals against the current base without changing their payload hash, or prepare the authoring run from a ready session. Revise supersedes the selected proposals so a replacement can be staged. Rebase keeps any approval recorded for the unchanged payload and is the recovery action for stale base state. Requires exact proposal hashes and never drafts prose.",
         ),
         tool::<AuthoringPrepareRunInput, AuthoringPrepareRunOutput>(
             "authoring_prepare_run",

@@ -118,6 +118,147 @@ fn rows(conn: &rusqlite::Connection, sql: &str, params: &[&dyn rusqlite::ToSql])
     Ok(Value::Array(values))
 }
 
+/// Columns whose changes can alter a planning decision for a referenced row.
+/// Presentation-only fields (appearance, notes, timestamps, normalized names)
+/// are deliberately excluded so an unrelated bible edit does not stale a
+/// staged plan. The full row hash is still captured for older proposals and
+/// for diagnostics.
+fn planning_dependency_columns(table: &str) -> Option<&'static [&'static str]> {
+    Some(match table {
+        "character" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "name",
+            "role",
+            "summary",
+            "realm",
+        ],
+        "location" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "name",
+            "kind",
+            "realm",
+            "summary",
+        ],
+        "world_rule" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "rule_name",
+            "rule_type",
+            "description",
+            "established_in",
+            "relevance_tags",
+            "scan_pattern",
+        ],
+        "plot_line" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "name",
+            "plot_type",
+            "summary",
+            "status",
+            "convergence_points",
+        ],
+        "conflict" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "name",
+            "conflict_type",
+            "stakes",
+            "escalation_stages",
+            "expected_total_cycles",
+            "try_fail_cycles",
+            "stated_consequences",
+            "resolution_summary",
+        ],
+        "theme" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "theme_statement",
+            "thesis_antithesis",
+            "introduction_point",
+            "resolution_point",
+        ],
+        "motif" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "name",
+            "description",
+            "max_uses_per_chapter",
+            "connected_theme_ids",
+        ],
+        "narrative_promise" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "promise_type",
+            "description",
+            "status",
+            "planted_at",
+            "planned_payoff",
+        ],
+        "character_arc" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "character_id",
+            "arc_type",
+            "starting_state",
+            "ending_state",
+            "milestones",
+            "thematic_purpose",
+            "connected_theme_ids",
+            "status",
+            "progress",
+        ],
+        "pacing_config" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "total_planned_books",
+            "avg_chapters_per_book",
+            "avg_scenes_per_chapter",
+            "tension_model",
+        ],
+        "pacing_curve" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "book_number",
+            "act_breakpoints",
+            "scene_type_density",
+        ],
+        "book" => &["id", "project_id", "book_number", "title"],
+        "chapter" => &[
+            "id",
+            "project_id",
+            "book_id",
+            "book_number",
+            "chapter_number",
+            "title",
+        ],
+        "faction" => &[
+            "id",
+            "project_id",
+            "branch_id",
+            "name",
+            "faction_type",
+            "realm",
+            "summary",
+            "tags",
+        ],
+        _ => return None,
+    })
+}
+
 pub(super) fn operation_state(
     conn: &rusqlite::Connection,
     scope: &Option<PlanningScope>,
@@ -191,6 +332,28 @@ pub(super) fn operation_state(
             format!("{index}:row:{id}"),
             rows(conn, &format!("SELECT * FROM {table} WHERE id=?1"), &[&id])?,
         );
+        if let Some(columns) = planning_dependency_columns(table) {
+            let projection = rows(
+                conn,
+                &format!("SELECT {} FROM {table} WHERE id=?1", columns.join(",")),
+                &[&id],
+            )?;
+            state.insert(format!("{index}:dep:{id}"), projection.clone());
+            let present = projection.as_array().is_some_and(|rows| !rows.is_empty());
+            state.insert(
+                format!("{index}:field:{id}:__present"),
+                Value::Bool(present),
+            );
+            if let Some(row) = projection
+                .as_array()
+                .and_then(|rows| rows.first())
+                .and_then(Value::as_object)
+            {
+                for (column, value) in row {
+                    state.insert(format!("{index}:field:{id}:{column}"), value.clone());
+                }
+            }
+        }
     }
     let Some(scope) = scope else {
         return Ok(state);
@@ -316,6 +479,9 @@ pub(super) fn base_state(
             state.insert(key, hash(&value)?);
         }
     }
+    // Version 2 adds dependency-projection and per-field diagnostic keys. Old
+    // proposals keep row-level comparison; new proposals use the projection.
+    state.insert("base_state_version".into(), "2".into());
     Ok(state)
 }
 
@@ -523,7 +689,13 @@ fn backfill_children(
         if p.status != PlanningProposalStatus::Staged {
             continue;
         }
+        let field_scoped = p.base_state.get("base_state_version").map(String::as_str) == Some("2");
         for (key, value) in base_state(conn, &s.scope, &p.artifact)? {
+            if key == "base_state_version"
+                || (!field_scoped && (key.contains(":dep:") || key.contains(":field:")))
+            {
+                continue;
+            }
             let later = p.id != receipt.proposal_id
                 || key
                     .split(':')
