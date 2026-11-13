@@ -9,7 +9,7 @@
     "full": {
       "tools": 177,
       "input_bytes": 179141,
-      "full_bytes": 381296
+      "full_bytes": 381431
     },
     "new-book": {
       "tools": 15,
@@ -49,7 +49,7 @@
     "workflow-authoring": {
       "tools": 78,
       "input_bytes": 96711,
-      "full_bytes": 208719
+      "full_bytes": 208854
     },
     "workflow-import": {
       "tools": 21,

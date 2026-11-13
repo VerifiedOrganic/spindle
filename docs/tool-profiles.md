@@ -23,7 +23,7 @@ fail closed. Select a generated workflow or specialist profile with
 | Profile | Enabled work | Tools | Input bytes | Input tokens | Full bytes | Full tokens |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | workflow-write | Scene-writer core + craft/packet/research refs + setup | 46 | 63,414 | 15,854 | 133,598 | 33,400 |
-| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 78 | 96,711 | 24,178 | 208,719 | 52,180 |
+| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 78 | 96,711 | 24,178 | 208,854 | 52,214 |
 | workflow-import | Manuscript importer and source sync | 21 | 15,052 | 3,763 | 33,983 | 8,496 |
 | revision | Branch/revision/history workflow | 35 | 26,864 | 6,716 | 76,463 | 19,116 |
 | worldbuilding | Worldbuilder + character creator | 52 | 54,983 | 13,746 | 103,237 | 25,810 |
@@ -33,7 +33,7 @@ fail closed. Select a generated workflow or specialist profile with
 | style | Editor core + style reference | 42 | 37,184 | 9,296 | 101,028 | 25,257 |
 | release | Editor + bible librarian | 64 | 50,668 | 12,667 | 108,687 | 27,172 |
 | setup | New-book setup reference | 10 | 4,696 | 1,174 | 10,080 | 2,520 |
-| full | Every model-facing skill and reference unit | 177 | 179,141 | 44,786 | 381,296 | 95,324 |
+| full | Every model-facing skill and reference unit | 177 | 179,141 | 44,786 | 381,431 | 95,358 |
 
 Token counts are the same stable proxy used by the profile probe:
 `ceil(bytes / 4)`, not a host tokenizer measurement.
@@ -66,7 +66,7 @@ specialist profile plus the `continuity-editor` and `canon-steward` units that n
 smaller profile enables. Use it when one session must expose every workflow at
 once, without switching profiles during the session. It is the
 largest catalog: 177 tools, 179,141 input bytes (about 44,786 proxy tokens) and
-381,296 full bytes (about 95,324 proxy tokens). Prefer the smallest profile that
+381,431 full bytes (about 95,358 proxy tokens). Prefer the smallest profile that
 covers the current work; unset still starts `workflow-write`, and `full` is
 opt-in. Operator-only commands stay excluded exactly as in every model profile.
 

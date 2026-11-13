@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- Per-route reasoning effort for OpenAI-compatible HTTP agents. A
+  `[[routing]]` entry may set `reasoning_effort` (`none|low|medium|high|max`)
+  and override the agent-level default, so one agent can draft at high effort
+  while review and deep consistency checks run at low effort. Spindle sends the
+  field as `reasoning_effort` in the request body, records the effective value
+  on the `model_call` payload, and exposes it through `bible://config/routing`.
+- `extra_body` tables on HTTP agents and routing rules for provider-specific
+  request fields. Route entries merge over agent entries; core fields (`model`,
+  `messages`, `max_tokens`, `stream`, `reasoning_effort`) are rejected at load
+  time so they can never be silently overridden, and values are never logged.
+
 ### Fixed
 
 - **Planning responses stay displayable.** `planning_status` now returns only
@@ -13,8 +26,22 @@
   `include_payloads=true` when the full artifact is needed. Host-generation
   prompts are bounded, and oversized parent artifacts are referenced by
   proposal id and payload hash instead of being repeated in full, so
-  `planning_advance` no longer returns a 200k-character prompt. Response
-  schemas, tool snapshots and profile budgets are updated in the same change.
+  `planning_advance` no longer returns a 200k-character prompt. Routed model
+  generation keeps full parent context because the routed model cannot fetch
+  payloads; revision feedback is ordered newest-first so bounding cannot drop
+  the latest author direction. Response schemas, tool snapshots and profile
+  budgets are updated in the same change.
+- **Respawn and resurrection no longer read as dead-character retcons.** A
+  character state that replaces a recorded dead status with a living one
+  supersedes the death from that scene onward, including when the state is
+  committed in the same `commit_scene` or `commit_scene_changes` call as the
+  scene. The scan uses the shared newest-state selector and treats the
+  prospective same-scene state as newest. A per-character `mortality` setting
+  (`respawns`, `resurrection`, `immortal`, and similar values) or a world rule
+  that declares a return-from-death mechanism also exempts that character; a
+  rule that forbids resurrection does not. A death followed by action with no
+  respawn recorded still reports, as does a same-commit status that keeps the
+  dead marker.
 
 ## 0.4.1 — 2026-11-13
 

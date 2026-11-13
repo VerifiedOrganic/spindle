@@ -7517,6 +7517,644 @@ mod claim_validation_lanes {
             "expected implicit cost omission, got {issues:?}"
         );
     }
+
+    mod respawn_continuity {
+        use super::*;
+        use spindle_core::models::{
+            CharacterStatePatch, CharacterStatePatchEntry, CommitCharacterStateInput,
+            CommitContinuityGate, CommitSceneChangesInput, CreateWorldRuleInput,
+            RegisterCanonicalFactInput,
+        };
+
+        async fn project_and_character(svc: &SqliteSpindleService, name: &str) -> (String, String) {
+            let project = svc
+                .create_project(CreateProjectInput {
+                    name: format!("respawn-{name}"),
+                    project_type: "novel".into(),
+                    genre: "fantasy".into(),
+                    reader_contract: ReaderContract {
+                        promise: "a recorded respawn supersedes a recorded death".into(),
+                        style_notes: Vec::new(),
+                        boundaries: Vec::new(),
+                    },
+                })
+                .await
+                .unwrap();
+            let character_id = create_character_named(svc, &project.project_id, name).await;
+            (project.project_id, character_id)
+        }
+
+        async fn commit_status(
+            svc: &SqliteSpindleService,
+            character_id: &str,
+            scene_id: &str,
+            status: &[&str],
+        ) {
+            svc.commit_character_state(CommitCharacterStateInput {
+                character_id: character_id.to_string(),
+                scene_id: Some(scene_id.to_string()),
+                anchor: None,
+                changes: CharacterStatePatch {
+                    emotional_state: Default::default(),
+                    goals: None,
+                    status: Some(status.iter().map(|status| status.to_string()).collect()),
+                    notes: None,
+                    source_summary: None,
+                },
+            })
+            .await
+            .unwrap();
+        }
+
+        async fn record_mortality_fact(
+            svc: &SqliteSpindleService,
+            project_id: &str,
+            character_id: &str,
+            value: &str,
+        ) {
+            svc.register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: project_id.to_string(),
+                scene_id: None,
+                book_number: 1,
+                chapter_number: 1,
+                fact_type: Some("mortality".into()),
+                key: Some(format!("{character_id}:mortality")),
+                value: None,
+                context: None,
+                subject_table: Some("character".into()),
+                subject_id: Some(character_id.to_string()),
+                predicate: Some("mortality".into()),
+                value_kind: Some("text".into()),
+                value_text: Some(value.to_string()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: None,
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: None,
+                secrecy: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        fn dead_issue<'a>(
+            issues: &'a [spindle_core::models::ConsistencyIssue],
+            name: &str,
+        ) -> Option<&'a spindle_core::models::ConsistencyIssue> {
+            issues.iter().find(|issue| {
+                issue.check_type == "retcon_reachability"
+                    && issue.message.contains(name)
+                    && issue.message.contains("dead")
+            })
+        }
+
+        #[tokio::test]
+        async fn persisted_respawn_state_clears_death_from_that_scene_onward() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id) = project_and_character(&svc, "Ada Ward").await;
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward closed the atlas and went still.",
+            )
+            .await;
+            commit_status(
+                &svc,
+                &character_id,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            let action_scene = save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward woke somewhere new and crossed the yard.",
+            )
+            .await;
+            commit_status(&svc, &character_id, &action_scene, &["alive", "respawned"]).await;
+
+            let issues = run_checks(&svc, &project_id, "retcon_reachability").await;
+            assert!(
+                dead_issue(&issues, "Ada Ward").is_none(),
+                "the respawn scene's own state must supersede the death: {issues:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn death_then_action_without_respawn_still_flags() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id) = project_and_character(&svc, "Ada Ward").await;
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward closed the atlas and went still.",
+            )
+            .await;
+            commit_status(
+                &svc,
+                &character_id,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward woke somewhere new and crossed the yard.",
+            )
+            .await;
+
+            let issues = run_checks(&svc, &project_id, "retcon_reachability").await;
+            let finding = dead_issue(&issues, "Ada Ward")
+                .expect("a death without a recorded respawn must still flag");
+            assert!(finding.message.contains("dead at the crossing"));
+        }
+
+        #[tokio::test]
+        async fn same_commit_respawn_state_supersedes_death() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id) = project_and_character(&svc, "Ada Ward").await;
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward closed the atlas and went still.",
+            )
+            .await;
+            commit_status(
+                &svc,
+                &character_id,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            let action_scene = save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward woke somewhere new and crossed the yard.",
+            )
+            .await;
+
+            let output = svc
+                .commit_scene_changes(CommitSceneChangesInput {
+                    project_id: project_id.clone(),
+                    scene_id: action_scene,
+                    character_states: vec![CharacterStatePatchEntry {
+                        character_id: character_id.clone(),
+                        changes: CharacterStatePatch {
+                            emotional_state: Default::default(),
+                            goals: None,
+                            status: Some(vec!["alive".into(), "respawned".into()]),
+                            notes: None,
+                            source_summary: None,
+                        },
+                    }],
+                    canonical_facts: Vec::new(),
+                    relationship_updates: Vec::new(),
+                    accept_world_rule_risks: false,
+                    accept_continuity_risks: false,
+                    continuity_gate: Some(CommitContinuityGate::BlockErrors),
+                })
+                .await
+                .expect("a same-commit respawn must not be blocked by the death it supersedes");
+            assert!(
+                !output
+                    .blocking_continuity_findings
+                    .iter()
+                    .any(|issue| issue.message.contains("Ada Ward")),
+                "{:?}",
+                output.blocking_continuity_findings
+            );
+
+            let issues = run_checks(&svc, &project_id, "retcon_reachability").await;
+            assert!(
+                dead_issue(&issues, "Ada Ward").is_none(),
+                "the committed respawn must clear the flag for later scans: {issues:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn same_commit_respawn_clears_canonical_life_status_death() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id) = project_and_character(&svc, "Ada Ward").await;
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward closed the atlas and went still.",
+            )
+            .await;
+            svc.register_canonical_fact(RegisterCanonicalFactInput {
+                project_id: project_id.clone(),
+                scene_id: Some(death_scene),
+                book_number: 1,
+                chapter_number: 1,
+                fact_type: Some("life_status".into()),
+                key: Some("Ada Ward:life_status".into()),
+                value: None,
+                context: None,
+                subject_table: Some("character".into()),
+                subject_id: Some(character_id.clone()),
+                predicate: Some("life_status".into()),
+                value_kind: Some("text".into()),
+                value_text: Some("dead at the crossing: killed by a rival".into()),
+                value_number: None,
+                value_unit: None,
+                value_json: None,
+                aliases: Vec::new(),
+                scope: None,
+                valid_from: None,
+                valid_until: None,
+                legacy_untyped: None,
+                supersedes_fact_id: None,
+                secrecy: None,
+            })
+            .await
+            .unwrap();
+            let action_scene = save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward woke somewhere new and crossed the yard.",
+            )
+            .await;
+
+            let output = svc
+                .commit_scene_changes(CommitSceneChangesInput {
+                    project_id: project_id.clone(),
+                    scene_id: action_scene,
+                    character_states: vec![CharacterStatePatchEntry {
+                        character_id: character_id.clone(),
+                        changes: CharacterStatePatch {
+                            emotional_state: Default::default(),
+                            goals: None,
+                            status: Some(vec!["alive".into(), "respawned".into()]),
+                            notes: None,
+                            source_summary: None,
+                        },
+                    }],
+                    canonical_facts: Vec::new(),
+                    relationship_updates: Vec::new(),
+                    accept_world_rule_risks: false,
+                    accept_continuity_risks: false,
+                    continuity_gate: Some(CommitContinuityGate::BlockErrors),
+                })
+                .await
+                .expect("the same-commit respawn must clear the canonical life_status death");
+            assert!(
+                !output
+                    .blocking_continuity_findings
+                    .iter()
+                    .any(|issue| issue.message.contains("Ada Ward")),
+                "{:?}",
+                output.blocking_continuity_findings
+            );
+
+            let issues = run_checks(&svc, &project_id, "retcon_reachability").await;
+            assert!(
+                dead_issue(&issues, "Ada Ward").is_none(),
+                "the persisted respawn must clear the canonical death: {issues:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn same_commit_dead_status_still_reports() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id) = project_and_character(&svc, "Ada Ward").await;
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward closed the atlas and went still.",
+            )
+            .await;
+            commit_status(
+                &svc,
+                &character_id,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            let action_scene = save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward woke somewhere new and crossed the yard.",
+            )
+            .await;
+
+            let output = svc
+                .commit_scene_changes(CommitSceneChangesInput {
+                    project_id: project_id.clone(),
+                    scene_id: action_scene,
+                    character_states: vec![CharacterStatePatchEntry {
+                        character_id: character_id.clone(),
+                        changes: CharacterStatePatch {
+                            emotional_state: Default::default(),
+                            goals: None,
+                            status: Some(vec!["dead".into()]),
+                            notes: None,
+                            source_summary: None,
+                        },
+                    }],
+                    canonical_facts: Vec::new(),
+                    relationship_updates: Vec::new(),
+                    accept_world_rule_risks: false,
+                    accept_continuity_risks: false,
+                    continuity_gate: Some(CommitContinuityGate::WarnOnly),
+                })
+                .await
+                .unwrap();
+            assert!(
+                output
+                    .blocking_continuity_findings
+                    .iter()
+                    .any(|issue| issue.message.contains("Ada Ward")),
+                "a same-commit status that keeps the death must still report: {:?}",
+                output.blocking_continuity_findings
+            );
+        }
+
+        #[tokio::test]
+        async fn per_character_respawn_setting_exempts_only_that_character() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, respawning) = project_and_character(&svc, "Ada Ward").await;
+            let mortal = create_character_named(&svc, &project_id, "Borin Hale").await;
+            record_mortality_fact(&svc, &project_id, &respawning, "respawns").await;
+            record_mortality_fact(&svc, &project_id, &mortal, "mortal").await;
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward and Borin Hale fell in the courtyard.",
+            )
+            .await;
+            commit_status(
+                &svc,
+                &respawning,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            commit_status(
+                &svc,
+                &mortal,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward crossed the yard while Borin Hale drew his sword.",
+            )
+            .await;
+
+            let issues = run_checks(&svc, &project_id, "retcon_reachability").await;
+            assert!(
+                dead_issue(&issues, "Ada Ward").is_none(),
+                "the per-character respawn setting must exempt its character: {issues:?}"
+            );
+            assert!(
+                dead_issue(&issues, "Borin Hale").is_some(),
+                "a mortal character without a respawn must still report: {issues:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn world_rule_respawn_declaration_exempts_dead_acting() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id) = project_and_character(&svc, "Ada Ward").await;
+            svc.create_world_rule(CreateWorldRuleInput {
+                project_id: project_id.clone(),
+                rule_name: "The turning tide".into(),
+                rule_type: "resurrection".into(),
+                description:
+                    "When a life ends before its appointed hour, the year turns and the same life begins again."
+                        .into(),
+                scan_pattern: None,
+                relevance_tags: vec!["respawn".into()],
+                established_in: None,
+            })
+            .await
+            .unwrap();
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward closed the atlas and went still.",
+            )
+            .await;
+            commit_status(
+                &svc,
+                &character_id,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward woke somewhere new and crossed the yard.",
+            )
+            .await;
+
+            let issues = run_checks(&svc, &project_id, "retcon_reachability").await;
+            assert!(
+                dead_issue(&issues, "Ada Ward").is_none(),
+                "a world rule that declares respawning must exempt the character: {issues:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn world_rule_description_can_declare_respawning() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id) = project_and_character(&svc, "Ada Ward").await;
+            svc.create_world_rule(CreateWorldRuleInput {
+                project_id: project_id.clone(),
+                rule_name: "The turning tide".into(),
+                rule_type: "magic_system".into(),
+                description:
+                    "When a life ends before its appointed hour, the same life returns from the dead."
+                        .into(),
+                scan_pattern: None,
+                relevance_tags: vec!["cycle".into()],
+                established_in: None,
+            })
+            .await
+            .unwrap();
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward closed the atlas and went still.",
+            )
+            .await;
+            commit_status(
+                &svc,
+                &character_id,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward woke somewhere new and crossed the yard.",
+            )
+            .await;
+
+            let issues = run_checks(&svc, &project_id, "retcon_reachability").await;
+            assert!(
+                dead_issue(&issues, "Ada Ward").is_none(),
+                "a rule description that declares a return from death must exempt: {issues:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn negated_world_rule_does_not_exempt_dead_acting() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id) = project_and_character(&svc, "Ada Ward").await;
+            svc.create_world_rule(CreateWorldRuleInput {
+                project_id: project_id.clone(),
+                rule_name: "No resurrection".into(),
+                rule_type: "constraint".into(),
+                description: "Resurrection is impossible; the dead stay dead.".into(),
+                scan_pattern: None,
+                relevance_tags: vec!["death".into()],
+                established_in: None,
+            })
+            .await
+            .unwrap();
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward closed the atlas and went still.",
+            )
+            .await;
+            commit_status(
+                &svc,
+                &character_id,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward woke somewhere new and crossed the yard.",
+            )
+            .await;
+
+            let issues = run_checks(&svc, &project_id, "retcon_reachability").await;
+            assert!(
+                dead_issue(&issues, "Ada Ward").is_some(),
+                "a rule that forbids resurrection must not exempt a dead character: {issues:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn negated_immortality_world_rule_does_not_exempt_dead_acting() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id) = project_and_character(&svc, "Ada Ward").await;
+            svc.create_world_rule(CreateWorldRuleInput {
+                project_id: project_id.clone(),
+                rule_name: "No immortality".into(),
+                rule_type: "constraint".into(),
+                description: "No one is immortal; death is permanent.".into(),
+                scan_pattern: None,
+                relevance_tags: vec!["death".into()],
+                established_in: None,
+            })
+            .await
+            .unwrap();
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward closed the atlas and went still.",
+            )
+            .await;
+            commit_status(
+                &svc,
+                &character_id,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward woke somewhere new and crossed the yard.",
+            )
+            .await;
+
+            let issues = run_checks(&svc, &project_id, "retcon_reachability").await;
+            assert!(
+                dead_issue(&issues, "Ada Ward").is_some(),
+                "a negated immortality rule must not exempt a dead character: {issues:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn unrelated_non_finality_world_rule_does_not_exempt_dead_acting() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id) = project_and_character(&svc, "Ada Ward").await;
+            svc.create_world_rule(CreateWorldRuleInput {
+                project_id: project_id.clone(),
+                rule_name: "Shifting glamour".into(),
+                rule_type: "magic_system".into(),
+                description: "The transformation is not permanent.".into(),
+                scan_pattern: None,
+                relevance_tags: vec!["glamour".into()],
+                established_in: None,
+            })
+            .await
+            .unwrap();
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward closed the atlas and went still.",
+            )
+            .await;
+            commit_status(
+                &svc,
+                &character_id,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward woke somewhere new and crossed the yard.",
+            )
+            .await;
+
+            let issues = run_checks(&svc, &project_id, "retcon_reachability").await;
+            assert!(
+                dead_issue(&issues, "Ada Ward").is_some(),
+                "an unrelated temporary-effect rule must not exempt a dead character: {issues:?}"
+            );
+        }
+    }
 }
 
 mod secret_leak_narration {
