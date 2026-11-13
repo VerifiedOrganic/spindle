@@ -7987,6 +7987,11 @@ pub struct AgentRoutingRuleSummary {
     /// rating-specific override matches the request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rating: Option<String>,
+    /// Effective reasoning effort for the route: the routing rule's override
+    /// when set, otherwise the agent-level default. `None` means no
+    /// `reasoning_effort` field is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     /// Resolved adapter the rule's agent uses (`http`, `grok`, `cli`,
     /// `local`). Surfaced here so callers can pick a prompt-building strategy
     /// without joining against `list_agents`.

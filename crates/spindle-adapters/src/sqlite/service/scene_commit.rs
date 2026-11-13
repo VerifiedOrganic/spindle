@@ -764,8 +764,15 @@ impl SqliteSpindleService {
                 }
             });
         checks_run.push("retcon_reachability".to_string());
+        let pending_states = pending_character_statuses(
+            input
+                .continuity
+                .character_states
+                .iter()
+                .map(|entry| (entry.character_id.as_str(), entry.changes.status.as_ref())),
+        );
         let retcon_findings = self
-            .scan_retcon_findings(&input.project_id, &scan_scene)
+            .scan_retcon_findings_with_pending(&input.project_id, &scan_scene, &pending_states)
             .await?;
         for finding in &retcon_findings {
             issues.push(commit_scene_issue_from_consistency(

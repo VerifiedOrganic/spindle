@@ -67,7 +67,7 @@ impl AntiSlopProjectConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConfiguredAgent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokenizer: Option<crate::tokenization::TokenizerConfig>,
@@ -87,6 +87,17 @@ pub struct ConfiguredAgent {
     /// Grok CLI: reasoning/quality knob mapped to `--effort` (one of
     /// `low|medium|high|xhigh|max`). Ignored for non-grok providers.
     pub effort: Option<String>,
+    /// Default reasoning effort for HTTP agents, sent as `reasoning_effort` on
+    /// every OpenAI-compatible request served by this agent. A `[[routing]]`
+    /// entry may override it per route. One of `none|low|medium|high|max`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// Extra provider-specific request fields merged into the OpenAI-compatible
+    /// JSON body. Values are never logged. Core fields (`model`, `messages`,
+    /// `max_tokens`, `stream`, `reasoning_effort`) are rejected at load time
+    /// rather than silently overridden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<toml::Table>,
     /// Grok CLI: cap on agent loop turns mapped to `--max-turns`. Ignored for
     /// non-grok providers. Default when unset: 40.
     pub max_turns: Option<u32>,
@@ -138,6 +149,17 @@ pub struct RoutingRule {
     /// rule covers the request. Valid values: `general`, `teen`, `mature`,
     /// `explicit`.
     pub rating: Option<String>,
+    /// Reasoning effort override for this route, sent as `reasoning_effort` in
+    /// the OpenAI-compatible request body. Overrides the agent-level default.
+    /// One of `none|low|medium|high|max`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// Extra provider-specific request fields merged into the OpenAI-compatible
+    /// JSON body after the agent-level `extra_body`. Values are never logged.
+    /// Core fields (`model`, `messages`, `max_tokens`, `stream`,
+    /// `reasoning_effort`) are rejected at load time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<toml::Table>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -279,6 +301,57 @@ pub fn health_check_timeout(config: &LoadedAgentConfig) -> Duration {
 /// output so the loader rejects typos before grok itself does.
 const GROK_EFFORT_VALUES: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
+/// OpenAI-compatible `reasoning_effort` values Spindle accepts. Providers may
+/// implement a subset; an unsupported value is a provider error, not a silent
+/// downgrade.
+const REASONING_EFFORT_VALUES: &[&str] = &["none", "low", "medium", "high", "max"];
+
+/// Request-body fields Spindle owns. `extra_body` may not set these: merging
+/// them after the core body would silently change routing, the prompt, or the
+/// output cap, so the loader rejects the conflict instead.
+pub(crate) const RESERVED_EXTRA_BODY_KEYS: &[&str] = &[
+    "model",
+    "messages",
+    "max_tokens",
+    "stream",
+    "reasoning_effort",
+];
+
+fn validate_reasoning_effort(owner: &str, effort: Option<&str>) -> anyhow::Result<()> {
+    if let Some(effort) = effort {
+        let normalized = effort.trim().to_ascii_lowercase();
+        if !REASONING_EFFORT_VALUES.contains(&normalized.as_str()) {
+            anyhow::bail!(
+                "{owner} has unknown reasoning_effort '{}'; expected one of {:?}",
+                effort,
+                REASONING_EFFORT_VALUES
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_extra_body(owner: &str, extra: Option<&toml::Table>) -> anyhow::Result<()> {
+    let Some(extra) = extra else {
+        return Ok(());
+    };
+    for key in extra.keys() {
+        if RESERVED_EXTRA_BODY_KEYS.contains(&key.as_str()) {
+            anyhow::bail!(
+                "{owner} extra_body may not set reserved request field '{key}'; \
+                 Spindle manages it directly"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn agent_speaks_http(agent: &ConfiguredAgent) -> bool {
+    agent.provider != "grok-cli"
+        && agent.provider != "cli"
+        && (agent.endpoint.starts_with("http://") || agent.endpoint.starts_with("https://"))
+}
+
 fn validate_config(config: &SpindleConfigFile) -> anyhow::Result<()> {
     let mut agent_ids = BTreeSet::new();
     for agent in &config.agents {
@@ -302,6 +375,27 @@ fn validate_config(config: &SpindleConfigFile) -> anyhow::Result<()> {
                     agent.id,
                     effort,
                     GROK_EFFORT_VALUES
+                );
+            }
+        }
+        validate_reasoning_effort(
+            &format!("agent {}", agent.id),
+            agent.reasoning_effort.as_deref(),
+        )?;
+        validate_extra_body(&format!("agent {}", agent.id), agent.extra_body.as_ref())?;
+        if !agent_speaks_http(agent) {
+            if agent.reasoning_effort.is_some() {
+                anyhow::bail!(
+                    "agent {} sets reasoning_effort but is not an HTTP agent; \
+                     reasoning_effort is sent only on OpenAI-compatible HTTP requests",
+                    agent.id
+                );
+            }
+            if agent.extra_body.is_some() {
+                anyhow::bail!(
+                    "agent {} sets extra_body but is not an HTTP agent; \
+                     extra_body is merged only into OpenAI-compatible HTTP requests",
+                    agent.id
                 );
             }
         }
@@ -414,6 +508,20 @@ fn validate_config(config: &SpindleConfigFile) -> anyhow::Result<()> {
                 rule.agent
             );
         }
+        let owner = format!("routing rule for {}", rule.route);
+        validate_reasoning_effort(&owner, rule.reasoning_effort.as_deref())?;
+        validate_extra_body(&owner, rule.extra_body.as_ref())?;
+        if (rule.reasoning_effort.is_some() || rule.extra_body.is_some())
+            && let Some(agent) = config.agents.iter().find(|agent| agent.id == rule.agent)
+            && !agent_speaks_http(agent)
+        {
+            anyhow::bail!(
+                "routing rule for {} sets HTTP-only fields (reasoning_effort / extra_body) \
+                 but agent {} is not an HTTP agent",
+                rule.route,
+                rule.agent
+            );
+        }
         if let Some(fallback) = rule.fallback.as_deref()
             && !known_agents.contains(fallback)
         {
@@ -522,6 +630,8 @@ mod tests {
                     allow_tools: Vec::new(),
                     deny_tools: Vec::new(),
                     extra_args: Vec::new(),
+                    reasoning_effort: None,
+                    extra_body: None,
                 },
                 ConfiguredAgent {
                     tokenizer: None,
@@ -543,6 +653,8 @@ mod tests {
                     allow_tools: Vec::new(),
                     deny_tools: Vec::new(),
                     extra_args: Vec::new(),
+                    reasoning_effort: None,
+                    extra_body: None,
                 },
             ],
             routing: Vec::new(),
@@ -578,6 +690,8 @@ mod tests {
                 allow_tools: Vec::new(),
                 deny_tools: Vec::new(),
                 extra_args: Vec::new(),
+                reasoning_effort: None,
+                extra_body: None,
             }],
             routing: vec![RoutingRule {
                 route: "draft".to_string(),
@@ -591,6 +705,8 @@ mod tests {
                 seed: None,
                 stop: Vec::new(),
                 rating: None,
+                reasoning_effort: None,
+                extra_body: None,
             }],
             health_check: None,
             route_import_to_explicit: false,
@@ -624,6 +740,8 @@ mod tests {
                 allow_tools: Vec::new(),
                 deny_tools: Vec::new(),
                 extra_args: Vec::new(),
+                reasoning_effort: None,
+                extra_body: None,
             }],
             routing: vec![RoutingRule {
                 route: "draft".to_string(),
@@ -637,6 +755,8 @@ mod tests {
                 seed: None,
                 stop: Vec::new(),
                 rating: None,
+                reasoning_effort: None,
+                extra_body: None,
             }],
             health_check: None,
             route_import_to_explicit: false,
@@ -676,6 +796,8 @@ mod tests {
             allow_tools: Vec::new(),
             deny_tools: Vec::new(),
             extra_args: Vec::new(),
+            reasoning_effort: None,
+            extra_body: None,
         }
     }
 
@@ -692,6 +814,8 @@ mod tests {
             seed: None,
             stop: Vec::new(),
             rating: rating.map(|r| r.to_string()),
+            reasoning_effort: None,
+            extra_body: None,
         }
     }
 
@@ -787,6 +911,8 @@ mod tests {
             allow_tools: vec!["mcp__spindle__search_bible".to_string()],
             deny_tools: Vec::new(),
             extra_args: Vec::new(),
+            reasoning_effort: None,
+            extra_body: None,
         }
     }
 
@@ -897,6 +1023,160 @@ rating = "explicit"
         assert_eq!(agent.deny_tools, vec!["mcp__spindle__delete_scene"]);
         assert_eq!(agent.extra_args, vec!["--check"]);
         validate_config(&parsed).expect("validates");
+    }
+
+    #[test]
+    fn parses_agent_and_route_reasoning_effort_and_extra_body() {
+        let toml_src = r####"
+[[agents]]
+id = "http-agent"
+name = "HTTP Agent"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "test-model"
+reasoning_effort = "high"
+extra_body = { top_k = 40, provider = { route = "flex" } }
+
+[[routing]]
+route = "draft"
+agent = "http-agent"
+reasoning_effort = "low"
+
+[routing.extra_body]
+service_tier = "priority"
+"####;
+        let parsed: SpindleConfigFile = toml::from_str(toml_src).expect("parse toml");
+        let agent = &parsed.agents[0];
+        assert_eq!(agent.reasoning_effort.as_deref(), Some("high"));
+        let extra = agent.extra_body.as_ref().expect("agent extra_body");
+        assert_eq!(extra.get("top_k"), Some(&toml::Value::Integer(40)));
+        let rule = &parsed.routing[0];
+        assert_eq!(rule.reasoning_effort.as_deref(), Some("low"));
+        let route_extra = rule.extra_body.as_ref().expect("route extra_body");
+        assert_eq!(
+            route_extra.get("service_tier"),
+            Some(&toml::Value::String("priority".to_string()))
+        );
+        validate_config(&parsed).expect("validates");
+    }
+
+    #[test]
+    fn rejects_unknown_reasoning_effort_on_agent_and_route() {
+        let mut agent = make_agent("http-agent");
+        agent.reasoning_effort = Some("extreme".to_string());
+        let error = validate_config(&SpindleConfigFile {
+            agents: vec![agent],
+            routing: Vec::new(),
+            health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
+        })
+        .expect_err("unknown agent reasoning_effort must fail");
+        assert!(
+            error.to_string().contains("unknown reasoning_effort"),
+            "unexpected error: {error}"
+        );
+
+        let mut rule = make_routing("draft", "http-agent", None);
+        rule.reasoning_effort = Some("extreme".to_string());
+        let error = validate_config(&SpindleConfigFile {
+            agents: vec![make_agent("http-agent")],
+            routing: vec![rule],
+            health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
+        })
+        .expect_err("unknown route reasoning_effort must fail");
+        assert!(
+            error.to_string().contains("unknown reasoning_effort"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_extra_body_reserved_core_fields_without_leaking_values() {
+        let mut agent = make_agent("http-agent");
+        agent.extra_body = Some(toml::Table::from_iter([(
+            "max_tokens".to_string(),
+            toml::Value::Integer(999_999),
+        )]));
+        let error = validate_config(&SpindleConfigFile {
+            agents: vec![agent],
+            routing: Vec::new(),
+            health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
+        })
+        .expect_err("reserved agent extra_body field must fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("reserved request field 'max_tokens'"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !message.contains("999999"),
+            "validation must not echo extra_body values: {message}"
+        );
+
+        let mut rule = make_routing("draft", "http-agent", None);
+        rule.extra_body = Some(toml::Table::from_iter([(
+            "messages".to_string(),
+            toml::Value::String("PRIVATE PROMPT".to_string()),
+        )]));
+        let error = validate_config(&SpindleConfigFile {
+            agents: vec![make_agent("http-agent")],
+            routing: vec![rule],
+            health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
+        })
+        .expect_err("reserved route extra_body field must fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("reserved request field 'messages'"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !message.contains("PRIVATE PROMPT"),
+            "validation must not echo extra_body values: {message}"
+        );
+    }
+
+    #[test]
+    fn rejects_http_only_request_fields_on_non_http_agents() {
+        let mut grok = make_grok_agent("grok-local");
+        grok.reasoning_effort = Some("high".to_string());
+        let error = validate_config(&SpindleConfigFile {
+            agents: vec![grok],
+            routing: Vec::new(),
+            health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
+        })
+        .expect_err("reasoning_effort on a grok agent must fail");
+        assert!(
+            error.to_string().contains("not an HTTP agent"),
+            "unexpected error: {error}"
+        );
+
+        let mut local = make_agent("local-agent");
+        local.endpoint = "/usr/local/bin/local-model".to_string();
+        local.extra_body = Some(toml::Table::from_iter([(
+            "top_k".to_string(),
+            toml::Value::Integer(10),
+        )]));
+        let error = validate_config(&SpindleConfigFile {
+            agents: vec![local],
+            routing: Vec::new(),
+            health_check: None,
+            route_import_to_explicit: false,
+            anti_slop: AntiSlopProjectConfig::default(),
+        })
+        .expect_err("extra_body on a local agent must fail");
+        assert!(
+            error.to_string().contains("not an HTTP agent"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

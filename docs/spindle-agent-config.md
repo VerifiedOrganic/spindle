@@ -124,6 +124,73 @@ emits StoryScope notes only when true — never a fail gate. See
 [`authoring-supervisor.md`](authoring-supervisor.md) and
 [`fiction-anti-slop.md`](fiction-anti-slop.md).
 
+## Reasoning effort
+
+OpenAI-compatible HTTP agents may set `reasoning_effort`. Spindle sends it as
+the `reasoning_effort` field of the `/chat/completions` request body, using one
+of `none`, `low`, `medium`, `high`, or `max`. An agent-level value is the
+default for every route that agent serves; a `[[routing]]` entry may override it
+per route. That is what lets one agent draft at `high` while deep consistency
+checks run at `low` without disabling reasoning entirely. When neither level
+sets a value, Spindle omits the field and the provider default applies.
+
+The effective value is recorded on each `model_call` payload as
+`reasoning_effort` and exposed on `bible://config/routing`, so a receipt shows
+which effort a call actually used.
+
+```toml
+[[agents]]
+id = "shared-http"
+name = "Shared HTTP model"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "mistral"
+reasoning_effort = "high"
+
+[[routing]]
+route = "draft"
+agent = "shared-http"
+
+[[routing]]
+route = "review"
+agent = "shared-http"
+reasoning_effort = "low"
+```
+
+`reasoning_effort` is HTTP-only. The grok CLI keeps its existing `effort`
+(`--effort`) knob; setting `reasoning_effort` on a non-HTTP agent is rejected at
+load time rather than silently ignored.
+
+## Provider-specific request fields (`extra_body`)
+
+`extra_body` adds provider-specific fields to the OpenAI-compatible request
+body. Set it on an agent to apply it to every route that agent serves, or on a
+`[[routing]]` entry to apply it to that route only. Route values are merged over
+agent values key by key; nested tables and arrays are sent as JSON.
+
+```toml
+[[agents]]
+id = "local-http"
+name = "Local HTTP model"
+provider = "openai-compatible"
+endpoint = "http://localhost:11434/v1"
+model = "mistral"
+extra_body = { top_k = 40, chat_template_kwargs = { enable_thinking = false } }
+
+[[routing]]
+route = "research"
+agent = "local-http"
+
+[routing.extra_body]
+service_tier = "priority"
+```
+
+`model`, `messages`, `max_tokens`, `stream`, and `reasoning_effort` are
+reserved: Spindle builds those fields itself, and the loader rejects an
+`extra_body` that tries to set one instead of silently overriding the request
+contract. `extra_body` is HTTP-only. Values are never written to logs or
+model-call telemetry; validation errors name only the offending field.
+
 ## Route names
 
 The current runtime understands these route names:
@@ -717,6 +784,10 @@ prompt strategy:
   everything. The scene-writer skill checks this flag before building its
   `continue_generation` prompt.
 
+Routing rules also expose the effective `reasoning_effort` (the routing
+override, else the agent default) so an operator can confirm what each route
+will send without opening the config file.
+
 When a future CLI-with-MCP adapter is added (e.g. Codex-CLI), it should
 also report `caller_should_send_brief = true` so every existing caller
 automatically uses the brief shape without further code changes.
@@ -732,6 +803,11 @@ The loader currently enforces these rules:
 - every `fallback`, if present, must reference a known `agent`
 - `effort`, when set, must be one of `low | medium | high | xhigh | max`
   (matches grok CLI's accepted values)
+- `reasoning_effort`, when set on an agent or routing rule, must be one of
+  `none | low | medium | high | max` and may only appear on HTTP agents
+- `extra_body`, when set, may only appear on HTTP agents/routing rules and
+  may not set `model`, `messages`, `max_tokens`, `stream`, or
+  `reasoning_effort`
 - `max_turns`, when set, must be `>= 1`
 - grok-cli-only fields (`effort`, `max_turns`, `agent_profile`,
   `working_directory`, `allow_tools`, `deny_tools`, `extra_args`) may only
