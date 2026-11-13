@@ -115,6 +115,7 @@ impl ModelRouter {
             temperature: resolved_route.and_then(|r| r.temperature),
             top_p: resolved_route.and_then(|r| r.top_p),
             max_tokens: resolved_route.and_then(|r| r.max_tokens),
+            reasoning_effort: resolved_route.and_then(|r| r.reasoning_effort.clone()),
             outcome: if binding.pending {
                 "pending"
             } else if result.is_ok() {

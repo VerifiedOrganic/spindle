@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Per-route reasoning effort for OpenAI-compatible HTTP agents. A
+  `[[routing]]` entry may set `reasoning_effort` (`none|low|medium|high|max`)
+  and override the agent-level default, so one agent can draft at high effort
+  while review and deep consistency checks run at low effort. Spindle sends the
+  field as `reasoning_effort` in the request body, records the effective value
+  on the `model_call` payload, and exposes it through `bible://config/routing`.
+- `extra_body` tables on HTTP agents and routing rules for provider-specific
+  request fields. Route entries merge over agent entries; core fields (`model`,
+  `messages`, `max_tokens`, `stream`, `reasoning_effort`) are rejected at load
+  time so they can never be silently overridden, and values are never logged.
+
 ## 0.4.1 — 2026-11-13
 
 ### Added

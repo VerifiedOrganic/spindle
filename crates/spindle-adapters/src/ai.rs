@@ -18,7 +18,8 @@ use spindle_core::models::{
 
 use crate::agent_config::{
     AgentHealthStatus, AgentStatus, AgentStatusSummary, ConfiguredAgent, LoadedAgentConfig,
-    RoutingRule, health_check_timeout, health_checks_enabled, load_agent_config,
+    RESERVED_EXTRA_BODY_KEYS, RoutingRule, health_check_timeout, health_checks_enabled,
+    load_agent_config,
 };
 
 pub const EMBEDDING_VERSION: &str = "token-hash-v1";
@@ -574,6 +575,16 @@ pub struct ModelRoute {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<i64>,
     pub stop: Vec<String>,
+    /// Effective reasoning effort sent as `reasoning_effort` on
+    /// OpenAI-compatible requests: the routing rule's override when set,
+    /// otherwise the agent-level default. `None` sends no field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// Provider-specific request fields merged into the JSON body after the
+    /// core fields. Never serialized into route listings (values may be
+    /// sensitive), and reserved core keys are rejected at config load.
+    #[serde(skip)]
+    pub extra_body: BTreeMap<String, serde_json::Value>,
     /// True only for the built-in `default_routes()` entries — i.e. a route that
     /// no operator agent config has claimed. The local stub for production
     /// routes (`style_analyze`, `style_revise`, `research`) refuses to fabricate
@@ -850,8 +861,13 @@ impl ModelRouter {
             return Ok(None);
         };
         let settings = format!(
-            "route={route_name}|adapter={}|model={}|max_tokens={:?}|temperature={:?}",
-            route.adapter_kind, route.model_name, route.max_tokens, route.temperature
+            "route={route_name}|adapter={}|model={}|max_tokens={:?}|temperature={:?}|reasoning_effort={:?}|extra_body={}",
+            route.adapter_kind,
+            route.model_name,
+            route.max_tokens,
+            route.temperature,
+            route.reasoning_effort,
+            extra_body_digest(&route.extra_body)
         );
         if let Some(agent) = runtime.agents.get(&route.model_name) {
             Ok(Some(format!(
@@ -1304,6 +1320,16 @@ impl ModelRouter {
                         .map(|agent| adapter_kind_for_agent(&agent.config))
                         .unwrap_or_default();
                     let caller_should_send_brief = adapter_pulls_canon_via_mcp(&adapter_kind);
+                    let reasoning_effort = rule
+                        .reasoning_effort
+                        .as_deref()
+                        .or_else(|| {
+                            runtime
+                                .agents
+                                .get(&rule.agent)
+                                .and_then(|agent| agent.config.reasoning_effort.as_deref())
+                        })
+                        .map(|effort| effort.trim().to_ascii_lowercase());
                     AgentRoutingRuleSummary {
                         route_name: rule.route.clone(),
                         agent_id: rule.agent.clone(),
@@ -1314,6 +1340,7 @@ impl ModelRouter {
                         temperature: rule.temperature,
                         stop: rule.stop.clone(),
                         rating: rule.rating.clone(),
+                        reasoning_effort,
                         adapter_kind,
                         caller_should_send_brief,
                     }
@@ -1919,6 +1946,7 @@ impl ModelRouter {
         if !route.stop.is_empty() {
             body["stop"] = serde_json::json!(route.stop);
         }
+        apply_provider_body_fields(&mut body, route)?;
         let request = || with_provider_headers(self.http_client.post(&endpoint).json(&body), agent);
         let response = if allow_retry {
             send_request_with_retry(request).await?
@@ -2006,6 +2034,7 @@ impl ModelRouter {
         if !route.stop.is_empty() {
             body["stop"] = serde_json::json!(route.stop);
         }
+        apply_provider_body_fields(&mut body, route)?;
         let response = send_request_with_retry(|| {
             let mut request = self.http_client.post(&endpoint).json(&body);
             request = with_provider_headers(request, agent);
@@ -2047,6 +2076,26 @@ impl ModelRouter {
             ..Default::default()
         })
     }
+}
+
+/// Apply the route's provider-specific request fields. Core request fields are
+/// rejected rather than overwritten: config load already validates them, and
+/// this guard keeps a directly-constructed route from silently changing the
+/// model, prompt, or output cap.
+fn apply_provider_body_fields(
+    body: &mut serde_json::Value,
+    route: &ModelRoute,
+) -> anyhow::Result<()> {
+    if let Some(effort) = route.reasoning_effort.as_deref() {
+        body["reasoning_effort"] = serde_json::json!(effort);
+    }
+    for (key, value) in &route.extra_body {
+        if RESERVED_EXTRA_BODY_KEYS.contains(&key.as_str()) {
+            anyhow::bail!("extra_body may not override reserved request field '{key}'");
+        }
+        body[key] = value.clone();
+    }
+    Ok(())
 }
 
 impl EmbeddingSession {
@@ -2667,6 +2716,32 @@ fn parse_embedding_array(values: &[serde_json::Value]) -> Option<Vec<f64>> {
     Some(embedding)
 }
 
+fn extra_body_as_json(table: Option<&toml::Table>) -> BTreeMap<String, serde_json::Value> {
+    table
+        .into_iter()
+        .flat_map(|table| table.iter())
+        .filter_map(|(key, value)| {
+            serde_json::to_value(value)
+                .ok()
+                .map(|value| (key.clone(), value))
+        })
+        .collect()
+}
+
+/// Stable digest of the effective provider-specific request fields, used in
+/// route cache identities. The values themselves may be sensitive, so only the
+/// SHA-256 hex digest enters the identity string.
+fn extra_body_digest(extra: &BTreeMap<String, serde_json::Value>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    // `BTreeMap` iteration (and therefore serialization) is key-ordered.
+    match serde_json::to_vec(extra) {
+        Ok(bytes) => hasher.update(bytes),
+        Err(_) => hasher.update(b"<unserializable>"),
+    }
+    format!("sha256:{:x}", hasher.finalize())
+}
+
 fn runtime_from_loaded_config(
     client: &reqwest::Client,
     config: LoadedAgentConfig,
@@ -2711,6 +2786,13 @@ fn runtime_from_loaded_config(
                 .purpose
                 .clone()
                 .unwrap_or_else(|| format!("configured route for {}", agent.config.name));
+            let reasoning_effort = rule
+                .reasoning_effort
+                .as_deref()
+                .or(agent.config.reasoning_effort.as_deref())
+                .map(|effort| effort.trim().to_ascii_lowercase());
+            let mut extra_body = extra_body_as_json(agent.config.extra_body.as_ref());
+            extra_body.extend(extra_body_as_json(rule.extra_body.as_ref()));
             let resolved = ModelRoute {
                 route_name: rule.route.clone(),
                 adapter_kind: adapter_kind_for_agent(&agent.config),
@@ -2725,6 +2807,8 @@ fn runtime_from_loaded_config(
                 top_p: rule.top_p,
                 seed: rule.seed,
                 stop: rule.stop.clone(),
+                reasoning_effort,
+                extra_body,
                 // Operator-configured route: NOT a built-in default, so a
                 // local-stub agent bound here is an intentional opt-in and the
                 // stub serves rather than erroring (live-run bug 6a escape hatch).
@@ -3170,6 +3254,8 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             seed: None,
             stop: Vec::new(),
             builtin_default: true,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         },
         ModelRoute {
             route_name: "review".to_string(),
@@ -3183,6 +3269,8 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             seed: None,
             stop: Vec::new(),
             builtin_default: true,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         },
         ModelRoute {
             route_name: "research".to_string(),
@@ -3196,6 +3284,8 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             seed: None,
             stop: Vec::new(),
             builtin_default: true,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         },
         ModelRoute {
             route_name: "embedding".to_string(),
@@ -3209,6 +3299,8 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             seed: None,
             stop: Vec::new(),
             builtin_default: true,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         },
         ModelRoute {
             route_name: "import_extract".to_string(),
@@ -3222,6 +3314,8 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             seed: None,
             stop: Vec::new(),
             builtin_default: true,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         },
         ModelRoute {
             route_name: "import_synthesize".to_string(),
@@ -3235,6 +3329,8 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             seed: None,
             stop: Vec::new(),
             builtin_default: true,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         },
         ModelRoute {
             route_name: "import_validate".to_string(),
@@ -3248,6 +3344,8 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             seed: None,
             stop: Vec::new(),
             builtin_default: true,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         },
         ModelRoute {
             route_name: "style_analyze".to_string(),
@@ -3261,6 +3359,8 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             seed: None,
             stop: Vec::new(),
             builtin_default: true,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         },
         ModelRoute {
             route_name: "style_revise".to_string(),
@@ -3274,6 +3374,8 @@ fn default_routes() -> BTreeMap<String, ModelRoute> {
             seed: None,
             stop: Vec::new(),
             builtin_default: true,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         },
     ]
     .into_iter()
@@ -4164,6 +4266,82 @@ agent = "default-draft"
         assert_eq!(route.model_name, "default-draft");
     }
 
+    #[test]
+    fn resolved_route_identity_tracks_effective_extra_body_without_leaking_values() {
+        let router = ModelRouter::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("spindle.toml");
+        let identity = |agent_extra: &str, route_extra: &str| -> String {
+            std::fs::write(
+                &config_path,
+                format!(
+                    r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "shared"
+name = "Shared"
+provider = "openai-compatible"
+endpoint = "http://localhost:1/v1"
+model = "test-model"
+extra_body = {agent_extra}
+
+[[routing]]
+route = "draft"
+agent = "shared"
+
+[routing.extra_body]
+{route_extra}
+"####
+                ),
+            )
+            .expect("write config");
+            router
+                .configure(Some(&config_path.display().to_string()))
+                .expect("configure router");
+            router
+                .resolved_route_identity("draft", None)
+                .expect("identity")
+                .expect("configured route")
+        };
+
+        let base = identity(
+            r#"{ top_k = 10, api_key = "sk-secret-value" }"#,
+            r#"service_tier = "priority""#,
+        );
+        let same = identity(
+            r#"{ top_k = 10, api_key = "sk-secret-value" }"#,
+            r#"service_tier = "priority""#,
+        );
+        assert_eq!(base, same, "identity must be stable for unchanged config");
+
+        let agent_changed = identity(
+            r#"{ top_k = 11, api_key = "sk-secret-value" }"#,
+            r#"service_tier = "priority""#,
+        );
+        assert_ne!(
+            base, agent_changed,
+            "agent-level extra_body changes must invalidate the route identity"
+        );
+
+        let route_changed = identity(
+            r#"{ top_k = 10, api_key = "sk-secret-value" }"#,
+            r#"service_tier = "standard""#,
+        );
+        assert_ne!(
+            base, route_changed,
+            "route-level extra_body changes must invalidate the route identity"
+        );
+
+        assert!(
+            !base.contains("sk-secret-value")
+                && !base.contains("priority")
+                && !base.contains("top_k"),
+            "cache identity must carry only the extra_body digest: {base}"
+        );
+    }
+
     #[tokio::test]
     async fn http_router_sends_configured_system_prompt() {
         let (endpoint, captured, server) = spawn_http_capture_server(vec![(
@@ -4228,6 +4406,169 @@ temperature = 0.7
             "adult-route prompt: keep explicit-rated material on page."
         );
         assert_eq!(body["messages"][1]["content"], "Draft the scene.");
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "unconfigured effort must not send the field: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_router_sends_route_reasoning_effort_and_extra_body_and_records_effort() {
+        let (endpoint, captured, server) = spawn_http_capture_server(vec![
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": "draft ok"}, "finish_reason": "stop"}]
+                })
+                .to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": "continued"}, "finish_reason": "stop"}]
+                })
+                .to_string(),
+            ),
+            (
+                200,
+                serde_json::json!({
+                    "choices": [{"message": {"content": "review ok"}, "finish_reason": "stop"}]
+                })
+                .to_string(),
+            ),
+        ]);
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config_path = temp.path().join("spindle.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r####"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "shared"
+name = "Shared HTTP"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "test-model"
+reasoning_effort = "high"
+extra_body = {{ top_k = 40, provider = {{ route = "flex" }} }}
+
+[[routing]]
+route = "draft"
+agent = "shared"
+max_tokens = 512
+temperature = 0.7
+reasoning_effort = "low"
+
+[routing.extra_body]
+service_tier = "priority"
+
+[[routing]]
+route = "review"
+agent = "shared"
+max_tokens = 256
+temperature = 0.2
+"####
+            ),
+        )
+        .expect("write config");
+        let pool = crate::sqlite::SqlitePool::open(&temp.path().join("usage.db"))
+            .await
+            .expect("open db");
+        let repo = crate::sqlite::Repository::with_model_router(
+            pool,
+            temp.path().into(),
+            ModelRouter::local_only(),
+        );
+        repo.model_router()
+            .configure(Some(&config_path.display().to_string()))
+            .expect("configure router");
+
+        let draft = repo
+            .model_router()
+            .complete(&ModelRequest {
+                route: "draft".to_string(),
+                prompt: "Draft the scene.".to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("draft http route");
+        let first = captured_json_body(&captured);
+        let routes = repo.model_router().list_routes().expect("routes");
+        let draft_route = routes
+            .iter()
+            .find(|route| route.route_name == "draft")
+            .expect("draft route");
+        assert_eq!(draft_route.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(first["reasoning_effort"], "low");
+        assert_eq!(first["top_k"], 40);
+        assert_eq!(first["provider"]["route"], "flex");
+        assert_eq!(first["service_tier"], "priority");
+        assert_eq!(first["model"], "test-model");
+        assert_eq!(first["max_tokens"], 512);
+        assert_eq!(first["messages"][1]["content"], "Draft the scene.");
+
+        repo.model_router()
+            .complete_continuation("draft", None, None, "Draft the scene.", &draft.output)
+            .await
+            .expect("draft continuation");
+        repo.model_router()
+            .complete(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "Review the scene.".to_string(),
+                rating: None,
+                context: None,
+            })
+            .await
+            .expect("review http route");
+
+        {
+            let bodies = captured.lock().unwrap();
+            assert_eq!(bodies.len(), 3);
+            let continuation: serde_json::Value =
+                serde_json::from_str(&bodies[1]).expect("continuation body");
+            assert_eq!(continuation["reasoning_effort"], "low");
+            assert_eq!(continuation["service_tier"], "priority");
+            let review: serde_json::Value = serde_json::from_str(&bodies[2]).expect("review body");
+            assert_eq!(review["reasoning_effort"], "high");
+            assert_eq!(review["top_k"], 40);
+            assert!(
+                review.get("service_tier").is_none(),
+                "route-level extra_body must not leak onto other routes: {review}"
+            );
+        }
+        assert_eq!(server.join().expect("server join"), 3);
+
+        let svc = crate::sqlite::SqliteSpindleService::new(repo);
+        let report = svc
+            .get_model_usage(spindle_core::models::GetModelUsageInput::default())
+            .await
+            .expect("model usage");
+        assert_eq!(report.total_calls, 3);
+        let draft_efforts: Vec<_> = report
+            .calls
+            .iter()
+            .filter(|call| call.route == "draft")
+            .map(|call| call.reasoning_effort.clone())
+            .collect();
+        assert_eq!(
+            draft_efforts,
+            vec![Some("low".to_string()), Some("low".to_string())]
+        );
+        let review_effort = report
+            .calls
+            .iter()
+            .find(|call| call.route == "review")
+            .and_then(|call| call.reasoning_effort.clone());
+        assert_eq!(review_effort, Some("high".to_string()));
+        let serialized = serde_json::to_string(&report).expect("serialize usage");
+        assert!(
+            !serialized.contains("service_tier") && !serialized.contains("flex"),
+            "extra_body values must not be logged into model_call payloads"
+        );
     }
 
     #[tokio::test]
@@ -5152,6 +5493,8 @@ enabled = false
             seed: None,
             stop: Vec::new(),
             builtin_default: false,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         };
         let draft_route = ModelRoute {
             route_name: "draft".to_string(),
@@ -5165,6 +5508,8 @@ enabled = false
             seed: None,
             stop: Vec::new(),
             builtin_default: false,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         };
         let review_rule = RoutingRule {
             route: "review".to_string(),
@@ -5178,6 +5523,8 @@ enabled = false
             seed: None,
             stop: Vec::new(),
             rating: None,
+            reasoning_effort: None,
+            extra_body: None,
         };
         let draft_rule = RoutingRule {
             route: "draft".to_string(),
@@ -5191,6 +5538,8 @@ enabled = false
             seed: None,
             stop: Vec::new(),
             rating: None,
+            reasoning_effort: None,
+            extra_body: None,
         };
         let agent = ConfiguredAgent {
             tokenizer: None,
@@ -5216,6 +5565,8 @@ enabled = false
             allow_tools: Vec::new(),
             deny_tools: Vec::new(),
             extra_args: Vec::new(),
+            reasoning_effort: None,
+            extra_body: None,
         };
         let runtime = RuntimeConfig {
             source_path: None,
@@ -5372,6 +5723,8 @@ enabled = false
             seed: None,
             stop: Vec::new(),
             builtin_default: false,
+            reasoning_effort: None,
+            extra_body: BTreeMap::new(),
         }
     }
 
@@ -5558,6 +5911,8 @@ enabled = false
             allow_tools: Vec::new(),
             deny_tools: Vec::new(),
             extra_args: Vec::new(),
+            reasoning_effort: None,
+            extra_body: None,
         };
         assert_eq!(adapter_kind_for_agent(&agent), "grok");
     }
@@ -5584,6 +5939,8 @@ enabled = false
             allow_tools: Vec::new(),
             deny_tools: Vec::new(),
             extra_args: Vec::new(),
+            reasoning_effort: None,
+            extra_body: None,
         };
         assert_eq!(adapter_kind_for_agent(&agent), "http");
         agent.endpoint = "/usr/local/bin/local-model".to_string();
