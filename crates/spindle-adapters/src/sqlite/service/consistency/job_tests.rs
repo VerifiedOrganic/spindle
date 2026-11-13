@@ -11,8 +11,8 @@ use crate::ai::ModelRouter;
 use crate::sqlite::{Repository, SqlitePool};
 use spindle_core::models::{
     CheckConsistencyInput, ConsistencyScopeInput, ConsistencyStatus, ContentRating,
-    CreateProjectInput, PlanChapterInput, PlanChapterSceneInput, ReaderContract,
-    SaveSceneDraftInput,
+    CreateBranchInput, CreateProjectInput, PlanChapterInput, PlanChapterSceneInput, ReaderContract,
+    SaveSceneDraftInput, SwitchBranchInput,
 };
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -291,6 +291,81 @@ async fn old_failed_job_reaper_does_not_evict_a_replacement() {
         collected.job_id.as_deref(),
         Some(replacement_id.as_str()),
         "the old failed job's reaper must not evict its replacement"
+    );
+}
+
+#[tokio::test]
+async fn inherited_parent_scene_edit_starts_a_fresh_child_branch_job() {
+    let (_tmp, svc, project_id) = service_with_scene("inherited-job").await;
+    let main_branch_id = svc
+        .repository()
+        .get_active_branch(&project_id)
+        .await
+        .unwrap()
+        .id;
+    let child = svc
+        .create_branch(CreateBranchInput {
+            project_id: project_id.clone(),
+            name: "child".to_string(),
+            branch_type: "alternate".to_string(),
+            description: None,
+            parent_branch_id: Some(main_branch_id.clone()),
+        })
+        .await
+        .unwrap();
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project_id.clone(),
+        branch_id: child.branch_id.clone(),
+    })
+    .await
+    .unwrap();
+
+    let mut input = deep_input(&project_id);
+    input.checks = vec![
+        "temporal_coherence".to_string(),
+        "retcon_reachability".to_string(),
+    ];
+    let first = svc.check_consistency(input.clone()).await.unwrap();
+    assert_eq!(first.status, ConsistencyStatus::Complete);
+    let old_job_id = first.job_id.expect("child-branch job id");
+
+    // Edit the inherited parent scene. The child branch has no scene row of
+    // its own, so only the resolved spine sees this change.
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project_id.clone(),
+        branch_id: main_branch_id,
+    })
+    .await
+    .unwrap();
+    svc.save_scene_draft(SaveSceneDraftInput {
+        project_id: project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        chapter_id: None,
+        scene_order: 1,
+        full_text: format!("{DEEP_PROSE} The door had moved since the last telling."),
+        summary: "a revised accounting".to_string(),
+        content_rating: ContentRating::General,
+        tone: None,
+        generation_id: None,
+        source_path: None,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project_id.clone(),
+        branch_id: child.branch_id,
+    })
+    .await
+    .unwrap();
+
+    let second = svc.check_consistency(input).await.unwrap();
+    assert_eq!(second.status, ConsistencyStatus::Complete);
+    assert_ne!(
+        second.job_id.as_deref(),
+        Some(old_job_id.as_str()),
+        "an inherited parent-scene edit must start a fresh child-branch audit"
     );
 }
 

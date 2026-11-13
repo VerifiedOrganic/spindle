@@ -51,7 +51,7 @@ runs the deterministic lanes first. `deep_check: true` adds the model tiers:
 
 A deep audit runs as a **detached job** so a client request timeout cannot throw
 away a finished result. The first call starts the job for the exact request
-scope plus a fingerprint of the scoped scene prose and the non-prose records the audit reads, waits briefly, and returns
+scope plus a fingerprint of the scoped scene prose (including inherited parent scenes) and the non-prose records the audit reads, waits briefly, and returns
 either the finished audit or `status: "in_progress"` with a `job_id`, the deep
 checks finished so far (`checks_completed`), the checks still pending, and the
 findings banked so far. Calling again with the same project, scope, check

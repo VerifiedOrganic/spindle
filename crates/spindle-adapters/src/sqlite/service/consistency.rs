@@ -15,8 +15,9 @@ impl SqliteSpindleService {
     ///
     /// Fast (`deep_check = false`) audits run inline and always return
     /// `status: "complete"`. Deep audits run as a detached job: this call
-    /// starts or joins the job for this exact scope and audit-input fingerprint,
-    /// waits briefly, then returns either the finished audit or
+    /// starts or joins the job for this exact scope and audit-input fingerprint
+    /// (including prose inherited from parent branches), waits briefly, then
+    /// returns either the finished audit or
     /// `status: "in_progress"` with the job id and the deep checks finished so
     /// far. A retry with the same scope and audit inputs joins the same job or
     /// collects its result. Jobs are in-memory: a server restart drops the job
@@ -259,6 +260,15 @@ impl SqliteSpindleService {
                 .await?,
             &scope,
         );
+        // `retcon_reachability` scans the resolved spine, which includes
+        // inherited parent scenes. Fingerprint those too: editing an inherited
+        // parent scene changes the audit without changing any child-branch row.
+        let resolved_scenes = crate::format::scoped_scenes(
+            self.repository
+                .list_scenes_resolved_for_branch(&input.project_id, &branch.id)
+                .await?,
+            &scope,
+        );
 
         let mut checks = input.checks.clone();
         checks.sort();
@@ -294,7 +304,7 @@ impl SqliteSpindleService {
             input.format,
             input.budget_tokens,
         ))?);
-        for scene in &scenes {
+        for scene in &resolved_scenes {
             hasher.update(scene.id.as_bytes());
             hasher.update(b"\0");
             hasher.update(scene_revision_fingerprint(scene).as_bytes());
