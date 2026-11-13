@@ -785,7 +785,8 @@ async fn end_to_end_full_flow_against_sqlite() {
             trust_delta: 10,
             tension_delta: -5,
             reason: "Aldric's scouting saved Mara's watch".into(),
-            scene_id: scene1.scene_id.clone(),
+            scene_id: Some(scene1.scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -5903,7 +5904,8 @@ async fn recommitting_scene_continuity_package_reverses_omitted_pairs_and_respec
                 trust_delta: 12,
                 tension_delta: -4,
                 reason: "mined shift on A/D".to_string(),
-                scene_id: scene1.scene_id.clone(),
+                scene_id: Some(scene1.scene_id.clone()),
+                ..Default::default()
             },
             "mined_relationship_shift",
         )

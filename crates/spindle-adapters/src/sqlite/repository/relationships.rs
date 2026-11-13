@@ -189,14 +189,23 @@ impl Repository {
         let input_owned = input.clone();
         let source_owned = source.to_string();
         self.with_transaction(move |tx| {
-            let scene = tx.get_scene(&input_owned.scene_id).ok();
+            let scene = input_owned
+                .scene_id
+                .as_deref()
+                .and_then(|scene_id| tx.get_scene(scene_id).ok());
             let effective_branch_id = if let Some(scene) = &scene {
                 tx.resolve_effective_scene_branch(&scene.project_id, &branch_id_owned)?
             } else {
                 branch_id_owned.clone()
             };
-            let relationship =
-                tx.update_relationship(&effective_branch_id, &input_owned, &source_owned)?;
+            let relationship = if scene.is_some() {
+                if input_owned.relationship_type.is_some() || input_owned.dynamics.is_some() {
+                    tx.update_relationship_details(&effective_branch_id, &input_owned)?;
+                }
+                tx.update_relationship(&effective_branch_id, &input_owned, &source_owned)?
+            } else {
+                tx.update_relationship_details(&effective_branch_id, &input_owned)?
+            };
             if let Some(scene) = &scene {
                 let revision_id = format!(
                     "legacy:relationship:{}:{}:{}:{}",
@@ -275,6 +284,58 @@ impl Repository {
                             ("relates_to".to_string(), pair_key),
                             ("relationship_scene_delta".to_string(), delta_key),
                         ],
+                        timestamp_to_micros(chrono::Utc::now()),
+                    )?;
+                }
+            } else {
+                let project_id = tx.get_character(&relationship.in_id)?.project_id;
+                let revision_id = format!(
+                    "legacy:relationship-details:{}:{}:{}:{}",
+                    effective_branch_id,
+                    relationship.in_id,
+                    relationship.out_id,
+                    timestamp_to_micros(chrono::Utc::now())
+                );
+                // A canon-only edit has no manuscript position; 0/0 maps to an
+                // unscoped canon event rather than inventing scene zero.
+                let placement = StoryPlacement {
+                    book_number: 0,
+                    chapter_number: 0,
+                    scene_order: None,
+                    note: Some("outside scene".to_string()),
+                };
+                let snapshot_claim = legacy_snapshot_claim(
+                    &project_id,
+                    &effective_branch_id,
+                    &revision_id,
+                    None,
+                    &placement,
+                    &relationship.in_id,
+                    format!(
+                        "legacy.relates_to.{}|{}",
+                        relationship.in_id, relationship.out_id
+                    ),
+                    &relationship,
+                    None,
+                    0,
+                )?;
+                let mirrored = tx.mirror_canon_claims(
+                    &project_id,
+                    &effective_branch_id,
+                    &revision_id,
+                    None,
+                    vec![snapshot_claim],
+                )?;
+                if mirrored.is_some() {
+                    let pair_key = format!(
+                        "{}|{}|{}",
+                        relationship.branch_id, relationship.in_id, relationship.out_id
+                    );
+                    mark_legacy_rows_mapped_in_conn(
+                        &tx.tx,
+                        &project_id,
+                        &effective_branch_id,
+                        &[("relates_to".to_string(), pair_key)],
                         timestamp_to_micros(chrono::Utc::now()),
                     )?;
                 }

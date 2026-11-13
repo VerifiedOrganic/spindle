@@ -643,7 +643,7 @@ pub(super) fn build_all_tools() -> Vec<CatalogTool> {
         ),
         tool::<UpdateRelationshipInput, UpdateRelationshipOutput>(
             "update_relationship",
-            "Update trust and tension for a directed character relationship",
+            "Update trust and tension for a directed character relationship, or correct its type/label and dynamics without a scene",
         ),
         tool::<ImportManuscriptInput, ImportManuscriptOutput>(
             "import_manuscript",

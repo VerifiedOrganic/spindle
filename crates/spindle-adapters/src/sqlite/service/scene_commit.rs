@@ -196,7 +196,8 @@ fn apply_continuity_in_tx(
                 trust_delta: entry.trust_delta,
                 tension_delta: entry.tension_delta,
                 reason: entry.reason.clone(),
-                scene_id: scene.id.clone(),
+                scene_id: Some(scene.id.clone()),
+                ..Default::default()
             },
             "continuity_package",
         )?;

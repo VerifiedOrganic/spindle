@@ -1699,6 +1699,9 @@ impl SqliteSpindleService {
                     .ok_or_else(not_found)?
                     .project_id
             }
+            "relates_to" => anyhow::bail!(
+                "relates_to rows use a character-pair key; use update_relationship to edit relationship_type or dynamics"
+            ),
             other => anyhow::bail!("read_entity_by_id does not support table `{other}`"),
         };
         Ok(serde_json::json!({

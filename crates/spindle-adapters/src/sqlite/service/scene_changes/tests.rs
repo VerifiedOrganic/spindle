@@ -1067,7 +1067,8 @@ async fn relationship_updates_are_idempotent_per_scene_and_replace_across_recomm
             trust_delta: 5,
             tension_delta: -2,
             reason: "crossed bridge".to_string(),
-            scene_id: scene2.scene_id.clone(),
+            scene_id: Some(scene2.scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -1214,7 +1215,8 @@ async fn relationship_child_materialization_isolates_later_parent_updates() {
             trust_delta: 10,
             tension_delta: -2,
             reason: "parent scene C initial".to_string(),
-            scene_id: main_scene_c.scene_id.clone(),
+            scene_id: Some(main_scene_c.scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -1264,7 +1266,8 @@ async fn relationship_child_materialization_isolates_later_parent_updates() {
             trust_delta: 5,
             tension_delta: -1,
             reason: "child scene B".to_string(),
-            scene_id: child_scene_b.scene_id.clone(),
+            scene_id: Some(child_scene_b.scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -1289,7 +1292,8 @@ async fn relationship_child_materialization_isolates_later_parent_updates() {
             trust_delta: 10,
             tension_delta: -5,
             reason: "parent scene A after child materialized".to_string(),
-            scene_id: main_scene_a.scene_id.clone(),
+            scene_id: Some(main_scene_a.scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -1302,7 +1306,8 @@ async fn relationship_child_materialization_isolates_later_parent_updates() {
             trust_delta: 25,
             tension_delta: -6,
             reason: "parent scene C updated after child materialized".to_string(),
-            scene_id: main_scene_c.scene_id.clone(),
+            scene_id: Some(main_scene_c.scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -1325,7 +1330,8 @@ async fn relationship_child_materialization_isolates_later_parent_updates() {
             trust_delta: 3,
             tension_delta: 1,
             reason: "child scene A".to_string(),
-            scene_id: main_scene_a.scene_id.clone(),
+            scene_id: Some(main_scene_a.scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -1345,7 +1351,8 @@ async fn relationship_child_materialization_isolates_later_parent_updates() {
             trust_delta: 4,
             tension_delta: -3,
             reason: "child scene C override".to_string(),
-            scene_id: main_scene_c.scene_id.clone(),
+            scene_id: Some(main_scene_c.scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();

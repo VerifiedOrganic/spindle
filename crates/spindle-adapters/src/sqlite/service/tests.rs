@@ -3707,3 +3707,255 @@ fn pending_statuses_keep_only_living_replacements() {
         "a later explicit dead status must win over an earlier living one"
     );
 }
+
+#[tokio::test]
+async fn update_relationship_edits_label_and_dynamics_outside_a_scene() {
+    use spindle_core::models::{CreateRelationshipInput, UpdateRelationshipInput};
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, _scene_id, _) = project_with_scene(&svc, "Relationship Labels").await;
+    let a = create_character_named(&svc, &project.project_id, "Ari").await;
+    let b = create_character_named(&svc, &project.project_id, "Bex").await;
+    svc.create_relationship(CreateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        relationship_type: "allly".to_string(),
+        initial_trust: 40,
+        initial_tension: 10,
+        dynamics: vec!["old dynamic".to_string()],
+    })
+    .await
+    .unwrap();
+
+    // `label` is accepted as a JSON alias for `relationship_type`.
+    let alias: UpdateRelationshipInput = serde_json::from_value(serde_json::json!({
+        "character_a_id": a.clone(),
+        "character_b_id": b.clone(),
+        "reason": "alias check",
+        "label": "ally"
+    }))
+    .unwrap();
+    assert_eq!(alias.relationship_type.as_deref(), Some("ally"));
+    assert!(alias.scene_id.is_none());
+
+    let updated = svc
+        .update_relationship(UpdateRelationshipInput {
+            character_a_id: a.clone(),
+            character_b_id: b.clone(),
+            reason: "correct the relationship label".to_string(),
+            relationship_type: Some("ally".to_string()),
+            dynamics: Some(vec![
+                "old dynamic".to_string(),
+                "shared watch".to_string(),
+                " shared watch ".to_string(),
+            ]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(updated.relationship_type, "ally");
+    assert_eq!(
+        updated.dynamics,
+        vec!["old dynamic".to_string(), "shared watch".to_string()]
+    );
+    assert_eq!(updated.trust, 40, "label edits leave trust unchanged");
+    assert_eq!(updated.tension, 10, "label edits leave tension unchanged");
+
+    let branch = svc
+        .repository
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let stored = svc
+        .repository
+        .get_relationship(&branch.id, &a, &b)
+        .await
+        .unwrap();
+    assert_eq!(stored.relationship_type, "ally");
+    assert_eq!(
+        stored.dynamics,
+        vec!["old dynamic".to_string(), "shared watch".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn update_relationship_outside_a_scene_validates_details() {
+    use spindle_core::models::{CreateRelationshipInput, UpdateRelationshipInput};
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, _scene_id, _) = project_with_scene(&svc, "Relationship Validation").await;
+    let a = create_character_named(&svc, &project.project_id, "Ari").await;
+    let b = create_character_named(&svc, &project.project_id, "Bex").await;
+    svc.create_relationship(CreateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        relationship_type: "ally".to_string(),
+        initial_trust: 0,
+        initial_tension: 0,
+        dynamics: Vec::new(),
+    })
+    .await
+    .unwrap();
+
+    let input = |relationship_type: Option<&str>, dynamics: Option<Vec<&str>>, trust_delta: i32| {
+        UpdateRelationshipInput {
+            character_a_id: a.clone(),
+            character_b_id: b.clone(),
+            trust_delta,
+            reason: "reason".to_string(),
+            relationship_type: relationship_type.map(str::to_string),
+            dynamics: dynamics.map(|values| values.into_iter().map(str::to_string).collect()),
+            ..Default::default()
+        }
+    };
+
+    let err = svc
+        .update_relationship(input(None, None, 0))
+        .await
+        .expect_err("no-op edit must be rejected");
+    assert!(
+        err.to_string()
+            .contains("relationship_type and/or dynamics when scene_id is omitted")
+    );
+
+    let err = svc
+        .update_relationship(input(Some("ally"), None, 5))
+        .await
+        .expect_err("trust delta without a scene must be rejected");
+    assert!(err.to_string().contains("scene_id is required"));
+
+    let err = svc
+        .update_relationship(input(Some("   "), None, 0))
+        .await
+        .expect_err("blank label must be rejected");
+    assert!(
+        err.to_string()
+            .contains("relationship_type must not be empty")
+    );
+
+    let err = svc
+        .update_relationship(input(None, Some(vec!["ok", "  "]), 0))
+        .await
+        .expect_err("blank dynamics entry must be rejected");
+    assert!(
+        err.to_string()
+            .contains("dynamics entries must not be empty")
+    );
+}
+
+#[tokio::test]
+async fn scene_scoped_relationship_update_can_also_correct_label_and_dynamics() {
+    use spindle_core::models::{CreateRelationshipInput, UpdateRelationshipInput};
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene_id, _) = project_with_scene(&svc, "Relationship Scene Details").await;
+    let a = create_character_named(&svc, &project.project_id, "Ari").await;
+    let b = create_character_named(&svc, &project.project_id, "Bex").await;
+    svc.create_relationship(CreateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        relationship_type: "allly".to_string(),
+        initial_trust: 10,
+        initial_tension: 5,
+        dynamics: vec!["old dynamic".to_string()],
+    })
+    .await
+    .unwrap();
+
+    let updated = svc
+        .update_relationship(UpdateRelationshipInput {
+            character_a_id: a,
+            character_b_id: b,
+            trust_delta: 3,
+            tension_delta: -1,
+            reason: "scene correction".to_string(),
+            scene_id: Some(scene_id),
+            relationship_type: Some("ally".to_string()),
+            dynamics: Some(vec!["new dynamic".to_string()]),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(updated.relationship_type, "ally");
+    assert_eq!(updated.dynamics, vec!["new dynamic".to_string()]);
+    assert_eq!(updated.trust, 13);
+    assert_eq!(updated.tension, 4);
+}
+
+#[tokio::test]
+async fn relationship_details_edit_materializes_on_the_active_child_branch() {
+    use spindle_core::models::{
+        CreateBranchInput, CreateRelationshipInput, SwitchBranchInput, UpdateRelationshipInput,
+    };
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, _scene_id, _) = project_with_scene(&svc, "Relationship Branches").await;
+    let a = create_character_named(&svc, &project.project_id, "Ari").await;
+    let b = create_character_named(&svc, &project.project_id, "Bex").await;
+    svc.create_relationship(CreateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        relationship_type: "ally".to_string(),
+        initial_trust: 5,
+        initial_tension: 2,
+        dynamics: vec!["main-branch dynamic".to_string()],
+    })
+    .await
+    .unwrap();
+    let main_branch = svc
+        .repository
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let child = svc
+        .create_branch(CreateBranchInput {
+            project_id: project.project_id.clone(),
+            name: "alternate".to_string(),
+            branch_type: "what-if".to_string(),
+            description: None,
+            parent_branch_id: None,
+        })
+        .await
+        .unwrap();
+    svc.switch_branch(SwitchBranchInput {
+        project_id: project.project_id.clone(),
+        branch_id: child.branch_id.clone(),
+    })
+    .await
+    .unwrap();
+
+    svc.update_relationship(UpdateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        reason: "branch-local label".to_string(),
+        relationship_type: Some("rivals".to_string()),
+        dynamics: Some(vec!["child-branch dynamic".to_string()]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let child_row = svc
+        .repository
+        .get_relationship(&child.branch_id, &a, &b)
+        .await
+        .unwrap();
+    assert_eq!(child_row.branch_id, child.branch_id);
+    assert_eq!(child_row.relationship_type, "rivals");
+    assert_eq!(child_row.dynamics, vec!["child-branch dynamic".to_string()]);
+    assert_eq!(child_row.trust, 5);
+    assert_eq!(child_row.tension, 2);
+
+    let main_row = svc
+        .repository
+        .get_relationship(&main_branch.id, &a, &b)
+        .await
+        .unwrap();
+    assert_eq!(main_row.branch_id, main_branch.id);
+    assert_eq!(
+        main_row.relationship_type, "ally",
+        "editing the child branch must not mutate the parent"
+    );
+    assert_eq!(main_row.dynamics, vec!["main-branch dynamic".to_string()]);
+}

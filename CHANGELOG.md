@@ -28,6 +28,12 @@
   rule that forbids resurrection does not. A death followed by action with no
   respawn recorded still reports, as does a same-commit status that keeps the
   dead marker.
+- Relationship labels and dynamics are editable outside a scene.
+  `update_relationship` now accepts optional `relationship_type` (alias
+  `label`) and `dynamics` with `scene_id` omitted, validates and normalizes the
+  edit, leaves trust/tension untouched, and records the updated relationship
+  snapshot in canon when dual-write is active. Scene-scoped trust/tension
+  deltas keep their existing behavior.
 - Research search now splits multi-word queries into terms and matches them
   across source titles, note text, claim text, and tags, ranking results by the
   number of matching terms. Tag matching normalizes case, hyphens,
