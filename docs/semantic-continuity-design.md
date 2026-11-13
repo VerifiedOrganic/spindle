@@ -49,6 +49,24 @@ runs the deterministic lanes first. `deep_check: true` adds the model tiers:
 - secret: after the deterministic `secret_leak` candidate build;
 - scene purpose and promise payoff: separate deep-only arms.
 
+A deep audit runs as a **detached job** so a client request timeout cannot throw
+away a finished result. The first call starts the job for the exact request
+scope plus a fingerprint of the scoped scene prose (including inherited parent scenes) and the non-prose records the audit reads, waits briefly, and returns
+either the finished audit or `status: "in_progress"` with a `job_id`, the deep
+checks finished so far (`checks_completed`), the checks still pending, and the
+findings banked so far. Calling again with the same project, scope, check
+selection, and unchanged audit inputs joins the same job or collects its
+result; an edit to prose or an audit input, a scope change, or a
+check-selection change starts a separate audit. When the
+MCP client supplies a progress token, the server sends one
+`notifications/progress` per finished deep-tier check.
+
+Jobs are in-memory. A server restart drops every running or finished job; the
+next call starts a fresh audit. Per-scene `deep_check_cache` rows survive the
+restart, so scenes already analyzed by a deep tier are served from cache rather
+than re-paid. Fast (`deep_check: false`) checks remain synchronous and always
+return `status: "complete"`.
+
 All prose-bearing calls go through `ModelRouter::complete` with
 `route: "review"` and the scene's content rating. The rating-clearance
 chokepoint (`resolve_cleared_route`, `PROSE_BEARING_ROUTES`) prevents an

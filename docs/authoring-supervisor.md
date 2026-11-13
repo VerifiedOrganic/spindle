@@ -218,10 +218,12 @@ graph TD
 When a run reaches `await_checkpoint_review`, the supervisor should inspect the
 checkpoint report. If deep consistency is pending, run `check_consistency` for
 that chapter range with `deep_check: true`, then call
-`authoring_record_checkpoint_audit` with the returned structured payload. Then
-run any missing sampled dual-persona reviews with `rounds: 2`. The checkpoint
-cannot be closed until the deep audit is recorded and sampled reviews are
-current in the local database.
+`authoring_record_checkpoint_audit` with the returned structured payload. A deep
+call that returns `status: "in_progress"` is not a failure: call it again with
+the same project and scope to join or collect the job, and record only a
+`status: "complete"` payload. Then run any missing sampled dual-persona reviews
+with `rounds: 2`. The checkpoint cannot be closed until the deep audit is
+recorded and sampled reviews are current in the local database.
 
 After the review:
 

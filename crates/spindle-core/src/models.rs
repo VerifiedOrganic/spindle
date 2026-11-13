@@ -6421,8 +6421,45 @@ pub struct ConsistencySection {
     pub scenes: Vec<ConsistencySceneFindings>,
 }
 
+/// Lifecycle status of a `check_consistency` response.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsistencyStatus {
+    /// This response contains the finished audit.
+    #[default]
+    Complete,
+    /// A detached deep audit is still running; findings are partial.
+    InProgress,
+}
+
+impl ConsistencyStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::InProgress => "in_progress",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CheckConsistencyOutput {
+    /// `complete` when this response contains the finished audit, or
+    /// `in_progress` when a detached deep check is still running. Fast
+    /// (non-deep) checks are always `complete`.
+    pub status: ConsistencyStatus,
+    /// Stable identifier of the detached deep-check job that produced (or is
+    /// producing) this response. Omitted for fast checks and for legacy
+    /// payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    /// Deep-tier checks whose results are already included in this response,
+    /// in completion order. Empty for fast checks.
+    #[serde(default)]
+    pub checks_completed: Vec<String>,
+    /// Deep-tier checks a running job has not finished yet. Empty when the
+    /// audit is complete.
+    #[serde(default)]
+    pub checks_pending: Vec<String>,
     /// Empty for shallow checks. A clean finding list does not imply complete coverage.
     #[serde(default)]
     pub audit_coverage: Vec<AuditCoverage>,
