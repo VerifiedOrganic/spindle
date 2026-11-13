@@ -16,6 +16,115 @@ fn references(receipts: &[PlanningOperationReceipt]) -> BTreeMap<String, String>
     }
     out
 }
+
+fn operation_index(key: &str) -> usize {
+    key.split(':')
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn changed_dependency_fields(
+    proposal: &PlanningProposal,
+    state: &BTreeMap<String, Value>,
+    index: usize,
+    id: &str,
+) -> Vec<String> {
+    let prefix = format!("{index}:field:{id}:");
+    let mut changed = Vec::new();
+    for (key, value) in state {
+        let Some(field) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+        if field == "__present" {
+            continue;
+        }
+        let current = digest(value).unwrap_or_default();
+        if proposal.base_state.get(key) != Some(&current) {
+            changed.push(field.to_string());
+        }
+    }
+    changed.sort();
+    changed
+}
+
+fn check_planning_base_state(
+    proposal: &PlanningProposal,
+    state: &BTreeMap<String, Value>,
+) -> Result<()> {
+    let field_scoped = proposal
+        .base_state
+        .get("base_state_version")
+        .map(String::as_str)
+        == Some("2");
+    let mut failures: Vec<(String, String)> = Vec::new();
+    for (key, value) in state {
+        if key == "base_state_version" || key.contains(":field:") {
+            continue;
+        }
+        if !field_scoped && key.contains(":dep:") {
+            continue;
+        }
+        if field_scoped && key.contains(":row:") {
+            let dep_key = key.replace(":row:", ":dep:");
+            if state.contains_key(&dep_key) {
+                continue;
+            }
+        }
+        let expected = proposal.base_state.get(key);
+        let current = digest(value)?;
+        if expected == Some(&current)
+            || (expected.is_none() && value.as_array().is_some_and(Vec::is_empty))
+        {
+            continue;
+        }
+        let description = if let Some(id) = key
+            .split_once(":dep:")
+            .map(|(_, id)| id)
+            .or_else(|| key.split_once(":row:").map(|(_, id)| id))
+        {
+            let index = operation_index(key);
+            let fields = if field_scoped {
+                changed_dependency_fields(proposal, state, index, id)
+            } else {
+                Vec::new()
+            };
+            if fields.is_empty() {
+                format!("{id} row contents changed")
+            } else {
+                format!("{id} changed field(s): {}", fields.join(", "))
+            }
+        } else if let Some(target) = key.split_once(":target:").map(|(_, target)| target) {
+            format!("target {target} changed")
+        } else if key == "context:reader_contract" {
+            "project reader contract changed".to_string()
+        } else {
+            format!("{key} changed")
+        };
+        failures.push((key.clone(), description));
+    }
+    if failures.is_empty() {
+        return Ok(());
+    }
+    let (key, description) = &failures[0];
+    let mut message = format!(
+        "stale planning base state at {key} ({description}); call planning_decide with action=rebase and expected_hashes={{\"{}\":\"{}\"}} to re-stage the same payload against the current base, then accept again",
+        proposal.id, proposal.payload_hash
+    );
+    if failures.len() > 1 {
+        let others: Vec<String> = failures
+            .iter()
+            .skip(1)
+            .take(3)
+            .map(|(key, description)| format!("{key} ({description})"))
+            .collect();
+        message.push_str(&format!(
+            "; other stale dependencies: {}",
+            others.join(", ")
+        ));
+    }
+    Err(anyhow::anyhow!(message))
+}
 impl SqliteSpindleService {
     pub async fn planning_apply_status(
         &self,
@@ -467,15 +576,7 @@ impl SqliteSpindleService {
             .repository
             .planning_operation_state(s.scope.clone(), item.clone(), index, refs)
             .await?;
-        for (key, value) in &state {
-            let expected = p.base_state.get(key);
-            let current = digest(value)?;
-            anyhow::ensure!(
-                expected == Some(&current)
-                    || (expected.is_none() && value.as_array().is_some_and(Vec::is_empty)),
-                "stale planning base state at {key}; stage a fresh synchronization proposal"
-            );
-        }
+        check_planning_base_state(p, &state)?;
         let before_followups = self
             .repository
             .planning_followup_states(p.id.clone())

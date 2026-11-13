@@ -1399,8 +1399,15 @@ pub struct PlanningSessionSummary {
     /// Bound branch identifier, once a project root is accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_id: Option<String>,
-    /// First planning level that has no staged or accepted proposal.
-    pub next_level: PlanningLevel,
+    /// First required planning level that has no staged or accepted proposal.
+    /// `None` when every required level is satisfied, including Scene when
+    /// every target chapter already has a persisted scene manifest.
+    #[serde(default)]
+    pub next_level: Option<PlanningLevel>,
+    /// Whether every chapter in the session horizon has a persisted scene
+    /// manifest with at least the requested scene count.
+    #[serde(default)]
+    pub scene_manifests_complete: bool,
     /// Current gate and policy summary.
     pub policy: PlanningPolicySummary,
     /// Detailed chapter horizon stored on the session.
@@ -1896,6 +1903,9 @@ pub enum PlanningDecideAction {
     Decide,
     /// Supersede staged proposals so a replacement can be staged at the same level.
     Revise,
+    /// Re-stage staged proposals against the current base without changing their
+    /// payload hash, preserving any approval already recorded for that payload.
+    Rebase,
     /// Check readiness and prepare the authoring run without changing proposals.
     PrepareAuthoringRun,
 }
@@ -1904,6 +1914,7 @@ impl PlanningAction for PlanningDecideAction {
     const WIRE: &'static [(&'static str, Self)] = &[
         ("decide", Self::Decide),
         ("revise", Self::Revise),
+        ("rebase", Self::Rebase),
         ("prepare_authoring_run", Self::PrepareAuthoringRun),
     ];
 }
@@ -1929,7 +1940,8 @@ pub struct PlanningDecideInput {
     /// Branch the session is bound to; defaults to the project's active branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_id: Option<String>,
-    /// Whether to decide proposals or prepare the authoring run.
+    /// Whether to decide proposals, rebase them against the current base, or
+    /// prepare the authoring run.
     #[serde(default)]
     pub action: PlanningDecideAction,
     /// Decision to record when the action is decide.
@@ -2169,6 +2181,14 @@ mod tests {
         assert_eq!(
             decide_action(json!({"revise": null})).unwrap(),
             PlanningDecideAction::Revise
+        );
+        assert_eq!(
+            decide_action(json!("rebase")).unwrap(),
+            PlanningDecideAction::Rebase
+        );
+        assert_eq!(
+            decide_action(json!({"rebase": null})).unwrap(),
+            PlanningDecideAction::Rebase
         );
     }
 

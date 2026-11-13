@@ -48,6 +48,21 @@
   payloads; revision feedback is ordered newest-first so bounding cannot drop
   the latest author direction. Response schemas, tool snapshots and profile
   budgets are updated in the same change.
+- **Stale planning proposals can be rebased instead of re-created.**
+  `planning_decide` accepts `action=rebase`, which re-captures the base state
+  for staged proposals without changing their artifact or payload hash, so an
+  approval already recorded for that payload remains valid. Dependency checks
+  now compare planning-relevant columns for referenced records; an edit that
+  only changes presentation fields such as a character's appearance or notes
+  no longer stales a staged chapter plan. When a dependency did change, the
+  error names the row and changed field and gives the exact rebase call.
+- **Scene level is satisfied when chapter plans already carry manifests.**
+  `planning_status.session.next_level` is null and
+  `scene_manifests_complete=true` once every chapter in the horizon has a
+  persisted scene manifest with the requested scene count. `planning_advance`
+  no longer generates a redundant scene-level host request whose only
+  operation would be `plan_chapter` again; `next_action` points to
+  `planning_decide action=prepare_authoring_run`.
 - **Respawn and resurrection no longer read as dead-character retcons.** A
   character state that replaces a recorded dead status with a living one
   supersedes the death from that scene onward, including when the state is
@@ -69,6 +84,13 @@
   check. Jobs are in-memory, so a server restart drops the job and the next call
   starts fresh while reusing per-scene deep-tier cache rows. Checkpoint audit
   recording rejects an in-progress payload instead of blessing partial coverage.
+- Relationship labels and dynamics are editable outside a scene.
+  `update_relationship` now accepts optional `relationship_type` (alias
+  `label`) and `dynamics` with `scene_id` omitted, validates and normalizes the
+  edit, leaves trust/tension untouched, and records the updated relationship
+  snapshot in canon when dual-write is active. Scene-scoped `trust_delta` and
+  `tension_delta` are optional too: omitting one keeps that scene's prior delta,
+  and supplying one replaces only that delta.
 - Research search now splits multi-word queries into terms and matches them
   across source titles, note text, claim text, and tags, ranking results by the
   number of matching terms. Tag matching normalizes case, hyphens,

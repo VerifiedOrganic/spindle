@@ -351,9 +351,10 @@ impl SqliteSpindleService {
         Ok(CommitCharacterStateOutput { state_id })
     }
 
-    /// Update a relationship's trust + tension by deltas, set reason and
-    /// last_scene_id. Returns the post-update trust + tension so callers can
-    /// surface the new equilibrium.
+    /// Update a relationship's trust + tension by deltas, and/or correct its
+    /// label/dynamics. A scene_id keeps the scene-scoped delta behavior; when
+    /// it is omitted, only label/dynamics are written and the relationship's
+    /// trust/tension are left untouched.
     pub async fn update_relationship(
         &self,
         input: UpdateRelationshipInput,
@@ -366,23 +367,44 @@ impl SqliteSpindleService {
         input: UpdateRelationshipInput,
         source: &str,
     ) -> Result<UpdateRelationshipOutput> {
-        let scene = self.repository.get_scene(&input.scene_id).await?;
         let source_character = self.repository.get_character(&input.character_a_id).await?;
         let target_character = self.repository.get_character(&input.character_b_id).await?;
         if source_character.project_id != target_character.project_id {
             anyhow::bail!("relationship characters must belong to the same project");
         }
-        if scene.project_id != source_character.project_id {
-            anyhow::bail!("scene does not belong to the same project as the characters");
-        }
-        let rel = self
+
+        let scene = match input.scene_id.as_deref() {
+            Some(scene_id) => {
+                let scene = self.repository.get_scene(scene_id).await?;
+                if scene.project_id != source_character.project_id {
+                    anyhow::bail!("scene does not belong to the same project as the characters");
+                }
+                Some(scene)
+            }
+            None => None,
+        };
+
+        let input = normalize_relationship_update(input, scene.is_some())?;
+        let project_id = source_character.project_id.clone();
+        let base_branch_id = match &scene {
+            Some(scene) => scene.branch_id.clone(),
+            None => self.repository.get_active_branch(&project_id).await?.id,
+        };
+
+        let relationship = self
             .repository
-            .update_relationship_with_source(&scene.branch_id, &input, source)
+            .update_relationship_with_source(&base_branch_id, &input, source)
             .await?;
+
         Ok(UpdateRelationshipOutput {
-            relationship_id: format!("relates_to:{}:{}:{}", rel.branch_id, rel.in_id, rel.out_id),
-            trust: rel.trust,
-            tension: rel.tension,
+            relationship_id: format!(
+                "relates_to:{}:{}:{}",
+                relationship.branch_id, relationship.in_id, relationship.out_id
+            ),
+            trust: relationship.trust,
+            tension: relationship.tension,
+            relationship_type: relationship.relationship_type,
+            dynamics: relationship.dynamics,
         })
     }
 
@@ -493,4 +515,53 @@ impl SqliteSpindleService {
             markdown: None,
         })
     }
+}
+
+/// Trim and validate a relationship update. Scene-scoped calls keep the
+/// existing delta semantics; canon-only calls must name a label or dynamics
+/// and may not carry trust/tension deltas without a scene to attribute them to.
+fn normalize_relationship_update(
+    mut input: UpdateRelationshipInput,
+    has_scene: bool,
+) -> Result<UpdateRelationshipInput> {
+    input.reason = input.reason.trim().to_string();
+    if input.reason.is_empty() {
+        anyhow::bail!("update_relationship requires a non-empty reason");
+    }
+    if !has_scene {
+        if input.trust_delta.is_some_and(|delta| delta != 0)
+            || input.tension_delta.is_some_and(|delta| delta != 0)
+        {
+            anyhow::bail!("scene_id is required when updating trust or tension");
+        }
+        if input.relationship_type.is_none() && input.dynamics.is_none() {
+            anyhow::bail!(
+                "update_relationship requires relationship_type and/or dynamics when scene_id is omitted"
+            );
+        }
+    }
+    if let Some(relationship_type) = input.relationship_type.as_mut() {
+        let trimmed = relationship_type.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("relationship_type must not be empty");
+        }
+        *relationship_type = trimmed.to_string();
+    }
+    if let Some(dynamics) = input.dynamics.as_mut() {
+        let mut normalized = Vec::with_capacity(dynamics.len());
+        for value in std::mem::take(dynamics) {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!("relationship dynamics entries must not be empty");
+            }
+            if !normalized
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(trimmed))
+            {
+                normalized.push(trimmed.to_string());
+            }
+        }
+        *dynamics = normalized;
+    }
+    Ok(input)
 }

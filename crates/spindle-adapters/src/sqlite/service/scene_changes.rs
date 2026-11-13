@@ -576,10 +576,11 @@ impl SqliteSpindleService {
                     let rel_input = spindle_core::models::UpdateRelationshipInput {
                         character_a_id: entry.character_a_id.clone(),
                         character_b_id: entry.character_b_id.clone(),
-                        trust_delta: entry.trust_delta,
-                        tension_delta: entry.tension_delta,
+                        trust_delta: Some(entry.trust_delta),
+                        tension_delta: Some(entry.tension_delta),
                         reason: entry.reason,
-                        scene_id: tx_scene.id.clone(),
+                        scene_id: Some(tx_scene.id.clone()),
+                        ..Default::default()
                     };
                     let rel = tx.update_relationship(
                         &target_branch_id,

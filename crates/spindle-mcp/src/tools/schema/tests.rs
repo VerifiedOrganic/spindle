@@ -783,7 +783,7 @@ fn planning_action_schemas_publish_string_enums() {
         ),
         (
             "planning_decide",
-            &["decide", "revise", "prepare_authoring_run"][..],
+            &["decide", "revise", "rebase", "prepare_authoring_run"][..],
         ),
     ] {
         let tool = all_tool_schemas()

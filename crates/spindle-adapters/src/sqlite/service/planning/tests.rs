@@ -7568,3 +7568,470 @@ agent = "outline-agent"
         "routed prompt must include the full parent scene summary"
     );
 }
+
+async fn staged_chapter_with_character(
+    svc: &SqliteSpindleService,
+) -> (PlanningSession, PlanningProposal, String) {
+    use serde_json::json;
+    let (s, root) = accepted_root(svc).await;
+    let scope = s.scope.clone().unwrap();
+    let character = svc
+        .create_character(
+            serde_json::from_value(json!({
+                "project_id": scope.project_id,
+                "name": "Lead",
+                "summary": "The point-of-view lead.",
+                "role": "protagonist",
+                "realm": null,
+                "initial_state": null
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let location = svc
+        .create_location(
+            serde_json::from_value(json!({
+                "project_id": scope.project_id,
+                "name": "Main Place",
+                "kind": "building",
+                "realm": null,
+                "summary": "The near-horizon setting."
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let chapter = bundle(
+        svc,
+        &s,
+        PlanningLevel::Chapter,
+        &[&root],
+        vec![planned(
+            "plan:staged",
+            "plan_chapter",
+            json!({
+                "book_number": 1,
+                "chapter_number": 1,
+                "pov_character_id": {"kind": "existing_record_id", "value": character.character_id},
+                "synopsis": "A chapter plan that references the lead.",
+                "scenes": [{
+                    "scene_order": 1,
+                    "summary": "The lead opens the sealed door.",
+                    "character_ids": [{"kind": "existing_record_id", "value": character.character_id}],
+                    "location_id": {"kind": "existing_record_id", "value": location.location_id},
+                    "content_rating": "general",
+                    "purpose": "Establish the first causal turn."
+                }]
+            }),
+        )],
+    )
+    .await;
+    (s, chapter, character.character_id)
+}
+
+async fn staged_complete_horizon_chapter(
+    svc: &SqliteSpindleService,
+) -> (PlanningSession, PlanningProposal) {
+    use serde_json::json;
+    let (s, root) = accepted_root(svc).await;
+    let scope = s.scope.clone().unwrap();
+    let character = svc
+        .create_character(
+            serde_json::from_value(json!({
+                "project_id": scope.project_id,
+                "name": "Lead",
+                "summary": "The point-of-view lead.",
+                "role": "protagonist",
+                "realm": null,
+                "initial_state": null
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let location = svc
+        .create_location(
+            serde_json::from_value(json!({
+                "project_id": scope.project_id,
+                "name": "Main Place",
+                "kind": "building",
+                "realm": null,
+                "summary": "The near-horizon setting."
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cast = bundle(
+        svc,
+        &s,
+        PlanningLevel::CastWorld,
+        &[&root],
+        vec![planned(
+            "rule:one",
+            "create_world_rule",
+            json!({
+                "rule_name": "Rule one",
+                "rule_type": "physics",
+                "description": "A near-horizon world rule."
+            }),
+        )],
+    )
+    .await;
+    accept(svc, &s, &cast).await;
+    let series = bundle(
+        svc,
+        &s,
+        PlanningLevel::SeriesArc,
+        &[&root, &cast],
+        vec![planned(
+            "theme:one",
+            "create_theme",
+            json!({
+                "theme_statement": "Truth requires risk",
+                "thesis_antithesis": "Safety versus honesty"
+            }),
+        )],
+    )
+    .await;
+    accept(svc, &s, &series).await;
+    let book = bundle(
+        svc,
+        &s,
+        PlanningLevel::Book,
+        &[&root, &series],
+        vec![planned(
+            "outline:book",
+            "set_book_outline",
+            json!({
+                "book_id": {"kind": "proposal_ref", "value": "project:root:book"},
+                "book_number": 1,
+                "content": "A near-horizon book outline."
+            }),
+        )],
+    )
+    .await;
+    accept(svc, &s, &book).await;
+    let operations: Vec<PlanningOperationItem> = (1..=3)
+        .map(|chapter_number| {
+            let scenes: Vec<serde_json::Value> = (1..=2)
+                .map(|scene_order| {
+                    json!({
+                        "scene_order": scene_order,
+                        "summary": format!("Chapter {chapter_number} scene {scene_order}."),
+                        "character_ids": [{"kind": "existing_record_id", "value": character.character_id}],
+                        "location_id": {"kind": "existing_record_id", "value": location.location_id},
+                        "content_rating": "general",
+                        "purpose": "Carry the chapter turn."
+                    })
+                })
+                .collect();
+            planned(
+                &format!("plan:chapter:{chapter_number}"),
+                "plan_chapter",
+                json!({
+                    "book_number": 1,
+                    "chapter_number": chapter_number,
+                    "pov_character_id": {"kind": "existing_record_id", "value": character.character_id},
+                    "synopsis": format!("Chapter {chapter_number} synopsis."),
+                    "scenes": scenes
+                }),
+            )
+        })
+        .collect();
+    let chapter = bundle(svc, &s, PlanningLevel::Chapter, &[&root], operations).await;
+    (s, chapter)
+}
+
+#[tokio::test]
+async fn presentation_only_character_edit_does_not_stale_a_staged_plan() {
+    use serde_json::json;
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, chapter, character_id) = staged_chapter_with_character(&svc).await;
+    svc.update_entity(UpdateEntityInput {
+        entity_type: "character".into(),
+        entity_id: character_id,
+        changes: json!({
+            "appearance": "A new coat and a different hairstyle.",
+            "notes": "Presentation-only detail added after staging."
+        }),
+        allow_rename: None,
+    })
+    .await
+    .unwrap();
+    let report = accept(&svc, &s, &chapter).await;
+    assert!(report.complete);
+}
+
+#[tokio::test]
+async fn stale_base_state_names_the_changed_field_and_rebase_recovers() {
+    use serde_json::json;
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, chapter, character_id) = staged_chapter_with_character(&svc).await;
+    svc.update_entity(UpdateEntityInput {
+        entity_type: "character".into(),
+        entity_id: character_id.clone(),
+        changes: json!({"summary": "A planning-relevant summary change."}),
+        allow_rename: None,
+    })
+    .await
+    .unwrap();
+    let mut decision = decision(&s, &chapter);
+    decision.decision = PlanningDecision::Accept;
+    let error = svc.apply_planning(decision).await.unwrap_err().to_string();
+    assert!(
+        error.contains("stale planning base state"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.contains(&character_id) && error.contains("summary"),
+        "the error must name the changed row and field: {error}"
+    );
+    assert!(
+        error.contains("action=rebase") && error.contains("expected_hashes"),
+        "the error must give the exact recovery action: {error}"
+    );
+
+    let rebased = svc
+        .planning_decide_entry(PlanningDecideInput {
+            session_id: s.id.clone(),
+            project_id: None,
+            branch_id: None,
+            action: PlanningDecideAction::Rebase,
+            decision: None,
+            expected_hashes: BTreeMap::from([(chapter.id.clone(), chapter.payload_hash.clone())]),
+            actor: None,
+            note: None,
+            target_range: None,
+            mining_policy: None,
+            checkpoint_policy: None,
+            include_payloads: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(rebased.decided.len(), 1);
+    assert_eq!(rebased.decided[0].proposal_id, chapter.id);
+    assert_eq!(rebased.decided[0].payload_hash, chapter.payload_hash);
+    assert_eq!(rebased.decided[0].status, PlanningProposalStatus::Staged);
+
+    let report = accept(&svc, &s, &chapter).await;
+    assert!(report.complete);
+
+    let applied_rebase = svc
+        .planning_decide_entry(PlanningDecideInput {
+            session_id: s.id.clone(),
+            project_id: None,
+            branch_id: None,
+            action: PlanningDecideAction::Rebase,
+            decision: None,
+            expected_hashes: BTreeMap::from([(chapter.id.clone(), chapter.payload_hash.clone())]),
+            actor: None,
+            note: None,
+            target_range: None,
+            mining_policy: None,
+            checkpoint_policy: None,
+            include_payloads: None,
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        applied_rebase.contains("only staged proposals can be rebased"),
+        "applied proposals are history: {applied_rebase}"
+    );
+}
+
+#[tokio::test]
+async fn chapter_plan_manifests_satisfy_the_scene_level() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, chapter) = staged_complete_horizon_chapter(&svc).await;
+    accept(&svc, &s, &chapter).await;
+
+    let status = svc
+        .planning_status(PlanningStatusInput {
+            session_id: Some(s.id.clone()),
+            project_id: None,
+            branch_id: None,
+            target_range: None,
+            include_readiness: Some(false),
+            include_payloads: None,
+            proposal_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let summary = status.session.expect("selected session");
+    assert!(
+        summary.scene_manifests_complete,
+        "three persisted chapter manifests satisfy Scene"
+    );
+    assert_eq!(summary.next_level, None);
+    assert!(status.gate.is_none());
+
+    let explicit = svc
+        .planning_advance_entry(PlanningAdvanceInput {
+            session_id: s.id.clone(),
+            project_id: None,
+            branch_id: None,
+            action: PlanningAdvanceAction::Generate,
+            level: Some(PlanningLevel::Scene),
+            parents: None,
+            target_range: None,
+            allow_review_backend: Some(false),
+            rating_ceiling: None,
+            budget: None,
+            host_artifact: None,
+            retry_key: Some("scene-already-satisfied".into()),
+            policy: None,
+            policy_actor: None,
+            policy_note: None,
+            mining_policy: None,
+            checkpoint_policy: None,
+            include_payloads: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        explicit.advance.is_none(),
+        "satisfied Scene must not generate another host request"
+    );
+    assert!(explicit.next_action.contains("already satisfied"));
+    assert!(explicit.next_action.contains("prepare_authoring_run"));
+
+    let implicit = svc
+        .planning_advance_entry(PlanningAdvanceInput {
+            session_id: s.id.clone(),
+            project_id: None,
+            branch_id: None,
+            action: PlanningAdvanceAction::Generate,
+            level: None,
+            parents: None,
+            target_range: None,
+            allow_review_backend: Some(false),
+            rating_ceiling: None,
+            budget: None,
+            host_artifact: None,
+            retry_key: Some("all-levels-satisfied".into()),
+            policy: None,
+            policy_actor: None,
+            policy_note: None,
+            mining_policy: None,
+            checkpoint_policy: None,
+            include_payloads: None,
+        })
+        .await
+        .unwrap();
+    assert!(implicit.advance.is_none());
+}
+
+#[tokio::test]
+async fn accepting_a_chapter_plan_reports_scene_satisfied_in_the_same_response() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, chapter) = staged_complete_horizon_chapter(&svc).await;
+    let output = svc
+        .planning_decide_entry(PlanningDecideInput {
+            session_id: s.id.clone(),
+            project_id: None,
+            branch_id: None,
+            action: PlanningDecideAction::Decide,
+            decision: Some(PlanningDecision::Accept),
+            expected_hashes: BTreeMap::from([(chapter.id.clone(), chapter.payload_hash.clone())]),
+            actor: Some("author:test".into()),
+            note: Some("Approve the complete chapter plan.".into()),
+            target_range: None,
+            mining_policy: None,
+            checkpoint_policy: None,
+            include_payloads: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(output.decided[0].status, PlanningProposalStatus::Applied);
+    assert!(
+        output.session.scene_manifests_complete,
+        "acceptance persisted the manifests; the same response must report completion"
+    );
+    assert_eq!(output.session.next_level, None);
+    assert!(output.next_action.contains("prepare_authoring_run"));
+    assert!(
+        !output.next_action.contains("generate the next Scene"),
+        "the accept response must not tell the client to generate Scene again"
+    );
+}
+
+#[tokio::test]
+async fn incomplete_child_chapter_plan_overrides_a_complete_ancestor() {
+    use spindle_core::models::{ContentRating, PlanChapterSceneInput};
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, chapter) = staged_complete_horizon_chapter(&svc).await;
+    accept(&svc, &s, &chapter).await;
+    let scope = s.scope.clone().unwrap();
+    let branch = svc
+        .create_branch(CreateBranchInput {
+            project_id: scope.project_id.clone(),
+            name: "Child".into(),
+            branch_type: "experiment".into(),
+            description: None,
+            parent_branch_id: Some(scope.branch_id.clone()),
+        })
+        .await
+        .unwrap();
+    svc.switch_branch(SwitchBranchInput {
+        project_id: scope.project_id.clone(),
+        branch_id: branch.branch_id.clone(),
+    })
+    .await
+    .unwrap();
+    svc.plan_chapter(PlanChapterInput {
+        project_id: scope.project_id.clone(),
+        book_number: 1,
+        chapter_number: 1,
+        pov_character_id: None,
+        synopsis: "Incomplete child plan.".into(),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![PlanChapterSceneInput {
+            scene_order: 1,
+            summary: "One scene only.".into(),
+            beat_structure: Vec::new(),
+            character_ids: Vec::new(),
+            location_id: None,
+            content_rating: Some(ContentRating::General),
+            purpose: "Leave the manifest incomplete.".into(),
+            research_required: None,
+            research_tags: Vec::new(),
+            explicit_query: None,
+        }],
+    })
+    .await
+    .unwrap();
+    let range = PlanningTargetRange {
+        book_number: 1,
+        chapter_start: 1,
+        chapter_end: 1,
+        scenes_per_chapter: 2,
+    };
+    assert!(
+        svc.repository
+            .planning_scene_manifests_complete(Some(scope.clone()), range.clone())
+            .await
+            .unwrap(),
+        "the parent branch has a complete manifest"
+    );
+    assert!(
+        !svc.repository
+            .planning_scene_manifests_complete(
+                Some(PlanningScope {
+                    project_id: scope.project_id.clone(),
+                    branch_id: branch.branch_id.clone(),
+                }),
+                range,
+            )
+            .await
+            .unwrap(),
+        "the nearest child plan shadows the complete ancestor even when incomplete"
+    );
+}
