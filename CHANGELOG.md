@@ -15,6 +15,20 @@
   `messages`, `max_tokens`, `stream`, `reasoning_effort`) are rejected at load
   time so they can never be silently overridden, and values are never logged.
 
+### Fixed
+
+- **Respawn and resurrection no longer read as dead-character retcons.** A
+  character state that replaces a recorded dead status with a living one
+  supersedes the death from that scene onward, including when the state is
+  committed in the same `commit_scene` or `commit_scene_changes` call as the
+  scene. The scan uses the shared newest-state selector and treats the
+  prospective same-scene state as newest. A per-character `mortality` setting
+  (`respawns`, `resurrection`, `immortal`, and similar values) or a world rule
+  that declares a return-from-death mechanism also exempts that character; a
+  rule that forbids resurrection does not. A death followed by action with no
+  respawn recorded still reports, as does a same-commit status that keeps the
+  dead marker.
+
 ## 0.4.1 — 2026-11-13
 
 ### Added
