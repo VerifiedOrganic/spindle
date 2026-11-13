@@ -2142,7 +2142,9 @@ impl CanonTransaction<'_> {
         let trust_delta = input.trust_delta;
         let tension_delta = input.tension_delta;
         let reason = &input.reason;
-        let scene_id = &input.scene_id;
+        let scene_id = input.scene_id.as_deref().ok_or_else(|| {
+            anyhow!("scene_id is required for a scene-scoped relationship update")
+        })?;
         let now = timestamp_to_micros(chrono::Utc::now());
 
         let scene_pos: Option<(String, i32, i32, i32)> = self
@@ -2289,8 +2291,10 @@ impl CanonTransaction<'_> {
         };
 
         let (prior_trust, prior_tension) = prior_delta.unwrap_or((0, 0));
-        let net_trust = trust_delta - prior_trust;
-        let net_tension = tension_delta - prior_tension;
+        let effective_trust = trust_delta.unwrap_or(prior_trust);
+        let effective_tension = tension_delta.unwrap_or(prior_tension);
+        let net_trust = effective_trust - prior_trust;
+        let net_tension = effective_tension - prior_tension;
 
         let (in_id, out_id) = if let Some((in_id, out_id)) = existing_local {
             self.tx.execute(
@@ -2381,8 +2385,8 @@ impl CanonTransaction<'_> {
                     book_num,
                     chap_num,
                     sc_order,
-                    trust_delta,
-                    tension_delta,
+                    effective_trust,
+                    effective_tension,
                     reason,
                     now,
                 ],
@@ -2406,13 +2410,143 @@ impl CanonTransaction<'_> {
                     &out_id,
                     scene_id,
                     source,
-                    trust_delta,
-                    tension_delta,
+                    effective_trust,
+                    effective_tension,
                     reason,
                     now,
                 ],
             )?;
         }
+
+        let sql = format!(
+            "SELECT {RELATES_TO_COLUMNS} FROM relates_to \
+             WHERE branch_id = ?1 AND in_id = ?2 AND out_id = ?3"
+        );
+        let mut stmt = self.tx.prepare_cached(&sql)?;
+        stmt.query_row(rusqlite::params![branch_id, &in_id, &out_id], |r| {
+            RelatesTo::try_from(r)
+        })
+        .optional_inner()?
+        .ok_or_else(|| anyhow!("relationship not found"))
+    }
+
+    /// Update a relationship's label and dynamics without a scene. Applies to
+    /// the branch-local row; when only an ancestor row exists, materialize a
+    /// branch-local copy first so the edit never mutates the parent branch.
+    pub fn update_relationship_details(
+        &self,
+        branch_id: &str,
+        input: &UpdateRelationshipInput,
+    ) -> Result<RelatesTo> {
+        let a = &input.character_a_id;
+        let b = &input.character_b_id;
+        let relationship_type = input.relationship_type.as_deref();
+        let dynamics_json = input
+            .dynamics
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("serializing relationship dynamics")?;
+        let reason = input.reason.trim();
+        let now = timestamp_to_micros(chrono::Utc::now());
+
+        let chain = resolve_branch_lineage_in_conn(&self.tx, None, branch_id)?;
+        let mut existing: Option<RelatesTo> = None;
+        for candidate_branch_id in &chain {
+            let sql = format!(
+                "SELECT {RELATES_TO_COLUMNS} FROM relates_to \
+                 WHERE branch_id = ?1 \
+                   AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                 LIMIT 1"
+            );
+            let mut stmt = self.tx.prepare_cached(&sql)?;
+            if let Some(row) = stmt
+                .query_row(rusqlite::params![candidate_branch_id, a, b], |r| {
+                    RelatesTo::try_from(r)
+                })
+                .optional_inner()?
+            {
+                existing = Some(row);
+                break;
+            }
+        }
+        let existing = existing.ok_or_else(|| anyhow!("relationship not found"))?;
+
+        let (in_id, out_id) = if existing.branch_id == branch_id {
+            self.tx.execute(
+                "UPDATE relates_to SET \
+                    relationship_type = COALESCE(?1, relationship_type), \
+                    dynamics = COALESCE(?2, dynamics), \
+                    reason = ?3, \
+                    updated_at = ?4 \
+                 WHERE branch_id = ?5 AND in_id = ?6 AND out_id = ?7",
+                rusqlite::params![
+                    relationship_type,
+                    dynamics_json.as_deref(),
+                    reason,
+                    now,
+                    branch_id,
+                    &existing.in_id,
+                    &existing.out_id,
+                ],
+            )?;
+            (existing.in_id, existing.out_id)
+        } else {
+            // Materialize the inherited row on this branch before editing it.
+            let new_type = relationship_type.unwrap_or(existing.relationship_type.as_str());
+            let new_dynamics = dynamics_json
+                .as_deref()
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    serde_json::to_string(&existing.dynamics)
+                        .expect("serializing stored relationship dynamics")
+                });
+            self.tx.execute(
+                "INSERT INTO relates_to (in_id, out_id, branch_id, \
+                 relationship_type, trust, tension, dynamics, reason, last_scene_id, \
+                 updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    &existing.in_id,
+                    &existing.out_id,
+                    branch_id,
+                    new_type,
+                    existing.trust,
+                    existing.tension,
+                    &new_dynamics,
+                    reason,
+                    &existing.last_scene_id,
+                    now,
+                ],
+            )?;
+            // Isolate the child branch from later ancestor ledger edits.
+            self.tx.execute(
+                "DELETE FROM relationship_scene_delta \
+                 WHERE branch_id = ?1 \
+                   AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2))",
+                rusqlite::params![branch_id, &existing.in_id, &existing.out_id],
+            )?;
+            self.tx.execute(
+                "INSERT OR REPLACE INTO relationship_scene_delta ( \
+                    branch_id, in_id, out_id, scene_id, source, \
+                    book_number, chapter_number, scene_order, \
+                    trust_delta, tension_delta, reason, updated_at \
+                 ) \
+                 SELECT ?1, in_id, out_id, scene_id, source, \
+                        book_number, chapter_number, scene_order, \
+                        trust_delta, tension_delta, reason, updated_at \
+                 FROM relationship_scene_delta \
+                 WHERE branch_id = ?2 \
+                   AND ((in_id = ?3 AND out_id = ?4) OR (in_id = ?4 AND out_id = ?3))",
+                rusqlite::params![
+                    branch_id,
+                    &existing.branch_id,
+                    &existing.in_id,
+                    &existing.out_id
+                ],
+            )?;
+            (existing.in_id, existing.out_id)
+        };
 
         let sql = format!(
             "SELECT {RELATES_TO_COLUMNS} FROM relates_to \

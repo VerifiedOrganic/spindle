@@ -189,14 +189,33 @@ impl Repository {
         let input_owned = input.clone();
         let source_owned = source.to_string();
         self.with_transaction(move |tx| {
-            let scene = tx.get_scene(&input_owned.scene_id).ok();
+            let scene = input_owned
+                .scene_id
+                .as_deref()
+                .and_then(|scene_id| tx.get_scene(scene_id).ok());
             let effective_branch_id = if let Some(scene) = &scene {
                 tx.resolve_effective_scene_branch(&scene.project_id, &branch_id_owned)?
             } else {
                 branch_id_owned.clone()
             };
-            let relationship =
-                tx.update_relationship(&effective_branch_id, &input_owned, &source_owned)?;
+            let has_details =
+                input_owned.relationship_type.is_some() || input_owned.dynamics.is_some();
+            let has_delta =
+                input_owned.trust_delta.is_some() || input_owned.tension_delta.is_some();
+            let relationship = if scene.is_some() {
+                let details_row = if has_details || !has_delta {
+                    Some(tx.update_relationship_details(&effective_branch_id, &input_owned)?)
+                } else {
+                    None
+                };
+                if has_delta {
+                    tx.update_relationship(&effective_branch_id, &input_owned, &source_owned)?
+                } else {
+                    details_row.expect("details row fetched when no scene delta is supplied")
+                }
+            } else {
+                tx.update_relationship_details(&effective_branch_id, &input_owned)?
+            };
             if let Some(scene) = &scene {
                 let revision_id = format!(
                     "legacy:relationship:{}:{}:{}:{}",
@@ -227,54 +246,132 @@ impl Repository {
                 // persisted orientation; canon relationship streams are
                 // directional, so mirror that orientation rather than the
                 // caller's argument order.
-                let claim = legacy_claim(
-                    &scene.project_id,
-                    &effective_branch_id,
-                    &revision_id,
-                    Some(&scene.id),
-                    &placement,
-                    ClaimEntity::Resolved {
-                        id: relationship.in_id.clone(),
-                    },
-                    ClaimAssertion::Relationship {
-                        operation: RelationshipOperation::Delta,
-                        other: ClaimEntity::Resolved {
-                            id: relationship.out_id.clone(),
+                let mut claims = vec![snapshot_claim];
+                if has_delta {
+                    // Mirror the effective pair after the update: an omitted
+                    // delta keeps the scene's prior value, so reading the raw
+                    // input would replace the canon ledger entry with zero.
+                    let mut delta_stmt = tx.tx.prepare_cached(
+                        "SELECT trust_delta, tension_delta FROM relationship_scene_delta \
+                         WHERE branch_id = ?1 \
+                           AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                           AND scene_id = ?4 \
+                         ORDER BY updated_at DESC LIMIT 1",
+                    )?;
+                    let (effective_trust, effective_tension): (i32, i32) = delta_stmt
+                        .query_row(
+                            rusqlite::params![
+                                &effective_branch_id,
+                                &relationship.in_id,
+                                &relationship.out_id,
+                                &scene.id
+                            ],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .optional_inner()?
+                        .unwrap_or((0, 0));
+                    claims.push(legacy_claim(
+                        &scene.project_id,
+                        &effective_branch_id,
+                        &revision_id,
+                        Some(&scene.id),
+                        &placement,
+                        ClaimEntity::Resolved {
+                            id: relationship.in_id.clone(),
                         },
-                        trust: input_owned.trust_delta,
-                        tension: input_owned.tension_delta,
-                    },
-                    Some(0),
-                    1,
-                );
+                        ClaimAssertion::Relationship {
+                            operation: RelationshipOperation::Delta,
+                            other: ClaimEntity::Resolved {
+                                id: relationship.out_id.clone(),
+                            },
+                            trust: effective_trust,
+                            tension: effective_tension,
+                        },
+                        Some(0),
+                        1,
+                    ));
+                }
                 let mirrored = tx.mirror_canon_claims(
                     &scene.project_id,
                     &effective_branch_id,
                     &revision_id,
                     Some(&scene.id),
-                    vec![snapshot_claim, claim],
+                    claims,
                 )?;
                 if mirrored.is_some() {
                     let pair_key = format!(
                         "{}|{}|{}",
                         relationship.branch_id, relationship.in_id, relationship.out_id
                     );
-                    let delta_key = format!(
-                        "{}|{}|{}|{}|{}",
-                        relationship.branch_id,
-                        relationship.in_id,
-                        relationship.out_id,
-                        scene.id,
-                        source_owned
-                    );
+                    let mut keys = vec![("relates_to".to_string(), pair_key)];
+                    if has_delta {
+                        let delta_key = format!(
+                            "{}|{}|{}|{}|{}",
+                            relationship.branch_id,
+                            relationship.in_id,
+                            relationship.out_id,
+                            scene.id,
+                            source_owned
+                        );
+                        keys.push(("relationship_scene_delta".to_string(), delta_key));
+                    }
                     mark_legacy_rows_mapped_in_conn(
                         &tx.tx,
                         &scene.project_id,
                         &effective_branch_id,
-                        &[
-                            ("relates_to".to_string(), pair_key),
-                            ("relationship_scene_delta".to_string(), delta_key),
-                        ],
+                        &keys,
+                        timestamp_to_micros(chrono::Utc::now()),
+                    )?;
+                }
+            } else {
+                let project_id = tx.get_character(&relationship.in_id)?.project_id;
+                let revision_id = format!(
+                    "legacy:relationship-details:{}:{}:{}:{}",
+                    effective_branch_id,
+                    relationship.in_id,
+                    relationship.out_id,
+                    timestamp_to_micros(chrono::Utc::now())
+                );
+                // A canon-only edit has no manuscript position; 0/0 maps to an
+                // unscoped canon event rather than inventing scene zero.
+                let placement = StoryPlacement {
+                    book_number: 0,
+                    chapter_number: 0,
+                    scene_order: None,
+                    note: Some("outside scene".to_string()),
+                };
+                let snapshot_claim = legacy_snapshot_claim(
+                    &project_id,
+                    &effective_branch_id,
+                    &revision_id,
+                    None,
+                    &placement,
+                    &relationship.in_id,
+                    format!(
+                        "legacy.relates_to.{}|{}",
+                        relationship.in_id, relationship.out_id
+                    ),
+                    &relationship,
+                    None,
+                    0,
+                )?;
+                let mirrored = tx.mirror_canon_claims(
+                    &project_id,
+                    &effective_branch_id,
+                    &revision_id,
+                    None,
+                    vec![snapshot_claim],
+                )?;
+                if mirrored.is_some() {
+                    let pair_key = format!(
+                        "{}|{}|{}",
+                        relationship.branch_id, relationship.in_id, relationship.out_id
+                    );
+                    mark_legacy_rows_mapped_in_conn(
+                        &tx.tx,
+                        &project_id,
+                        &effective_branch_id,
+                        &[("relates_to".to_string(), pair_key)],
                         timestamp_to_micros(chrono::Utc::now()),
                     )?;
                 }

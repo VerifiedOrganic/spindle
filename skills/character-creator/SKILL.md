@@ -55,7 +55,7 @@ Seed baseline `emotional_state`, immediate `goals`, `status` tags, `notes`, and 
 
 ## Step 3: Relationships and Character Arcs
 
-- **Relationships (`create_relationship`, `update_relationship`)**: Set `character_a_id`, `character_b_id`, `relationship_type`, `initial_trust`, `initial_tension`, and `dynamics`. Give every key relationship a source of conflict tied to at least one character's Lie and unequal or shifting leverage.
+- **Relationships (`create_relationship`, `update_relationship`)**: Set `character_a_id`, `character_b_id`, `relationship_type`, `initial_trust`, `initial_tension`, and `dynamics`. Give every key relationship a source of conflict tied to at least one character's Lie and unequal or shifting leverage. Correct a stored label or dynamics list later with `update_relationship` and no `scene_id`; trust/tension deltas still require a scene.
 - **Character Arc (`create_character_arc`)**: Specify `arc_type` (`growth`, `fall`, `flat`, `transformation`, `corruption`, `healing`), `starting_state`, `ending_state`, 3–7 `milestones` that each challenge the Lie at a real cost, `thematic_purpose`, and `connected_theme_ids`.
 
 ## Step 4: Completeness & Pitfall Check

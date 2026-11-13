@@ -782,10 +782,11 @@ async fn end_to_end_full_flow_against_sqlite() {
         .update_relationship(UpdateRelationshipInput {
             character_a_id: mara.character_id.clone(),
             character_b_id: aldric.character_id.clone(),
-            trust_delta: 10,
-            tension_delta: -5,
+            trust_delta: Some(10),
+            tension_delta: Some(-5),
             reason: "Aldric's scouting saved Mara's watch".into(),
-            scene_id: scene1.scene_id.clone(),
+            scene_id: Some(scene1.scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -6130,10 +6131,11 @@ async fn recommitting_scene_continuity_package_reverses_omitted_pairs_and_respec
             UpdateRelationshipInput {
                 character_a_id: char_a.clone(),
                 character_b_id: char_d.clone(),
-                trust_delta: 12,
-                tension_delta: -4,
+                trust_delta: Some(12),
+                tension_delta: Some(-4),
                 reason: "mined shift on A/D".to_string(),
-                scene_id: scene1.scene_id.clone(),
+                scene_id: Some(scene1.scene_id.clone()),
+                ..Default::default()
             },
             "mined_relationship_shift",
         )
