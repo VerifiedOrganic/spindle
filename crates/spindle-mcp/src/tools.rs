@@ -188,6 +188,7 @@ mod planning;
 
 pub use catalog::static_tool_names;
 pub use skills::run_init_grok_skills;
+pub(crate) use skills::{resolve_reference_output_for_profile, resolve_skill_output_for_profile};
 
 #[derive(Debug, Clone, Default)]
 struct SessionContext {

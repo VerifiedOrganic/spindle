@@ -53,6 +53,36 @@ impl ProxyHandler {
             .clone()
     }
 
+    /// Recompute skill/reference coverage against the secondary's local
+    /// profile. Forwarding these calls would describe the primary's profile,
+    /// which can differ after a local `use_profile` switch. Contract
+    /// references and unknown units stay on the primary path.
+    fn local_unit_result(&self, request: &CallToolRequestParams) -> Option<CallToolResult> {
+        let name = request.arguments.as_ref()?.get("name")?.as_str()?;
+        let profile = self.current_profile();
+        let value = match request.name.as_ref() {
+            "get_skill" => {
+                let skill = spindle_adapters::get_skill(name)?;
+                let output =
+                    crate::tools::resolve_skill_output_for_profile(profile.as_deref(), skill);
+                serde_json::to_value(output).ok()?
+            }
+            "get_reference" => {
+                if name.starts_with("contracts/") {
+                    return None;
+                }
+                let reference = spindle_adapters::get_reference(name)?;
+                let output = crate::tools::resolve_reference_output_for_profile(
+                    profile.as_deref(),
+                    reference,
+                );
+                serde_json::to_value(output).ok()?
+            }
+            _ => return None,
+        };
+        Some(CallToolResult::structured(value))
+    }
+
     /// Switch the secondary's local profile. The target must be fully covered
     /// by the primary's discovered catalog; otherwise the proxy returns a
     /// structured `profile_not_available` error and keeps the old profile.
@@ -188,6 +218,9 @@ impl ServerHandler for ProxyHandler {
     ) -> Result<CallToolResult, McpError> {
         if request.name == "use_profile" {
             return self.switch_profile(&request, &context).await;
+        }
+        if let Some(result) = self.local_unit_result(&request) {
+            return Ok(result);
         }
         let profile = self.current_profile();
         if !crate::tools::profile_has_tool(profile.as_deref(), &request.name) {

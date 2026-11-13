@@ -78,6 +78,23 @@ async fn switch_profile(
     .unwrap()
 }
 
+async fn call_tool(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, ToolListChangedClient>,
+    name: &str,
+    arguments: serde_json::Value,
+) -> CallToolResult {
+    timeout(
+        Duration::from_secs(20),
+        client.call_tool(
+            CallToolRequestParams::new(name.to_owned())
+                .with_arguments(arguments.as_object().unwrap().clone()),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+}
+
 async fn call_denied_tool(
     client: &rmcp::service::RunningService<rmcp::RoleClient, ToolListChangedClient>,
 ) -> CallToolResult {
@@ -350,6 +367,37 @@ async fn secondary_proxy_switches_within_but_not_beyond_primary_catalog() {
     );
     assert_unknown_tool(&call_denied_tool(&client).await);
 
+    let skill = call_tool(
+        &client,
+        "get_skill",
+        serde_json::json!({"name": "scene-writer"}),
+    )
+    .await;
+    assert_eq!(skill.is_error, Some(false));
+    let skill = skill.structured_content.expect("structured skill");
+    assert_eq!(skill["covered"], false);
+    assert_eq!(skill["required_profile"], "workflow-write");
+    assert!(
+        !skill["missing_capabilities"].as_array().unwrap().is_empty(),
+        "{skill}"
+    );
+    assert!(
+        skill["available_units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|unit| unit == "spindle/setup"),
+        "{skill}"
+    );
+    assert!(
+        !skill["available_units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|unit| unit == "scene-writer"),
+        "{skill}"
+    );
+
     let expanded = switch_profile(&client, "full").await;
     assert_eq!(expanded.is_error, Some(true));
     let error = expanded.structured_content.expect("structured error");
@@ -366,6 +414,28 @@ async fn secondary_proxy_switches_within_but_not_beyond_primary_catalog() {
             .map(|name| (*name).to_owned())
             .collect(),
         "a rejected secondary switch must keep the current profile"
+    );
+
+    let restored = switch_profile(&client, "workflow-write").await;
+    assert_eq!(restored.is_error, Some(false), "{restored:?}");
+    let skill = call_tool(
+        &client,
+        "get_skill",
+        serde_json::json!({"name": "scene-writer"}),
+    )
+    .await;
+    let skill = skill.structured_content.expect("structured skill");
+    assert_eq!(
+        skill["covered"], true,
+        "loader coverage must follow the restored local profile: {skill}"
+    );
+    assert_eq!(
+        tool_names(&client).await,
+        workflow
+            .tools
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
     );
 
     client.cancel().await.unwrap();
