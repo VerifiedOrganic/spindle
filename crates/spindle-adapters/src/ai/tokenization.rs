@@ -217,6 +217,7 @@ impl ModelRouter {
                 cached_input_tokens: value
                     .get("prompt_eval_cached_count")
                     .and_then(serde_json::Value::as_u64),
+                reasoning_tokens: None,
             }),
             ..Default::default()
         })
@@ -370,6 +371,7 @@ impl ModelRouter {
                                     cached_input_tokens: value
                                         .get("prompt_eval_cached_count")
                                         .and_then(serde_json::Value::as_u64),
+                                    reasoning_tokens: None,
                                 };
                                 parsed = Some(value);
                                 Ok(ModelResponse {

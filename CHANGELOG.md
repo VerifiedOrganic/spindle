@@ -17,6 +17,13 @@
 
 ### Fixed
 
+- A model call that hits `max_tokens` is now logged with
+  `outcome = "truncated"` instead of `"succeeded"`. Provider-reported
+  reasoning-token counts are retained in the call's usage block.
+- Deep consistency checks now run under a per-call wall-clock timeout
+  (`[deep_check].timeout_ms`, default five minutes). Truncated or timed-out
+  checks are reported as INCONCLUSIVE in `audit_coverage` and no longer stall
+  or fail the whole audit.
 - **Planning responses stay displayable.** `planning_status` now returns only
   `proposal_id`, `level`, `status` and `payload_hash` per proposal by default,
   and omits superseded and rejected history. Pass `include_payloads=true` to
