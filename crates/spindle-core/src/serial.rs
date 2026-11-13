@@ -222,6 +222,10 @@ pub struct ModelUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cached_input_tokens: Option<u64>,
+    /// Provider-reported reasoning/thinking tokens, when the provider exposes
+    /// them (`completion_tokens_details.reasoning_tokens` and variants).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -290,6 +294,14 @@ pub struct AuditCoverage {
     pub not_evaluated_ids: Vec<String>,
     /// Deterministic fallback is useful but is not a completed model review.
     pub heuristic_ids: Vec<String>,
+    /// Units whose deep check was attempted but produced no usable verdict —
+    /// the model output was truncated at the token cap, or the call exceeded
+    /// its wall-clock budget. These are neither passes nor failures.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inconclusive_ids: Vec<String>,
+    /// Why the inconclusive units could not be judged (truncated/timeout).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inconclusive_reason: Option<String>,
     pub offset: usize,
     pub next_offset: Option<usize>,
 }
@@ -309,8 +321,27 @@ impl AuditCoverage {
         }
     }
 
+    /// Record that a unit was attempted but produced no usable verdict.
+    pub fn mark_inconclusive(&mut self, id: impl Into<String>, reason: impl Into<String>) {
+        let id = id.into();
+        if !self.inconclusive_ids.contains(&id) {
+            self.inconclusive_ids.push(id);
+        }
+        let reason = reason.into();
+        match self.inconclusive_reason.as_mut() {
+            Some(existing) if *existing != reason => {
+                existing.push_str("; ");
+                existing.push_str(&reason);
+            }
+            Some(_) => {}
+            None => self.inconclusive_reason = Some(reason),
+        }
+    }
+
     pub fn finish(&mut self) {
         let evaluated: std::collections::HashSet<_> = self.evaluated_ids.iter().collect();
-        self.not_evaluated_ids.retain(|id| !evaluated.contains(id));
+        let inconclusive: std::collections::HashSet<_> = self.inconclusive_ids.iter().collect();
+        self.not_evaluated_ids
+            .retain(|id| !evaluated.contains(id) && !inconclusive.contains(id));
     }
 }

@@ -54,8 +54,9 @@ If none of those files exist, Spindle starts with the default built-in routes.
 
 ## Config shape
 
-The shipped parser currently supports `[[agents]]`, `[[routing]]`, and an
-optional `[anti_slop]` overlay.
+The shipped parser currently supports `[[agents]]`, `[[routing]]`, optional
+`[health_check]` and `[deep_check]` tables, and an optional `[anti_slop]`
+overlay.
 
 ```toml
 [[agents]]
@@ -190,6 +191,23 @@ reserved: Spindle builds those fields itself, and the loader rejects an
 `extra_body` that tries to set one instead of silently overriding the request
 contract. `extra_body` is HTTP-only. Values are never written to logs or
 model-call telemetry; validation errors name only the offending field.
+
+## Deep-check timeout
+
+Model-backed consistency passes (`deep_check = true`) make one call per scene
+or candidate. `[deep_check].timeout_ms` bounds each call's wall-clock time;
+the default is `300000` (five minutes). A call that exceeds the budget, or
+that hits `max_tokens` before producing a parseable verdict, is reported as
+`INCONCLUSIVE` in `check_consistency`'s `audit_coverage`
+(`inconclusive_ids` plus an `inconclusive_reason`) and the audit continues with
+the remaining units. Truncated and timed-out calls are recorded in
+`model_call` with `outcome = "truncated"` / `"timed_out"`, and
+provider-reported reasoning tokens are kept in the call's usage block.
+
+```toml
+[deep_check]
+timeout_ms = 300000
+```
 
 ## Route names
 
@@ -808,6 +826,7 @@ The loader currently enforces these rules:
 - `extra_body`, when set, may only appear on HTTP agents/routing rules and
   may not set `model`, `messages`, `max_tokens`, `stream`, or
   `reasoning_effort`
+- `deep_check.timeout_ms`, when set, must be `>= 1`
 - `max_turns`, when set, must be `>= 1`
 - grok-cli-only fields (`effort`, `max_turns`, `agent_profile`,
   `working_directory`, `allow_tools`, `deny_tools`, `extra_args`) may only
