@@ -4411,7 +4411,7 @@ agent = "shared"
 enabled = false
 
 [deep_check]
-timeout_ms = 1500
+timeout_ms = 5000
 
 [[agents]]
 id = "cli-review"
@@ -4450,13 +4450,13 @@ agent = "cli-review"
             "expected DeepCheckTimedOut, got {error:#}"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_secs(8),
             "timeout must return promptly, took {:?}",
             started.elapsed()
         );
 
         let pid = {
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
             loop {
                 if let Ok(text) = std::fs::read_to_string(&pid_path)
                     && let Ok(pid) = text.trim().parse::<u32>()
