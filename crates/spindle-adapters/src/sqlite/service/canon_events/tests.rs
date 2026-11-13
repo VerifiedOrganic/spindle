@@ -3669,6 +3669,100 @@ async fn dual_write_relationship_details_edit_records_unscoped_snapshot() {
 }
 
 #[tokio::test]
+async fn dual_write_relationship_scene_revision_mirrors_effective_omitted_deltas() {
+    use spindle_core::models::{CreateRelationshipInput, UpdateRelationshipInput};
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene_id, _) = project_with_scene(&svc, "Relationship Effective Deltas").await;
+    let a = create_character_named(&svc, &project.project_id, "Veyra").await;
+    let b = create_character_named(&svc, &project.project_id, "Kael").await;
+    svc.create_relationship(CreateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        relationship_type: "ally".to_string(),
+        initial_trust: 0,
+        initial_tension: 0,
+        dynamics: Vec::new(),
+    })
+    .await
+    .unwrap();
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    svc.set_canon_cutover_mode(&project.project_id, CanonCutoverModeV1::DualWrite, "start")
+        .await
+        .unwrap();
+
+    svc.update_relationship(UpdateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        trust_delta: Some(10),
+        tension_delta: Some(-5),
+        reason: "scene delta".into(),
+        scene_id: Some(scene_id.clone()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // A trust-only revision keeps the scene's -5 tension in canon.
+    svc.update_relationship(UpdateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        trust_delta: Some(4),
+        reason: "trust-only revision".into(),
+        scene_id: Some(scene_id.clone()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let branch = svc
+        .repository
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let state = svc
+        .canon_state_at(
+            &project.project_id,
+            &branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    let relationship = state.relationship(&a, &b).expect("canon relationship");
+    assert_eq!(relationship.resolved_trust, Some(4));
+    assert_eq!(relationship.resolved_tension, Some(-5));
+
+    // A tension-only revision keeps the scene's +4 trust in canon.
+    svc.update_relationship(UpdateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        tension_delta: Some(-2),
+        reason: "tension-only revision".into(),
+        scene_id: Some(scene_id),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let state = svc
+        .canon_state_at(
+            &project.project_id,
+            &branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    let relationship = state.relationship(&a, &b).expect("canon relationship");
+    assert_eq!(relationship.resolved_trust, Some(4));
+    assert_eq!(relationship.resolved_tension, Some(-2));
+}
+
+#[tokio::test]
 async fn dual_write_commit_scene_relationship_replaces_prior_scene_delta() {
     use spindle_core::models::{CommitSceneChangesInput, RelationshipUpdateEntry};
     let (_tmp, svc) = fresh_service_local().await;

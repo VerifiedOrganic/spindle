@@ -248,6 +248,28 @@ impl Repository {
                 // caller's argument order.
                 let mut claims = vec![snapshot_claim];
                 if has_delta {
+                    // Mirror the effective pair after the update: an omitted
+                    // delta keeps the scene's prior value, so reading the raw
+                    // input would replace the canon ledger entry with zero.
+                    let mut delta_stmt = tx.tx.prepare_cached(
+                        "SELECT trust_delta, tension_delta FROM relationship_scene_delta \
+                         WHERE branch_id = ?1 \
+                           AND ((in_id = ?2 AND out_id = ?3) OR (in_id = ?3 AND out_id = ?2)) \
+                           AND scene_id = ?4 \
+                         ORDER BY updated_at DESC LIMIT 1",
+                    )?;
+                    let (effective_trust, effective_tension): (i32, i32) = delta_stmt
+                        .query_row(
+                            rusqlite::params![
+                                &effective_branch_id,
+                                &relationship.in_id,
+                                &relationship.out_id,
+                                &scene.id
+                            ],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .optional_inner()?
+                        .unwrap_or((0, 0));
                     claims.push(legacy_claim(
                         &scene.project_id,
                         &effective_branch_id,
@@ -262,8 +284,8 @@ impl Repository {
                             other: ClaimEntity::Resolved {
                                 id: relationship.out_id.clone(),
                             },
-                            trust: input_owned.trust_delta.unwrap_or(0),
-                            tension: input_owned.tension_delta.unwrap_or(0),
+                            trust: effective_trust,
+                            tension: effective_tension,
                         },
                         Some(0),
                         1,
