@@ -1828,20 +1828,18 @@ impl ModelRouter {
                 .tempfile()
                 .context("create cli prompt tempfile")?;
             std::fs::write(prompt_file.path(), prompt).context("write cli prompt tempfile")?;
-            let output = tokio::process::Command::new(&command)
+            let mut cmd = tokio::process::Command::new(&command);
+            cmd.kill_on_drop(true)
                 .arg(&route.route_name)
                 .arg("--prompt-file")
-                .arg(prompt_file.path())
-                .output()
-                .await?;
+                .arg(prompt_file.path());
+            let output = cmd.output().await?;
             drop(prompt_file);
             output
         } else {
-            tokio::process::Command::new(&command)
-                .arg(&route.route_name)
-                .arg(prompt)
-                .output()
-                .await?
+            let mut cmd = tokio::process::Command::new(&command);
+            cmd.kill_on_drop(true).arg(&route.route_name).arg(prompt);
+            cmd.output().await?
         };
         if !output.status.success() {
             anyhow::bail!("cli model adapter failed with status {}", output.status);
@@ -1891,6 +1889,7 @@ impl ModelRouter {
         }
 
         let mut cmd = tokio::process::Command::new(binary);
+        cmd.kill_on_drop(true);
         cmd.arg("--prompt-file").arg(prompt_file.path());
         cmd.arg("--output-format").arg("json");
         cmd.arg("--always-approve");
@@ -4384,6 +4383,109 @@ agent = "shared"
                 && !base.contains("priority")
                 && !base.contains("top_k"),
             "cache identity must carry only the extra_body digest: {base}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn deep_check_timeout_terminates_cli_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let pid_path = temp.path().join("child.pid");
+        let script_path = temp.path().join("slow-review.sh");
+        std::fs::write(
+            &script_path,
+            format!("#!/bin/sh\necho $$ > '{}'\nsleep 30\n", pid_path.display()),
+        )
+        .expect("write script");
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod script");
+
+        let config_path = temp.path().join("spindle.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r####"
+[health_check]
+enabled = false
+
+[deep_check]
+timeout_ms = 1500
+
+[[agents]]
+id = "cli-review"
+name = "CLI Review"
+provider = "cli"
+endpoint = "{}"
+model = "cli-model"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[routing]]
+route = "review"
+agent = "cli-review"
+"####,
+                script_path.display()
+            ),
+        )
+        .expect("write config");
+
+        let router = ModelRouter::local_only();
+        router
+            .configure(Some(&config_path.display().to_string()))
+            .expect("configure router");
+
+        let started = std::time::Instant::now();
+        let error = router
+            .complete_deep(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "Check this scene.".to_string(),
+                rating: Some("general".to_string()),
+                context: None,
+            })
+            .await
+            .expect_err("slow CLI review must time out");
+        assert!(
+            error.downcast_ref::<DeepCheckTimedOut>().is_some(),
+            "expected DeepCheckTimedOut, got {error:#}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timeout must return promptly, took {:?}",
+            started.elapsed()
+        );
+
+        let pid = {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&pid_path)
+                    && let Ok(pid) = text.trim().parse::<u32>()
+                {
+                    break pid;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "CLI child never wrote its pid file"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+
+        let mut alive = true;
+        for _ in 0..100 {
+            let status = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .expect("run kill -0");
+            if !status.success() {
+                alive = false;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !alive,
+            "timed-out CLI child {pid} must be terminated before further checks run"
         );
     }
 

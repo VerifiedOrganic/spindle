@@ -54,8 +54,9 @@ If none of those files exist, Spindle starts with the default built-in routes.
 
 ## Config shape
 
-The shipped parser currently supports `[[agents]]`, `[[routing]]`, and an
-optional `[anti_slop]` overlay.
+The shipped parser currently supports `[[agents]]`, `[[routing]]`, optional
+`[health_check]` and `[deep_check]` tables, and an optional `[anti_slop]`
+overlay.
 
 ```toml
 [[agents]]
