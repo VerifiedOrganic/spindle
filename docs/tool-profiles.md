@@ -20,19 +20,35 @@ Unset starts the generated `workflow-write` profile. The legacy `minimal`,
 fail closed. Select a generated workflow or specialist profile with
 `SPINDLE_TOOL_PROFILE`:
 
-| Profile | Enabled work | Tools | Input bytes | Full bytes |
-| --- | --- | ---: | ---: | ---: |
-| workflow-write | Scene-writer core + craft/packet/research refs + setup | 44 | 58,416 | 116,723 |
-| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 76 | 90,858 | 190,989 |
-| workflow-import | Manuscript importer and source sync | 20 | 12,306 | 30,747 |
-| revision | Branch/revision/history workflow | 33 | 22,015 | 59,737 |
-| worldbuilding | Worldbuilder + character creator | 50 | 49,068 | 85,445 |
-| planning | Plot architect | 38 | 32,352 | 64,438 |
-| new-book | New-book entry: planning sessions, human gates and handoff | 14 | 20,204 | 26,534 |
-| research | Researcher | 15 | 7,602 | 20,069 |
-| style | Editor core + style reference | 40 | 32,009 | 83,976 |
-| release | Editor + bible librarian + canon steward | 62 | 45,493 | 91,635 |
-| setup | New-book setup reference | 9 | 4,180 | 9,074 |
+| Profile | Enabled work | Tools | Input bytes | Input tokens | Full bytes | Full tokens |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| workflow-write | Scene-writer core + craft/packet/research refs + setup | 45 | 62,808 | 15,702 | 132,502 | 33,126 |
+| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 77 | 95,250 | 23,813 | 206,768 | 51,692 |
+| workflow-import | Manuscript importer and source sync | 20 | 12,306 | 3,077 | 30,747 | 7,687 |
+| revision | Branch/revision/history workflow | 34 | 26,407 | 6,602 | 75,516 | 18,879 |
+| worldbuilding | Worldbuilder + character creator | 51 | 53,460 | 13,365 | 101,224 | 25,306 |
+| planning | Plot architect | 39 | 36,744 | 9,186 | 80,217 | 20,055 |
+| new-book | New-book entry: planning sessions, human gates and handoff | 14 | 20,204 | 5,051 | 26,534 | 6,634 |
+| research | Researcher | 15 | 7,602 | 1,901 | 20,069 | 5,018 |
+| style | Editor core + style reference | 41 | 36,401 | 9,101 | 99,755 | 24,939 |
+| release | Editor + bible librarian | 63 | 49,885 | 12,472 | 107,414 | 26,854 |
+| setup | New-book setup reference | 9 | 4,180 | 1,045 | 9,074 | 2,269 |
+| full | Every model-facing skill and reference unit | 176 | 174,005 | 43,502 | 375,670 | 93,918 |
+
+Token counts are the same stable proxy used by the profile probe:
+`ceil(bytes / 4)`, not a host tokenizer measurement.
+
+### When to use `full`
+
+`full` composes every model-facing skill and reference unit, so one MCP server
+exposes every tool those units declare: the union of every generated workflow and
+specialist profile plus the `continuity-editor` and `canon-steward` units that no
+smaller profile enables. Use it when an author or host must reach every workflow
+from a single connection and cannot switch servers or profiles. It is the
+largest catalog: 176 tools, 174,005 input bytes (about 43,502 proxy tokens) and
+375,670 full bytes (about 93,918 proxy tokens). Prefer the smallest profile that
+covers the current work; unset still starts `workflow-write`, and `full` is
+opt-in. Operator-only commands stay excluded exactly as in every model profile.
 
 Every generated profile includes the shared entry core (`spindle`, 6 entry tools).
 Large context/analysis output schemas load optionally through versioned

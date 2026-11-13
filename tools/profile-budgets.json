@@ -6,6 +6,11 @@
       "input_bytes": 62808,
       "full_bytes": 132502
     },
+    "full": {
+      "tools": 176,
+      "input_bytes": 174005,
+      "full_bytes": 375670
+    },
     "new-book": {
       "tools": 14,
       "input_bytes": 20204,

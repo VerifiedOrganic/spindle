@@ -16,6 +16,20 @@ continuity, checkpoint review, recovery, and manuscript export. Run
 `spindle-mcp profiles` to list every generated workflow and specialist profile;
 see [profile selection](docs/tool-profiles.md) for details.
 
+To reach every model-facing workflow from one server, select `full`:
+
+```bash
+SPINDLE_TOOL_PROFILE=full spindle-mcp
+```
+
+`full` exposes 176 model-facing tools: every tool declared by a model-facing
+skill or reference unit, including the union of every generated profile plus the
+continuity and canon units no smaller profile enables. It costs
+substantially more context: 174,005 input bytes (about 43,502 proxy tokens) and
+375,670 full bytes (about 93,918 proxy tokens) per connection. Prefer a smaller
+profile unless one server must cover everything. Unset still starts
+`workflow-write`; operator-only commands remain CLI-only.
+
 The legacy `authoring`, `write`, `minimal`, `import`, and `legacy-all` profile
 names were removed in 0.4.0. Select a generated workflow or specialist profile;
 unset defaults to `workflow-write`. Host AI prose should declare
