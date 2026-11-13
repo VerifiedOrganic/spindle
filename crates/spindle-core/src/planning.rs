@@ -1,8 +1,12 @@
 //! Initial-planning contracts. These never authorize in-run amendments.
 use crate::models::*;
 use schemars::JsonSchema;
+use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
+use std::fmt;
+use std::marker::PhantomData;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(
@@ -1487,8 +1491,92 @@ pub struct PlanningBeginOutput {
     pub message: String,
 }
 
+/// A fieldless planning action that is published as a JSON Schema string enum
+/// and accepts the two wire forms clients already send.
+trait PlanningAction: Sized + Copy + 'static {
+    const WIRE: &'static [(&'static str, Self)];
+
+    fn from_wire(value: &str) -> Option<Self> {
+        Self::WIRE
+            .iter()
+            .find_map(|(name, action)| (*name == value).then_some(*action))
+    }
+
+    fn wire_names() -> String {
+        Self::WIRE
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn deserialize_planning_action<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: PlanningAction,
+{
+    struct ActionVisitor<T>(PhantomData<T>);
+
+    impl<'de, T: PlanningAction> Visitor<'de> for ActionVisitor<T> {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                formatter,
+                "a planning action string (one of: {}) or a legacy object with one variant key mapped to null",
+                T::wire_names()
+            )
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            T::from_wire(value).ok_or_else(|| {
+                E::custom(format!(
+                    "unknown planning action '{value}'; expected one of: {}",
+                    T::wire_names()
+                ))
+            })
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let Some((key, value)) = map.next_entry::<String, Value>()? else {
+                return Err(de::Error::custom(format!(
+                    "planning action object must contain exactly one variant key mapped to null; expected one of: {}",
+                    T::wire_names()
+                )));
+            };
+            if map.next_key::<String>()?.is_some() {
+                return Err(de::Error::custom(format!(
+                    "planning action object must contain exactly one variant key; expected one of: {}",
+                    T::wire_names()
+                )));
+            }
+            if !value.is_null() {
+                return Err(de::Error::custom(format!(
+                    "legacy planning action object must map '{key}' to null, not a value; expected one of: {}",
+                    T::wire_names()
+                )));
+            }
+            T::from_wire(&key).ok_or_else(|| {
+                de::Error::custom(format!(
+                    "unknown planning action '{key}'; expected one of: {}",
+                    T::wire_names()
+                ))
+            })
+        }
+    }
+
+    deserializer.deserialize_any(ActionVisitor(PhantomData))
+}
+
 /// One planning action a host may request without silent drafting.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanningAdvanceAction {
     /// Generate the next or requested planning level through the configured route.
@@ -1502,6 +1590,25 @@ pub enum PlanningAdvanceAction {
     RecomputeReadiness,
     /// Update the session gate policy without generating.
     SetPolicy,
+}
+
+impl PlanningAction for PlanningAdvanceAction {
+    const WIRE: &'static [(&'static str, Self)] = &[
+        ("generate", Self::Generate),
+        ("stage_host_artifact", Self::StageHostArtifact),
+        ("repair_last_proposal", Self::RepairLastProposal),
+        ("recompute_readiness", Self::RecomputeReadiness),
+        ("set_policy", Self::SetPolicy),
+    ];
+}
+
+impl<'de> Deserialize<'de> for PlanningAdvanceAction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserialize_planning_action(deserializer)
+    }
 }
 
 /// Generate, submit, retry, recheck or repolicy one planning level.
@@ -1757,7 +1864,7 @@ pub struct PlanningStatusOutput {
 }
 
 /// One decision action for staged planning proposals.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanningDecideAction {
     /// Record an accept, reject or supersede decision for staged proposals.
@@ -1767,6 +1874,23 @@ pub enum PlanningDecideAction {
     Revise,
     /// Check readiness and prepare the authoring run without changing proposals.
     PrepareAuthoringRun,
+}
+
+impl PlanningAction for PlanningDecideAction {
+    const WIRE: &'static [(&'static str, Self)] = &[
+        ("decide", Self::Decide),
+        ("revise", Self::Revise),
+        ("prepare_authoring_run", Self::PrepareAuthoringRun),
+    ];
+}
+
+impl<'de> Deserialize<'de> for PlanningDecideAction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserialize_planning_action(deserializer)
+    }
 }
 
 /// Decide staged planning proposals or prepare the authoring run.
@@ -1985,6 +2109,90 @@ mod tests {
         ] {
             rejects_at(conflict.clone(), path);
         }
+    }
+
+    fn advance_action(value: Value) -> Result<PlanningAdvanceAction, String> {
+        serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+
+    fn decide_action(value: Value) -> Result<PlanningDecideAction, String> {
+        serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn planning_actions_accept_strings_and_legacy_null_objects() {
+        assert_eq!(
+            advance_action(json!("stage_host_artifact")).unwrap(),
+            PlanningAdvanceAction::StageHostArtifact
+        );
+        assert_eq!(
+            advance_action(json!({"stage_host_artifact": null})).unwrap(),
+            PlanningAdvanceAction::StageHostArtifact
+        );
+        assert_eq!(
+            advance_action(json!({"repair_last_proposal": null})).unwrap(),
+            PlanningAdvanceAction::RepairLastProposal
+        );
+        assert_eq!(
+            decide_action(json!("prepare_authoring_run")).unwrap(),
+            PlanningDecideAction::PrepareAuthoringRun
+        );
+        assert_eq!(
+            decide_action(json!({"revise": null})).unwrap(),
+            PlanningDecideAction::Revise
+        );
+    }
+
+    #[test]
+    fn planning_actions_reject_other_shapes_with_actionable_errors() {
+        let unknown = advance_action(json!("stage_artifact")).unwrap_err();
+        assert!(
+            unknown.contains("unknown planning action 'stage_artifact'"),
+            "{unknown}"
+        );
+        assert!(unknown.contains("stage_host_artifact"), "{unknown}");
+
+        let empty = advance_action(json!({})).unwrap_err();
+        assert!(empty.contains("exactly one variant key"), "{empty}");
+        assert!(empty.contains("stage_host_artifact"), "{empty}");
+
+        let non_null = advance_action(json!({"stage_host_artifact": {}})).unwrap_err();
+        assert!(
+            non_null.contains("must map 'stage_host_artifact' to null"),
+            "{non_null}"
+        );
+
+        let multiple = decide_action(json!({"decide": null, "revise": null})).unwrap_err();
+        assert!(multiple.contains("exactly one variant key"), "{multiple}");
+
+        let wrong_type = decide_action(json!(7)).unwrap_err();
+        assert!(wrong_type.contains("expected"), "{wrong_type}");
+    }
+
+    #[test]
+    fn planning_action_inputs_accept_both_wire_forms() {
+        let string_form: PlanningAdvanceInput = serde_json::from_value(json!({
+            "session_id": "session-1",
+            "action": "stage_host_artifact",
+            "host_artifact": {}
+        }))
+        .unwrap();
+        assert_eq!(string_form.action, PlanningAdvanceAction::StageHostArtifact);
+
+        let legacy_form: PlanningAdvanceInput = serde_json::from_value(json!({
+            "session_id": "session-1",
+            "action": {"stage_host_artifact": null},
+            "host_artifact": {}
+        }))
+        .unwrap();
+        assert_eq!(legacy_form.action, PlanningAdvanceAction::StageHostArtifact);
+
+        let decide: PlanningDecideInput = serde_json::from_value(json!({
+            "session_id": "session-1",
+            "action": {"prepare_authoring_run": null}
+        }))
+        .unwrap();
+        assert_eq!(decide.action, PlanningDecideAction::PrepareAuthoringRun);
     }
 }
 

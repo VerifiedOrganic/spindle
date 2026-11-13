@@ -175,14 +175,18 @@ async fn output_omission_does_not_change_the_actual_structured_result() {
 
 #[test]
 fn projection_is_idempotent_and_preserves_all_validation_keywords() {
-    for original in all_tool_schemas() {
+    for catalog in all_tool_schemas() {
+        let original = &catalog.tool;
         let projected = project_tool_discovery(Some("workflow-write"), original.clone());
         assert_eq!(
             project_tool_discovery(Some("workflow-write"), projected.clone()),
             projected
         );
         for profile in [None, Some("unknown-profile")] {
-            assert_eq!(project_tool_discovery(profile, original.clone()), *original);
+            assert_eq!(
+                project_tool_discovery(profile, original.clone()),
+                original.clone()
+            );
         }
         let mut normalized = projected.clone();
         if original.name == "get_reference" {
@@ -223,7 +227,8 @@ fn projection_is_idempotent_and_preserves_all_validation_keywords() {
             normalized.description = original.description.clone();
         }
         assert_eq!(
-            normalized, *original,
+            normalized,
+            original.clone(),
             "unexpected descriptor change for {}",
             original.name
         );

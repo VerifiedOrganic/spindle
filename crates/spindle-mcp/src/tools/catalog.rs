@@ -13,12 +13,12 @@ pub fn static_tool_names() -> &'static BTreeSet<&'static str> {
     })
 }
 
-pub(super) fn all_tool_schemas() -> &'static [Tool] {
-    static ALL_TOOLS: std::sync::OnceLock<Vec<Tool>> = std::sync::OnceLock::new();
+pub(super) fn all_tool_schemas() -> &'static [CatalogTool] {
+    static ALL_TOOLS: std::sync::OnceLock<Vec<CatalogTool>> = std::sync::OnceLock::new();
     ALL_TOOLS.get_or_init(build_all_tools)
 }
 
-pub(super) fn build_all_tools() -> Vec<Tool> {
+pub(super) fn build_all_tools() -> Vec<CatalogTool> {
     vec![
         tool::<GetEditorialQueueInput, EditorialQueueOutput>(
             "get_editorial_queue",
