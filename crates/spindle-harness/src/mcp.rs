@@ -657,6 +657,7 @@ mod tests {
             temperature: None,
             stop: Vec::new(),
             rating: rating.map(ToString::to_string),
+            reasoning_effort: None,
             adapter_kind: "http".to_string(),
             caller_should_send_brief: false,
         }

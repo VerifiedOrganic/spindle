@@ -243,6 +243,9 @@ pub struct ModelCallRecord {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Effective reasoning effort sent on the request, when one was configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub route: String,
     pub adapter_kind: Option<String>,
     pub model_name: Option<String>,
