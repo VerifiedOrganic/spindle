@@ -3559,7 +3559,11 @@ impl Repository {
                     for chapter_number in
                         target_range.chapter_start..=target_range.chapter_end
                     {
-                        let mut found = false;
+                        // Resolve the effective plan with the same shadowing
+                        // rule as readiness: the nearest persisted chapter plan
+                        // wins, even when it is incomplete. Never fall through
+                        // to an ancestor plan that the child branch replaced.
+                        let mut effective: Option<Vec<serde_json::Value>> = None;
                         for branch_id in &lineage {
                             let scenes: Option<String> = conn
                                 .query_row(
@@ -3573,17 +3577,13 @@ impl Repository {
                                     |row| row.get(0),
                                 )
                                 .optional_inner()?;
-                            let Some(scenes) = scenes else {
-                                continue;
-                            };
-                            let scenes: Vec<serde_json::Value> =
-                                serde_json::from_str(&scenes).unwrap_or_default();
-                            if scenes.len() >= required {
-                                found = true;
+                            if let Some(scenes) = scenes {
+                                effective =
+                                    Some(serde_json::from_str(&scenes).unwrap_or_default());
                                 break;
                             }
                         }
-                        if !found {
+                        if !effective.is_some_and(|scenes| scenes.len() >= required) {
                             return Ok(false);
                         }
                     }

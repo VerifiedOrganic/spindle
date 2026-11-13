@@ -996,6 +996,18 @@ impl SqliteSpindleService {
         let proposals = self
             .list_planning_proposals(&session.id, session.scope.clone())
             .await?;
+        // Acceptance can persist chapter manifests, so completion must be read
+        // from the post-decision state rather than the entry snapshot.
+        let scene_manifests_complete = self
+            .repository
+            .planning_scene_manifests_complete(
+                session.scope.clone(),
+                input
+                    .target_range
+                    .clone()
+                    .unwrap_or_else(|| session.horizon.clone()),
+            )
+            .await?;
         let decided_summaries = decided
             .iter()
             .map(|proposal| proposal_summary(proposal, include_payloads))
