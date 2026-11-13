@@ -138,8 +138,7 @@ pub(super) fn generated_tool_schemas() -> &'static [Tool] {
     TOOLS.get_or_init(|| {
         all_tool_schemas()
             .iter()
-            .cloned()
-            .map(generated_tool)
+            .map(|tool| generated_tool(tool.tool.clone()))
             .collect()
     })
 }
