@@ -18,8 +18,8 @@ use spindle_core::models::{
 
 use crate::agent_config::{
     AgentHealthStatus, AgentStatus, AgentStatusSummary, ConfiguredAgent, LoadedAgentConfig,
-    RESERVED_EXTRA_BODY_KEYS, RoutingRule, health_check_timeout, health_checks_enabled,
-    load_agent_config,
+    RESERVED_EXTRA_BODY_KEYS, RoutingRule, deep_check_timeout, health_check_timeout,
+    health_checks_enabled, load_agent_config,
 };
 
 pub const EMBEDDING_VERSION: &str = "token-hash-v1";
@@ -521,6 +521,14 @@ pub struct UnsupportedExtractionAdapter;
 #[error("independent extraction timed out")]
 pub struct ExtractionTimedOut;
 
+/// A model-backed deep consistency check exceeded its per-call wall-clock
+/// budget. Callers report the affected unit as INCONCLUSIVE and keep going.
+#[derive(Debug, thiserror::Error)]
+#[error("deep check timed out after {timeout_ms} ms")]
+pub struct DeepCheckTimedOut {
+    pub timeout_ms: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelRequest {
     pub route: String,
@@ -670,6 +678,8 @@ struct RuntimeConfig {
     agents: BTreeMap<String, AgentRuntime>,
     health_checks_enabled: bool,
     health_check_timeout: Duration,
+    /// Per-call wall-clock budget for one model-backed deep consistency check.
+    deep_check_timeout: Duration,
     /// When true, import routes (`import_extract`, `import_synthesize`) resolve
     /// to the operator's explicit-cleared offload agent instead of their default
     /// binding — see [`resolve_route`]. Mirrors the opt-in config flag.
@@ -774,6 +784,7 @@ impl ModelRouter {
             agents: Vec::new(),
             routing: Vec::new(),
             health_check: crate::agent_config::default_health_check_config(),
+            deep_check: crate::agent_config::default_deep_check_config(),
             route_import_to_explicit: false,
             anti_slop: crate::agent_config::AntiSlopProjectConfig::default(),
         })
@@ -1426,7 +1437,7 @@ impl ModelRouter {
     }
 
     pub async fn complete(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
-        self.complete_with_limit(request, None).await
+        self.complete_with_limits(request, None, None).await
     }
 
     /// Complete with a hard per-call output-token cap applied to the resolved
@@ -1437,13 +1448,36 @@ impl ModelRouter {
         request: &ModelRequest,
         max_tokens: u32,
     ) -> anyhow::Result<ModelResponse> {
-        self.complete_with_limit(request, Some(max_tokens)).await
+        self.complete_with_limits(request, Some(max_tokens), None)
+            .await
     }
 
-    async fn complete_with_limit(
+    /// Complete one model-backed deep consistency check under the configured
+    /// per-call wall-clock budget. A timeout is returned as the typed
+    /// [`DeepCheckTimedOut`] error so the audit can mark that unit
+    /// INCONCLUSIVE and continue instead of failing the whole pass.
+    pub async fn complete_deep(&self, request: &ModelRequest) -> anyhow::Result<ModelResponse> {
+        let timeout = self.deep_check_timeout();
+        self.complete_with_limits(request, None, Some(timeout))
+            .await
+    }
+
+    /// Per-call wall-clock budget for deep consistency checks. Falls back to
+    /// the documented default if the runtime lock is poisoned.
+    pub fn deep_check_timeout(&self) -> Duration {
+        self.runtime
+            .read()
+            .map(|runtime| runtime.deep_check_timeout)
+            .unwrap_or_else(|_| {
+                Duration::from_millis(crate::agent_config::DEFAULT_DEEP_CHECK_TIMEOUT_MS)
+            })
+    }
+
+    async fn complete_with_limits(
         &self,
         request: &ModelRequest,
         max_tokens_override: Option<u32>,
+        wall_clock_timeout: Option<Duration>,
     ) -> anyhow::Result<ModelResponse> {
         let start = std::time::Instant::now();
         let mut resolved_route =
@@ -1467,6 +1501,15 @@ impl ModelRouter {
             )
             .await
             .unwrap_or_else(|_| Err(anyhow::Error::new(ExtractionTimedOut)))
+        } else if let Some(limit) = wall_clock_timeout {
+            match tokio::time::timeout(limit, self.complete_inner(request, max_tokens_override))
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::Error::new(DeepCheckTimedOut {
+                    timeout_ms: u64::try_from(limit.as_millis()).unwrap_or(u64::MAX),
+                })),
+            }
         } else {
             self.complete_inner(request, max_tokens_override).await
         };
@@ -1785,20 +1828,18 @@ impl ModelRouter {
                 .tempfile()
                 .context("create cli prompt tempfile")?;
             std::fs::write(prompt_file.path(), prompt).context("write cli prompt tempfile")?;
-            let output = tokio::process::Command::new(&command)
+            let mut cmd = tokio::process::Command::new(&command);
+            cmd.kill_on_drop(true)
                 .arg(&route.route_name)
                 .arg("--prompt-file")
-                .arg(prompt_file.path())
-                .output()
-                .await?;
+                .arg(prompt_file.path());
+            let output = cmd.output().await?;
             drop(prompt_file);
             output
         } else {
-            tokio::process::Command::new(&command)
-                .arg(&route.route_name)
-                .arg(prompt)
-                .output()
-                .await?
+            let mut cmd = tokio::process::Command::new(&command);
+            cmd.kill_on_drop(true).arg(&route.route_name).arg(prompt);
+            cmd.output().await?
         };
         if !output.status.success() {
             anyhow::bail!("cli model adapter failed with status {}", output.status);
@@ -1848,6 +1889,7 @@ impl ModelRouter {
         }
 
         let mut cmd = tokio::process::Command::new(binary);
+        cmd.kill_on_drop(true);
         cmd.arg("--prompt-file").arg(prompt_file.path());
         cmd.arg("--output-format").arg("json");
         cmd.arg("--always-approve");
@@ -2749,6 +2791,7 @@ fn runtime_from_loaded_config(
     let has_external_agents = !config.agents.is_empty() && !config.routing.is_empty();
     let health_checks_enabled = health_checks_enabled(&config);
     let timeout = health_check_timeout(&config);
+    let deep_timeout = deep_check_timeout(&config);
     let agents = config
         .agents
         .iter()
@@ -2834,6 +2877,7 @@ fn runtime_from_loaded_config(
         agents,
         health_checks_enabled,
         health_check_timeout: timeout,
+        deep_check_timeout: deep_timeout,
         route_import_to_explicit: config.route_import_to_explicit,
         config_error: None,
     }
@@ -4342,6 +4386,109 @@ agent = "shared"
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn deep_check_timeout_terminates_cli_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let pid_path = temp.path().join("child.pid");
+        let script_path = temp.path().join("slow-review.sh");
+        std::fs::write(
+            &script_path,
+            format!("#!/bin/sh\necho $$ > '{}'\nsleep 30\n", pid_path.display()),
+        )
+        .expect("write script");
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod script");
+
+        let config_path = temp.path().join("spindle.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r####"
+[health_check]
+enabled = false
+
+[deep_check]
+timeout_ms = 5000
+
+[[agents]]
+id = "cli-review"
+name = "CLI Review"
+provider = "cli"
+endpoint = "{}"
+model = "cli-model"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[routing]]
+route = "review"
+agent = "cli-review"
+"####,
+                script_path.display()
+            ),
+        )
+        .expect("write config");
+
+        let router = ModelRouter::local_only();
+        router
+            .configure(Some(&config_path.display().to_string()))
+            .expect("configure router");
+
+        let started = std::time::Instant::now();
+        let error = router
+            .complete_deep(&ModelRequest {
+                route: "review".to_string(),
+                prompt: "Check this scene.".to_string(),
+                rating: Some("general".to_string()),
+                context: None,
+            })
+            .await
+            .expect_err("slow CLI review must time out");
+        assert!(
+            error.downcast_ref::<DeepCheckTimedOut>().is_some(),
+            "expected DeepCheckTimedOut, got {error:#}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "timeout must return promptly, took {:?}",
+            started.elapsed()
+        );
+
+        let pid = {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&pid_path)
+                    && let Ok(pid) = text.trim().parse::<u32>()
+                {
+                    break pid;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "CLI child never wrote its pid file"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+
+        let mut alive = true;
+        for _ in 0..100 {
+            let status = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .expect("run kill -0");
+            if !status.success() {
+                alive = false;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !alive,
+            "timed-out CLI child {pid} must be terminated before further checks run"
+        );
+    }
+
     #[tokio::test]
     async fn http_router_sends_configured_system_prompt() {
         let (endpoint, captured, server) = spawn_http_capture_server(vec![(
@@ -5592,6 +5739,9 @@ enabled = false
             )]),
             health_checks_enabled: false,
             health_check_timeout: Duration::from_millis(1500),
+            deep_check_timeout: Duration::from_millis(
+                crate::agent_config::DEFAULT_DEEP_CHECK_TIMEOUT_MS,
+            ),
             route_import_to_explicit: false,
         };
 

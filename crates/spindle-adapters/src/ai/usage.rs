@@ -4,16 +4,23 @@ use spindle_core::models::{ModelCallRecord, ModelUsage};
 pub(super) fn parse_usage(body: &serde_json::Value) -> Option<ModelUsage> {
     let usage = body.get("usage")?.as_object()?;
     let number = |keys: &[&str]| keys.iter().find_map(|key| usage.get(*key)?.as_u64());
+    let details = |keys: &[&str]| keys.iter().find_map(|key| usage.get(*key)?.as_object());
     let result = ModelUsage {
         input_tokens: number(&["prompt_tokens", "input_tokens"]),
         output_tokens: number(&["completion_tokens", "output_tokens"]),
-        cached_input_tokens: usage
-            .get("prompt_tokens_details")
-            .or_else(|| usage.get("input_tokens_details"))
+        cached_input_tokens: details(&["prompt_tokens_details", "input_tokens_details"])
             .and_then(|details| details.get("cached_tokens"))
             .and_then(serde_json::Value::as_u64),
+        reasoning_tokens: number(&["reasoning_tokens"]).or_else(|| {
+            details(&["completion_tokens_details", "output_tokens_details"])
+                .and_then(|details| details.get("reasoning_tokens"))
+                .and_then(serde_json::Value::as_u64)
+        }),
     };
-    (result.input_tokens.is_some() || result.output_tokens.is_some()).then_some(result)
+    (result.input_tokens.is_some()
+        || result.output_tokens.is_some()
+        || result.reasoning_tokens.is_some())
+    .then_some(result)
 }
 
 #[derive(Default)]
@@ -118,10 +125,15 @@ impl ModelRouter {
             reasoning_effort: resolved_route.and_then(|r| r.reasoning_effort.clone()),
             outcome: if binding.pending {
                 "pending"
-            } else if result.is_ok() {
-                "succeeded"
             } else {
-                "failed"
+                match result.as_ref() {
+                    Ok(response) if response.truncated => "truncated",
+                    Ok(_) => "succeeded",
+                    Err(error) if error.downcast_ref::<super::DeepCheckTimedOut>().is_some() => {
+                        "timed_out"
+                    }
+                    Err(_) => "failed",
+                }
             }
             .into(),
             usage: result.as_ref().ok().and_then(|r| r.usage.clone()),
@@ -209,5 +221,19 @@ mod tests {
             parse_usage(&serde_json::json!({"usage": {"input_tokens": 20, "output_tokens": -1}}))
                 .unwrap();
         assert_eq!(partial.output_tokens, None);
+        let reasoning = parse_usage(&serde_json::json!({
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 2000,
+                "completion_tokens_details": { "reasoning_tokens": 1900 }
+            }
+        }))
+        .unwrap();
+        assert_eq!(reasoning.reasoning_tokens, Some(1900));
+        let top_level_reasoning = parse_usage(&serde_json::json!({
+            "usage": { "reasoning_tokens": 42 }
+        }))
+        .unwrap();
+        assert_eq!(top_level_reasoning.reasoning_tokens, Some(42));
     }
 }
