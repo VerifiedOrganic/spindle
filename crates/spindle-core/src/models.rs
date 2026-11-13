@@ -6826,8 +6826,23 @@ pub struct RunDualPersonaReviewOutput {
     pub scene_id: String,
     pub branch_id: String,
     pub rounds_completed: usize,
+    /// Id of the persisted review for the CURRENT scene text. Empty while a
+    /// detached job is still running and has not banked its first round; the
+    /// id of a previous, now-stale review is never returned here.
     pub review_id: String,
+    /// `current` when the review matches the scene text, `in_progress` while
+    /// a detached job for that text is still running, or `stale` when the
+    /// scene text changed after the review finished and no job is running for
+    /// the current text.
     pub status: String,
+    /// Stable identifier of the detached review job this call started or
+    /// joined. Omitted when the call only collected already-persisted rounds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    /// What to do next when the response is not final: call again to collect
+    /// a running review, or to review the current text after a stale result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_action: Option<String>,
     #[serde(default)]
     pub review_rounds: Vec<DualPersonaReviewRound>,
 }

@@ -238,6 +238,9 @@ enum ReviewJobState {
 /// stacking another `rounds` on top of the rounds it is already producing.
 #[derive(Clone)]
 struct ReviewJob {
+    /// Stable identity of this job. Cleanup compares it so a finished job's
+    /// delayed reaper cannot evict a replacement that reused the same key.
+    job_id: String,
     target_rounds: usize,
     state: tokio::sync::watch::Receiver<ReviewJobState>,
 }
@@ -251,6 +254,17 @@ const REVIEW_JOB_JOIN_WAIT: Duration = if cfg!(test) {
     Duration::from_millis(150)
 } else {
     Duration::from_secs(25)
+};
+
+/// How long a finished review job stays collectable before its reaper removes
+/// the registry entry. Long enough that a client retry after its own request
+/// timeout joins the finished job instead of starting a fresh top-up. Small in
+/// tests, but nonzero so the collect path is deterministic rather than racing
+/// the reaper.
+const REVIEW_JOB_RETENTION: Duration = if cfg!(test) {
+    Duration::from_millis(250)
+} else {
+    Duration::from_secs(300)
 };
 
 /// Deep-tier model calls in flight at once. The per-scene calls are independent,

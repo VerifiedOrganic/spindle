@@ -1,5 +1,11 @@
 use super::*;
 
+/// Guidance returned while a detached review job is still producing rounds.
+const REVIEW_IN_PROGRESS_NEXT_ACTION: &str = "The review is still running. Call run_dual_persona_review again to collect the finished review.";
+/// Guidance returned when the persisted review belongs to superseded prose.
+const REVIEW_STALE_NEXT_ACTION: &str = "The scene text changed after this review finished. Call \
+     run_dual_persona_review again to review the current text.";
+
 impl SqliteSpindleService {
     /// Two-persona scene review (literary critic + craft technician),
     /// optionally with 1–3 rounds. Each round calls the model router
@@ -96,13 +102,20 @@ impl SqliteSpindleService {
                 .repository
                 .get_dual_persona_review(&branch_id, &input.scene_id)
                 .await?;
-            if let Some(persisted) = persisted {
+            if let Some(persisted) = persisted
+                && persisted.scene_revision_fingerprint == scene_fingerprint
+                && persisted.status != "stale"
+            {
+                let next_action = (persisted.status == "in_progress")
+                    .then(|| REVIEW_IN_PROGRESS_NEXT_ACTION.to_string());
                 return Ok(RunDualPersonaReviewOutput {
                     scene_id: input.scene_id,
                     branch_id,
                     rounds_completed: prior_rounds.len(),
                     review_id: persisted.id,
                     status: persisted.status,
+                    job_id: None,
+                    next_action,
                     review_rounds: prior_rounds,
                 });
             }
@@ -135,25 +148,57 @@ impl SqliteSpindleService {
             }
         };
 
+        let job_running = terminal.is_none();
         if let Some(terminal) = terminal {
-            self.clear_review_job(&job_key)?;
+            // Identity-safe: a replacement job may have reused this key after
+            // this one published its terminal state. Never evict it.
+            self.clear_review_job(&job_key, &job.job_id)?;
             if let ReviewJobState::Failed(message) = terminal {
                 anyhow::bail!("dual persona review failed: {message}");
             }
         }
 
-        let banked = self
-            .persisted_review_rounds(&branch_id, &input.scene_id, &scene_fingerprint)
-            .await?;
         let persisted = self
             .repository
             .get_dual_persona_review(&branch_id, &input.scene_id)
             .await?;
-        let (review_id, status) = match persisted {
-            Some(row) => (row.id, row.status),
-            // Nothing banked yet: the first round has not landed. Report the
-            // honest in-progress shape rather than inventing a row id.
-            None => (String::new(), "in_progress".to_string()),
+        // Only a row for the CURRENT prose counts. The old row survives an
+        // edit with `status = "stale"`; returning its id as if it were the
+        // result is the reported defect.
+        let current_row = persisted.as_ref().filter(|row| {
+            row.status != "stale" && row.scene_revision_fingerprint == scene_fingerprint
+        });
+        let banked = persisted
+            .as_ref()
+            .map(|row| Self::review_rounds_for_fingerprint(row, &scene_fingerprint))
+            .unwrap_or_default();
+
+        let (review_id, status, next_action) = if job_running {
+            // A job for this exact fingerprint is still running. Report the
+            // new review id only once its first round has actually banked;
+            // otherwise hand back the job id alone. Never the old row's id.
+            (
+                current_row.map(|row| row.id.clone()).unwrap_or_default(),
+                "in_progress".to_string(),
+                Some(REVIEW_IN_PROGRESS_NEXT_ACTION.to_string()),
+            )
+        } else if let Some(row) = current_row {
+            (
+                row.id.clone(),
+                row.status.clone(),
+                (row.status == "in_progress").then(|| REVIEW_IN_PROGRESS_NEXT_ACTION.to_string()),
+            )
+        } else {
+            // No job is running and the persisted review (if any) is for prose
+            // that has moved on. `stale` is honest here, with the next step.
+            (
+                persisted
+                    .as_ref()
+                    .map(|row| row.id.clone())
+                    .unwrap_or_default(),
+                "stale".to_string(),
+                Some(REVIEW_STALE_NEXT_ACTION.to_string()),
+            )
         };
 
         Ok(RunDualPersonaReviewOutput {
@@ -162,6 +207,8 @@ impl SqliteSpindleService {
             rounds_completed: banked.len(),
             review_id,
             status,
+            job_id: Some(job.job_id.clone()),
+            next_action,
             review_rounds: banked,
         })
     }
@@ -182,12 +229,23 @@ impl SqliteSpindleService {
         else {
             return Ok(Vec::new());
         };
-        // `in_progress` counts: those rounds are real completed model work,
-        // banked mid-run. Only a `stale` row (prose moved on) is discarded.
+        Ok(Self::review_rounds_for_fingerprint(
+            &existing,
+            scene_fingerprint,
+        ))
+    }
+
+    /// Rounds a persisted row contributes to the CURRENT prose. `in_progress`
+    /// counts: those rounds are real completed model work, banked mid-run.
+    /// Only a `stale` row (prose moved on) is discarded.
+    pub(super) fn review_rounds_for_fingerprint(
+        existing: &crate::sqlite::records::DualPersonaReview,
+        scene_fingerprint: &str,
+    ) -> Vec<spindle_core::models::DualPersonaReviewRound> {
         if existing.status == "stale" || existing.scene_revision_fingerprint != scene_fingerprint {
-            return Ok(Vec::new());
+            return Vec::new();
         }
-        Ok(existing
+        existing
             .review_rounds
             .get("rounds")
             .cloned()
@@ -203,7 +261,7 @@ impl SqliteSpindleService {
                     .map(crate::sqlite::json_records::StoredDualPersonaReviewRound::into_core)
                     .collect()
             })
-            .unwrap_or_default())
+            .unwrap_or_default()
     }
 
     pub(super) fn lookup_review_job(&self, job_key: &str) -> Result<Option<ReviewJob>> {
@@ -215,12 +273,19 @@ impl SqliteSpindleService {
             .cloned())
     }
 
-    pub(super) fn clear_review_job(&self, job_key: &str) -> Result<()> {
-        self.review_jobs
+    /// Remove a registry entry only when it still belongs to `job_id`. A
+    /// finished job's delayed reaper must not evict a replacement that reused
+    /// the same key.
+    pub(super) fn clear_review_job(&self, job_key: &str, job_id: &str) -> Result<bool> {
+        let mut guard = self
+            .review_jobs
             .lock()
-            .map_err(|_| poisoned_lock("review job registry lock"))?
-            .remove(job_key);
-        Ok(())
+            .map_err(|_| poisoned_lock("review job registry lock"))?;
+        let matches = guard.get(job_key).is_some_and(|job| job.job_id == job_id);
+        if matches {
+            guard.remove(job_key);
+        }
+        Ok(matches)
     }
 
     /// Detach the remaining rounds onto a background task and register it so
@@ -233,8 +298,10 @@ impl SqliteSpindleService {
         target_rounds: usize,
         prior_rounds: Vec<spindle_core::models::DualPersonaReviewRound>,
     ) -> Result<ReviewJob> {
+        let job_id = format!("review-job-{}", ulid::Ulid::new());
         let (tx, rx) = tokio::sync::watch::channel(ReviewJobState::Running);
         let job = ReviewJob {
+            job_id: job_id.clone(),
             target_rounds,
             state: rx,
         };
@@ -255,6 +322,7 @@ impl SqliteSpindleService {
         let project_id = input.project_id.clone();
         let scene = scene.clone();
         let job_key_owned = job_key.to_string();
+        let job_id_owned = job_id.clone();
         tokio::spawn(async move {
             let outcome = service
                 .drive_review_rounds(&project_id, &scene, target_rounds, prior_rounds)
@@ -274,11 +342,11 @@ impl SqliteSpindleService {
             let _ = tx.send(state);
             // Leave the entry for a waiter to collect; if none ever comes, drop
             // it here so the registry cannot grow without bound.
-            tokio::time::sleep(Duration::from_secs(if cfg!(test) { 0 } else { 300 })).await;
+            tokio::time::sleep(REVIEW_JOB_RETENTION).await;
             // The reaper runs detached with no caller to propagate to; a
             // poisoned registry is logged and stays observable: every
             // request-path registry access surfaces it as `Err`.
-            if let Err(error) = service.clear_review_job(&job_key_owned) {
+            if let Err(error) = service.clear_review_job(&job_key_owned, &job_id_owned) {
                 tracing::warn!(
                     error = %format!("{error:#}"),
                     "review job reaper could not clear its registry entry"

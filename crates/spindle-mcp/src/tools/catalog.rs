@@ -354,7 +354,7 @@ pub(super) fn build_all_tools() -> Vec<CatalogTool> {
         ),
         tool::<RunDualPersonaReviewInput, RunDualPersonaReviewOutput>(
             "run_dual_persona_review",
-            "Run a literary and craft review loop for a branch scene",
+            "Run a literary and craft review loop for a branch scene. Returns in_progress with a job_id while a detached review of the current text is still running; call again to collect it",
         ),
         tool::<CreatePacingConfigInput, CreatePacingConfigOutput>(
             "create_pacing_config",

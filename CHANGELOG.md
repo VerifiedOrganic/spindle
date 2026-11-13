@@ -17,6 +17,16 @@
 
 ### Fixed
 
+- **`run_dual_persona_review` reports the current review, not the previous
+  one.** After a scene revision the next call used to return `status: "stale"`,
+  the old review id, and empty rounds while the new review job was still
+  running. A running job for the current text now returns `in_progress` with
+  its `job_id` (and the new review id once a round has banked); retries join
+  that job, and completion returns the new review. `stale` is reserved for a
+  finished review whose fingerprint no longer matches with no job running, and
+  now carries a `next_action` hint. Job-map cleanup compares job identity, so
+  a finished job's delayed reaper cannot evict a replacement. Tool snapshots
+  and profile budgets are updated in the same change.
 - A model call that hits `max_tokens` is now logged with
   `outcome = "truncated"` instead of `"succeeded"`. Provider-reported
   reasoning-token counts are retained in the call's usage block.
