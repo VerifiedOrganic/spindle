@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- `planning_advance` and `planning_decide` now publish their `action` fields as
+  JSON Schema string enums instead of bare objects, matching the server's
+  deserializer. Plain strings and the legacy `{"variant": null}` object form
+  are both accepted; other shapes return an actionable error. A catalog-wide
+  contract test now checks every tool's published input schema against its
+  typed deserializer and validates canonical schemars examples against the
+  published schema, so sanitizer transforms cannot silently erase a contract
+  again.
+
 - Semantic continuity precision round (the lane still ships **off by
   default**): quantity contradictions require balance/stock evidence,
   dead-character state is selected only from strictly prior scenes,

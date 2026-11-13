@@ -51,13 +51,13 @@ Continue the same staged, review, decide loop for SeriesArc, Book, and Chapter:
 - Surface author questions before asking for a decision.
 - Require an explicit author decision for each level. Record the author as the decision actor.
 
-If a level returns a host generation request instead of a proposal, generate the artifact with the host model, then resubmit it through `planning_advance` with the host artifact action. The same validator and human gates apply to host output.
+If a level returns a host generation request instead of a proposal, generate the artifact with the host model, then resubmit it through `planning_advance` with `action: "stage_host_artifact"` and the artifact in `host_artifact`. The same validator and human gates apply to host output. Actions are JSON strings (`"generate"`, `"stage_host_artifact"`, `"repair_last_proposal"`, `"recompute_readiness"`, `"set_policy"`); the legacy single-key object form such as `{"stage_host_artifact": null}` is still accepted for older clients.
 
 ## Step 5: Scene Packets and Handoff
 
 1. Advance the Scene level so every chapter in the horizon gets concrete scene packets: purpose, cast, location, rating, beats, and promise movements.
 2. Call `planning_status` and read the real readiness report. It distinguishes planner checks from the authoring prepare result.
-3. Call `planning_decide` with the prepare action to get the real prepare report for the exact range. Do not claim readiness from planner checks alone.
+3. Call `planning_decide` with `action: "prepare_authoring_run"` to get the real prepare report for the exact range. Do not claim readiness from planner checks alone. To record a decision, use `action: "decide"` with `decision` and the exact `expected_hashes`; `action: "revise"` supersedes the selected proposals.
 4. When readiness passes, summarize accepted IDs, the chapter and scene packets, and any advisory warnings. Then load the drafting workflow: `scene-writer` for one scene, or `authoring-supervisor` for a supervised multi-chapter run. Starting prose remains a separate author instruction.
 5. If readiness fails, show the missing requirements and advance or repair the relevant level. `authoring_prepare_run` remains available for an independent low-level recheck.
 
