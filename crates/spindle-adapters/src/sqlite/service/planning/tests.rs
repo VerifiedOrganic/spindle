@@ -3953,8 +3953,13 @@ async fn cancelled_and_reopened_in_progress_attempt_retains_reservation_and_reco
     })
     .to_string();
 
+    // Signals that the mock server has received the first (slow) request. The
+    // attempt and its paid-call reservation are persisted before the request is
+    // dispatched, so this is the deterministic point at which the future may be
+    // dropped; a wall-clock timeout raced the persistence on slower runners.
+    let (request_seen_tx, request_seen_rx) = std::sync::mpsc::channel::<()>();
     let srv_handle = std::thread::spawn(move || {
-        // Request 1: slow (300ms) so the client future times out and is dropped mid-await.
+        // Request 1: slow (300ms) so the client future is dropped mid-await.
         // Request 2: fast response for the in-process retry of "cancel-key-001".
         // Request 3: fast response for the post-reopen retry of "reopen-key-001".
         for (delay_ms, body) in [
@@ -3994,6 +3999,7 @@ async fn cancelled_and_reopened_in_progress_attempt_retains_reservation_and_reco
                 }
             }
             if delay_ms > 0 {
+                let _ = request_seen_tx.send(());
                 std::thread::sleep(std::time::Duration::from_millis(delay_ms));
             }
             let reply = format!(
@@ -4062,15 +4068,19 @@ agent = "recover-agent"
         host_submission: None,
         retry_key: Some("cancel-key-001".into()),
     };
-    let timed_out = tokio::time::timeout(
-        std::time::Duration::from_millis(75),
-        svc.advance_planning(req_cancel.clone()),
-    )
-    .await;
-    assert!(
-        timed_out.is_err(),
-        "first call should time out while HTTP response is delayed"
-    );
+    let mut advance = Box::pin(svc.advance_planning(req_cancel.clone()));
+    let request_seen = tokio::task::spawn_blocking(move || {
+        request_seen_rx.recv_timeout(std::time::Duration::from_secs(10))
+    });
+    tokio::select! {
+        result = &mut advance => {
+            panic!("first call completed before the delayed HTTP response: {result:?}");
+        }
+        seen = request_seen => {
+            seen.expect("request signal task").expect("server saw the first request");
+        }
+    }
+    drop(advance);
 
     // Uncertain paid-call reservation (model_calls == 1) must be retained on the session,
     // and the interrupted attempt must be visible via list/find APIs.
