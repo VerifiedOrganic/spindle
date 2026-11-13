@@ -123,92 +123,114 @@ Use the live `bible://skills/{skill_name}` resource for the detailed step-by-ste
 
 impl ToolRouter {
     pub(crate) fn covered_units(&self) -> Vec<String> {
-        let skills = spindle_adapters::list_skills();
-        let mut units = std::collections::BTreeSet::new();
-        for skill in skills {
-            let required =
-                skill_required_tools(skill, skills, &mut std::collections::BTreeSet::new());
-            if required.iter().all(|tool| self.has_tool(tool)) {
-                units.insert(skill.name.to_string());
-            }
-            for reference in skill.manifest.references {
-                let mut ref_required = required.clone();
-                ref_required.extend(reference.tools.iter().copied());
-                if ref_required.iter().all(|tool| self.has_tool(tool)) {
-                    units.insert(reference.name.to_string());
-                }
-            }
-        }
-        units.into_iter().collect()
+        covered_units_for_profile(self.current_profile().as_deref())
     }
 
     pub(super) fn resolve_skill_output(
         &self,
         skill: spindle_adapters::EmbeddedSkill,
     ) -> GetSkillOutput {
-        let skills = spindle_adapters::list_skills();
-        let required = skill_required_tools(&skill, skills, &mut std::collections::BTreeSet::new());
-        let missing_capabilities: Vec<String> = required
-            .iter()
-            .filter(|tool| !self.has_tool(tool))
-            .map(|tool| (*tool).to_string())
-            .collect();
-        let covered = missing_capabilities.is_empty();
-        let required_profile = smallest_covering_profile(skill.name, &required);
-        let available_units = self.covered_units();
-        let markdown = if covered {
-            skill.markdown.to_string()
-        } else {
-            uncovered_unit_message(
-                skill.name,
-                self.tool_profile.as_deref().unwrap_or("default"),
-                required_profile.as_deref().unwrap_or("default"),
-                &missing_capabilities,
-                &available_units,
-            )
-        };
-        GetSkillOutput {
-            name: skill.name.to_string(),
-            markdown,
-            covered,
-            required_profile,
-            available_units,
-            missing_capabilities,
-        }
+        resolve_skill_output_for_profile(self.current_profile().as_deref(), skill)
     }
 
     pub(super) fn resolve_reference_output(
         &self,
         reference: spindle_adapters::EmbeddedReference,
     ) -> GetReferenceOutput {
-        let required = reference_required_tools(reference.name);
-        let missing_capabilities: Vec<String> = required
-            .iter()
-            .filter(|tool| !self.has_tool(tool))
-            .map(|tool| (*tool).to_string())
-            .collect();
-        let covered = missing_capabilities.is_empty();
-        let required_profile = smallest_covering_profile(reference.name, &required);
-        let available_units = self.covered_units();
-        let markdown = if covered {
-            reference.markdown.to_string()
-        } else {
-            uncovered_unit_message(
-                reference.name,
-                self.tool_profile.as_deref().unwrap_or("default"),
-                required_profile.as_deref().unwrap_or("default"),
-                &missing_capabilities,
-                &available_units,
-            )
-        };
-        GetReferenceOutput {
-            name: reference.name.to_string(),
-            markdown,
-            covered,
-            required_profile,
-            available_units,
-            missing_capabilities,
+        resolve_reference_output_for_profile(self.current_profile().as_deref(), reference)
+    }
+}
+
+/// Units covered by a profile. `None` is the unfiltered model surface used by
+/// direct/test routers and secondary proxies that do not narrow discovery.
+pub(crate) fn covered_units_for_profile(profile: Option<&str>) -> Vec<String> {
+    let skills = spindle_adapters::list_skills();
+    let mut units = std::collections::BTreeSet::new();
+    for skill in skills {
+        let required = skill_required_tools(skill, skills, &mut std::collections::BTreeSet::new());
+        if required.iter().all(|tool| profile_has_tool(profile, tool)) {
+            units.insert(skill.name.to_string());
         }
+        for reference in skill.manifest.references {
+            let mut ref_required = required.clone();
+            ref_required.extend(reference.tools.iter().copied());
+            if ref_required
+                .iter()
+                .all(|tool| profile_has_tool(profile, tool))
+            {
+                units.insert(reference.name.to_string());
+            }
+        }
+    }
+    units.into_iter().collect()
+}
+
+pub(crate) fn resolve_skill_output_for_profile(
+    profile: Option<&str>,
+    skill: spindle_adapters::EmbeddedSkill,
+) -> GetSkillOutput {
+    let skills = spindle_adapters::list_skills();
+    let required = skill_required_tools(&skill, skills, &mut std::collections::BTreeSet::new());
+    let missing_capabilities: Vec<String> = required
+        .iter()
+        .filter(|tool| !profile_has_tool(profile, tool))
+        .map(|tool| (*tool).to_string())
+        .collect();
+    let covered = missing_capabilities.is_empty();
+    let required_profile = smallest_covering_profile(skill.name, &required);
+    let available_units = covered_units_for_profile(profile);
+    let markdown = if covered {
+        skill.markdown.to_string()
+    } else {
+        uncovered_unit_message(
+            skill.name,
+            profile.unwrap_or("default"),
+            required_profile.as_deref().unwrap_or("default"),
+            &missing_capabilities,
+            &available_units,
+        )
+    };
+    GetSkillOutput {
+        name: skill.name.to_string(),
+        markdown,
+        covered,
+        required_profile,
+        available_units,
+        missing_capabilities,
+    }
+}
+
+pub(crate) fn resolve_reference_output_for_profile(
+    profile: Option<&str>,
+    reference: spindle_adapters::EmbeddedReference,
+) -> GetReferenceOutput {
+    let required = reference_required_tools(reference.name);
+    let missing_capabilities: Vec<String> = required
+        .iter()
+        .filter(|tool| !profile_has_tool(profile, tool))
+        .map(|tool| (*tool).to_string())
+        .collect();
+    let covered = missing_capabilities.is_empty();
+    let required_profile = smallest_covering_profile(reference.name, &required);
+    let available_units = covered_units_for_profile(profile);
+    let markdown = if covered {
+        reference.markdown.to_string()
+    } else {
+        uncovered_unit_message(
+            reference.name,
+            profile.unwrap_or("default"),
+            required_profile.as_deref().unwrap_or("default"),
+            &missing_capabilities,
+            &available_units,
+        )
+    };
+    GetReferenceOutput {
+        name: reference.name.to_string(),
+        markdown,
+        covered,
+        required_profile,
+        available_units,
+        missing_capabilities,
     }
 }
 

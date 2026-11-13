@@ -2,69 +2,69 @@
   "version": 1,
   "compatibility": {
     "default": {
-      "tools": 45,
-      "input_bytes": 62898,
-      "full_bytes": 132592
+      "tools": 46,
+      "input_bytes": 63414,
+      "full_bytes": 133598
     },
     "full": {
-      "tools": 176,
-      "input_bytes": 177331,
-      "full_bytes": 378996
+      "tools": 177,
+      "input_bytes": 177847,
+      "full_bytes": 380002
     },
     "new-book": {
-      "tools": 14,
-      "input_bytes": 20355,
-      "full_bytes": 26685
+      "tools": 15,
+      "input_bytes": 20871,
+      "full_bytes": 27691
     },
     "planning": {
-      "tools": 39,
-      "input_bytes": 36744,
-      "full_bytes": 80217
+      "tools": 40,
+      "input_bytes": 37260,
+      "full_bytes": 81223
     },
     "release": {
-      "tools": 63,
-      "input_bytes": 50152,
-      "full_bytes": 107681
+      "tools": 64,
+      "input_bytes": 50668,
+      "full_bytes": 108687
     },
     "research": {
-      "tools": 15,
-      "input_bytes": 7602,
-      "full_bytes": 20069
+      "tools": 16,
+      "input_bytes": 8118,
+      "full_bytes": 21075
     },
     "revision": {
-      "tools": 34,
-      "input_bytes": 26348,
-      "full_bytes": 75457
+      "tools": 35,
+      "input_bytes": 26864,
+      "full_bytes": 76463
     },
     "setup": {
-      "tools": 9,
-      "input_bytes": 4180,
-      "full_bytes": 9074
+      "tools": 10,
+      "input_bytes": 4696,
+      "full_bytes": 10080
     },
     "style": {
-      "tools": 41,
-      "input_bytes": 36668,
-      "full_bytes": 100022
+      "tools": 42,
+      "input_bytes": 37184,
+      "full_bytes": 101028
     },
     "workflow-authoring": {
-      "tools": 77,
-      "input_bytes": 96195,
-      "full_bytes": 207713
+      "tools": 78,
+      "input_bytes": 96711,
+      "full_bytes": 208719
     },
     "workflow-import": {
-      "tools": 20,
-      "input_bytes": 14536,
-      "full_bytes": 32977
+      "tools": 21,
+      "input_bytes": 15052,
+      "full_bytes": 33983
     },
     "workflow-write": {
-      "tools": 45,
-      "input_bytes": 62898,
-      "full_bytes": 132592
+      "tools": 46,
+      "input_bytes": 63414,
+      "full_bytes": 133598
     },
     "worldbuilding": {
-      "tools": 51,
-      "input_bytes": 54467,
-      "full_bytes": 102231
+      "tools": 52,
+      "input_bytes": 54983,
+      "full_bytes": 103237
     }
   },
   "canonical": {

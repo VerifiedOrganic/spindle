@@ -1295,3 +1295,10 @@ classification = "retained"
 owner = "revision-manager, scene-writer"
 review_by = "R"
 reason = "Current public API; declared by an owning skill or reference."
+
+[[tools]]
+name = "use_profile"
+classification = "retained"
+owner = "spindle"
+review_by = "R"
+reason = "Current public API; declared by an owning skill or reference."

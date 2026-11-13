@@ -457,6 +457,10 @@ pub(super) fn build_all_tools() -> Vec<CatalogTool> {
             "get_reference",
             "Return the full content of an embedded craft reference. Tool equivalent of reading bible://references/{name}.",
         ),
+        tool::<UseProfileInput, UseProfileOutput>(
+            "use_profile",
+            "Switch this MCP session to another generated tool profile without reconnecting, and return the new tool list summary. The server emits notifications/tools/list_changed; the switch is session-scoped and is not persisted.",
+        ),
         tool::<TestAgentInput, TestAgentOutput>(
             "test_agent",
             "Send a test prompt through a configured model agent",

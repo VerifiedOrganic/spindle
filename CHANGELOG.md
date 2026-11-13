@@ -5,10 +5,17 @@
 ### Added
 
 - A generated `full` startup profile composes every model-facing skill and
-  reference unit (176 tools), restoring one-server access to the complete
+  reference unit (177 tools), restoring one-server access to the complete
   skill-declared model surface without the removed `legacy-all` compatibility
   catalog. Operator-only commands remain CLI-only, and unset still starts
   `workflow-write`.
+- Runtime profile switching on one MCP server: `use_profile` validates a
+  generated profile name, changes the session's active profile, returns the new
+  tool list summary, and emits `notifications/tools/list_changed` (with the
+  `tools.listChanged` capability declared). Startup `SPINDLE_TOOL_PROFILE`
+  remains the initial profile; the switch is session-scoped and not persisted.
+  StdIO and HTTP sessions switch independently, and a secondary proxy cannot
+  expand beyond its primary's catalog.
 
 ### Fixed
 

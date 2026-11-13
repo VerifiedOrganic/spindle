@@ -1,6 +1,6 @@
 # Startup tool profiles
 
-Select a profile before starting Spindle, then reconnect the MCP client:
+Select an initial profile before starting Spindle, or switch the session at runtime with `use_profile`:
 
 ```sh
 SPINDLE_TOOL_PROFILE=research spindle-mcp
@@ -22,35 +22,55 @@ fail closed. Select a generated workflow or specialist profile with
 
 | Profile | Enabled work | Tools | Input bytes | Input tokens | Full bytes | Full tokens |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| workflow-write | Scene-writer core + craft/packet/research refs + setup | 45 | 62,808 | 15,702 | 132,502 | 33,126 |
-| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 77 | 95,250 | 23,813 | 206,768 | 51,692 |
-| workflow-import | Manuscript importer and source sync | 20 | 12,306 | 3,077 | 30,747 | 7,687 |
-| revision | Branch/revision/history workflow | 34 | 26,407 | 6,602 | 75,516 | 18,879 |
-| worldbuilding | Worldbuilder + character creator | 51 | 53,460 | 13,365 | 101,224 | 25,306 |
-| planning | Plot architect | 39 | 36,744 | 9,186 | 80,217 | 20,055 |
-| new-book | New-book entry: planning sessions, human gates and handoff | 14 | 20,204 | 5,051 | 26,534 | 6,634 |
-| research | Researcher | 15 | 7,602 | 1,901 | 20,069 | 5,018 |
-| style | Editor core + style reference | 41 | 36,401 | 9,101 | 99,755 | 24,939 |
-| release | Editor + bible librarian | 63 | 49,885 | 12,472 | 107,414 | 26,854 |
-| setup | New-book setup reference | 9 | 4,180 | 1,045 | 9,074 | 2,269 |
-| full | Every model-facing skill and reference unit | 176 | 174,005 | 43,502 | 375,670 | 93,918 |
+| workflow-write | Scene-writer core + craft/packet/research refs + setup | 46 | 63,414 | 15,854 | 133,598 | 33,400 |
+| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 78 | 96,711 | 24,178 | 208,719 | 52,180 |
+| workflow-import | Manuscript importer and source sync | 21 | 15,052 | 3,763 | 33,983 | 8,496 |
+| revision | Branch/revision/history workflow | 35 | 26,864 | 6,716 | 76,463 | 19,116 |
+| worldbuilding | Worldbuilder + character creator | 52 | 54,983 | 13,746 | 103,237 | 25,810 |
+| planning | Plot architect | 40 | 37,260 | 9,315 | 81,223 | 20,306 |
+| new-book | New-book entry: planning sessions, human gates and handoff | 15 | 20,871 | 5,218 | 27,691 | 6,923 |
+| research | Researcher | 16 | 8,118 | 2,030 | 21,075 | 5,269 |
+| style | Editor core + style reference | 42 | 37,184 | 9,296 | 101,028 | 25,257 |
+| release | Editor + bible librarian | 64 | 50,668 | 12,667 | 108,687 | 27,172 |
+| setup | New-book setup reference | 10 | 4,696 | 1,174 | 10,080 | 2,520 |
+| full | Every model-facing skill and reference unit | 177 | 177,847 | 44,462 | 380,002 | 95,001 |
 
 Token counts are the same stable proxy used by the profile probe:
 `ceil(bytes / 4)`, not a host tokenizer measurement.
+
+## One server, switchable profiles
+
+Start one server with any profile, then switch the session without reconnecting:
+
+```json
+{"profile": "full"}
+```
+
+`use_profile` validates the name against the generated catalog and returns
+`{profile, tool_count, tools}` for the new active profile. The server declares
+`tools.listChanged` and emits `notifications/tools/list_changed` after a
+successful switch, so clients that support the capability refresh `tools/list`.
+Out-of-profile calls remain denied under the new active profile. Unknown names
+return an error result with `structuredContent.error.code = "unknown_profile"`.
+
+The switch is session-scoped and in-memory. `SPINDLE_TOOL_PROFILE` remains the
+initial profile, other sessions are unaffected, and a restart returns to the
+startup profile. Use `full` when one session must reach every skill-declared
+workflow without reconnecting.
 
 ### When to use `full`
 
 `full` composes every model-facing skill and reference unit, so one MCP server
 exposes every tool those units declare: the union of every generated workflow and
 specialist profile plus the `continuity-editor` and `canon-steward` units that no
-smaller profile enables. Use it when an author or host must reach every workflow
-from a single connection and cannot switch servers or profiles. It is the
-largest catalog: 176 tools, 174,005 input bytes (about 43,502 proxy tokens) and
-375,670 full bytes (about 93,918 proxy tokens). Prefer the smallest profile that
+smaller profile enables. Use it when one session must expose every workflow at
+once, without switching profiles during the session. It is the
+largest catalog: 177 tools, 177,847 input bytes (about 44,462 proxy tokens) and
+380,002 full bytes (about 95,001 proxy tokens). Prefer the smallest profile that
 covers the current work; unset still starts `workflow-write`, and `full` is
 opt-in. Operator-only commands stay excluded exactly as in every model profile.
 
-Every generated profile includes the shared entry core (`spindle`, 6 entry tools).
+Every generated profile includes the shared entry core (`spindle`, 7 entry tools).
 Large context/analysis output schemas load optionally through versioned
 [response contracts](tool-response-contracts.md); actual results are unchanged.
 Their measured byte ceilings are explicit in `tools/profile-budgets.json`;
@@ -81,19 +101,21 @@ supported workflows until loader coverage messages ship.
 `tools/generated-profiles.json` is a checked compiler-output snapshot, not a
 second editable composition file. Regenerate it and embedded skill metadata with
 `SPINDLE_UPDATE_SKILL_SNAPSHOT=1 cargo test -p spindle-mcp metadata_matches_snapshot`.
-Review new profile `tools/list` snapshots and measured caps in the same PR.
-Existing five catalog snapshots stay unchanged; the direct unknown-router
-snapshot intentionally becomes empty because startup typos no longer fall back.
+Review every profile's `tools/list` snapshot and measured caps in the same PR.
+The direct unknown-router snapshot intentionally stays empty because startup
+typos never fall back.
 
 StdIO, HTTP and secondary proxies use the same profile gate. A secondary filters
 the primary's discovered catalog and denies out-of-profile calls before forwarding
-(the primary may further restrict availability). If a shared primary uses a
-narrower profile, reconnect to a primary with the needed capabilities; selecting a
-secondary profile cannot expand its primary. Tests exercise real HTTP sessions
-and a secondary over a full primary, including a denied mutation with no database
-change. The isolated live probe checks every profile, CLI metadata/help, and
-unknown-name rejection before data access. The inherited stalled-child test
-observes the real child/workspace from the parent, avoiding child-marker races.
+(the primary may further restrict availability). A secondary `use_profile` may
+narrow within the primary's discovered catalog, but a target that needs tools the
+primary does not expose returns `profile_not_available`; reconnecting to a
+broader primary is still the way to expand. Tests exercise real HTTP sessions,
+per-session profile isolation, and a secondary over a primary, including denied
+mutations with no database change. The isolated live probe checks every profile,
+CLI metadata/help, and unknown-name rejection before data access. The inherited
+stalled-child test observes the real child/workspace from the parent, avoiding
+child-marker races.
 
 ## Semantic continuity evaluation
 

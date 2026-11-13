@@ -44,11 +44,14 @@ impl SpindleMcpServer {
         service: SpindleService,
         serialization_state: Arc<ToolSerializationState>,
     ) -> Self {
+        let profile = resolved_startup_tool_profile();
+        let runtime_profile = Arc::new(std::sync::RwLock::new(profile.clone()));
         let tool_router = ToolRouter::with_tool_profile_and_serialization(
             service.clone(),
-            resolved_startup_tool_profile(),
+            profile,
             serialization_state,
-        );
+        )
+        .with_runtime_profile(runtime_profile);
         Self {
             tool_router,
             allow_profile_override: false,
@@ -64,12 +67,14 @@ impl SpindleMcpServer {
     #[cfg(test)]
     pub fn with_tool_profile(service: SpindleService, tool_profile: Option<String>) -> Self {
         let serialization_state = ToolSerializationState::for_service(&service);
+        let runtime_profile = Arc::new(std::sync::RwLock::new(tool_profile.clone()));
         Self {
             tool_router: ToolRouter::with_tool_profile_and_serialization(
                 service.clone(),
                 tool_profile,
                 serialization_state,
-            ),
+            )
+            .with_runtime_profile(runtime_profile),
             allow_profile_override: false,
             resource_router: ResourceRouter::new(service),
         }
@@ -81,11 +86,14 @@ impl SpindleMcpServer {
     /// upgrades a request to the full registry.
     pub(crate) fn with_internal_listener(service: SpindleService) -> Self {
         let serialization_state = ToolSerializationState::for_service(&service);
+        let profile = resolved_startup_tool_profile();
+        let runtime_profile = Arc::new(std::sync::RwLock::new(profile.clone()));
         let tool_router = ToolRouter::with_tool_profile_and_serialization(
             service.clone(),
-            resolved_startup_tool_profile(),
+            profile,
             serialization_state,
-        );
+        )
+        .with_runtime_profile(runtime_profile);
         Self {
             tool_router,
             allow_profile_override: true,
@@ -96,14 +104,13 @@ impl SpindleMcpServer {
     /// Build a router for one request. The base router owns the session
     /// context; profile views share it.
     fn router(&self, internal: bool, requested_profile: Option<&str>) -> ToolRouter {
-        let profile = if internal {
-            None
-        } else {
-            requested_profile
-                .map(str::to_owned)
-                .or_else(|| self.tool_router.tool_profile().map(str::to_owned))
-        };
-        self.tool_router.with_profile(profile)
+        if internal {
+            return self.tool_router.with_profile(None);
+        }
+        if let Some(profile) = requested_profile {
+            return self.tool_router.with_profile(Some(profile.to_owned()));
+        }
+        self.tool_router.with_active_profile()
     }
 
     /// Build a `StreamableHttpService` that spawns a new `SpindleMcpServer`
@@ -242,7 +249,21 @@ All hosts can use the `list_skills`, `get_skill`, and `get_reference` tools as e
             internal_token.as_deref(),
         );
         match AssertUnwindSafe(call).catch_unwind().await {
-            Ok(result) => result.map_err(error_data),
+            Ok(result) => match result {
+                Ok(value) => {
+                    if request.name == "use_profile"
+                        && value.is_error != Some(true)
+                        && let Err(error) = context.peer.notify_tool_list_changed().await
+                    {
+                        tracing::warn!(
+                            %error,
+                            "failed to send tools/list_changed after profile switch"
+                        );
+                    }
+                    Ok(value)
+                }
+                Err(error) => Err(error_data(error)),
+            },
             Err(panic) => {
                 let detail = panic_message(panic.as_ref());
                 tracing::error!(
@@ -494,6 +515,14 @@ mod tests {
 
         assert_eq!(info.server_info.name, "spindle");
         assert!(info.capabilities.tools.is_some());
+        assert_eq!(
+            info.capabilities
+                .tools
+                .as_ref()
+                .and_then(|tools| tools.list_changed),
+            Some(true),
+            "clients need tools.listChanged to refresh after use_profile"
+        );
         assert!(info.capabilities.resources.is_some());
         assert!(
             info.instructions

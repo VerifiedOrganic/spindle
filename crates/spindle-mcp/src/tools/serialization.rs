@@ -106,6 +106,7 @@ pub(super) fn tool_requires_session_serialization(name: &str) -> bool {
     !matches!(
         name,
         "list_projects"
+            | "use_profile"
             | "planning_begin"
             | "planning_advance"
             | "planning_status"

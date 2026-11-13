@@ -334,9 +334,12 @@ authoring can also load the offload reference. Dependencies cannot be marked
 capabilities. They return actionable workflow instructions only when the current
 profile covers the requested unit; otherwise return a concise profile-selection
 message and metadata. Merely reading a skill must not grant access or mutate the
-profile. Use startup profile selection and reconnect for v1, with no new dynamic
-`enable_tools` control plane. Skill delegation (entry points at specialist skills)
-is routing metadata, not a requirement to union every specialist into every profile.
+profile. Startup profile selection remains the default. The shipped session-scoped
+`use_profile` tool switches a generated profile at runtime, returns the new tool
+list, and emits `notifications/tools/list_changed`; it is not a per-tool
+`enable_tools` grant and cannot expand a secondary beyond its primary. Skill
+delegation (entry points at specialist skills) is routing metadata, not a
+requirement to union every specialist into every profile.
 
 Define profiles as task entry points:
 

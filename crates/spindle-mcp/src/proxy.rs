@@ -1,5 +1,7 @@
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -12,6 +14,7 @@ use rmcp::service::{Peer, RequestContext, RunningService, ServiceError};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ErrorData as McpError, RoleClient, RoleServer, ServerHandler, ServiceExt};
+use spindle_core::models::{UseProfileInput, UseProfileOutput};
 use tokio_util::sync::CancellationToken;
 
 use crate::read_addr_file;
@@ -21,7 +24,9 @@ use crate::read_addr_file;
 pub struct ProxyHandler {
     client: Peer<RoleClient>,
     failover_signal: CancellationToken,
-    tool_profile: Option<String>,
+    /// Session-scoped active profile. A secondary may narrow within the
+    /// primary's discovered catalog but can never expand beyond it.
+    tool_profile: Arc<RwLock<Option<String>>>,
 }
 
 impl ProxyHandler {
@@ -33,12 +38,140 @@ impl ProxyHandler {
         Self {
             client,
             failover_signal,
-            tool_profile,
+            tool_profile: Arc::new(RwLock::new(tool_profile)),
         }
     }
 
     fn map_proxy_error<T>(&self, result: Result<T, ServiceError>) -> Result<T, McpError> {
         map_proxy_service_error(&self.failover_signal, result)
+    }
+
+    fn current_profile(&self) -> Option<String> {
+        self.tool_profile
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Recompute skill/reference coverage against the secondary's local
+    /// profile. Forwarding these calls would describe the primary's profile,
+    /// which can differ after a local `use_profile` switch. Contract
+    /// references and unknown units stay on the primary path.
+    fn local_unit_result(&self, request: &CallToolRequestParams) -> Option<CallToolResult> {
+        let name = request.arguments.as_ref()?.get("name")?.as_str()?;
+        let profile = self.current_profile();
+        let value = match request.name.as_ref() {
+            "get_skill" => {
+                let skill = spindle_adapters::get_skill(name)?;
+                let output =
+                    crate::tools::resolve_skill_output_for_profile(profile.as_deref(), skill);
+                serde_json::to_value(output).ok()?
+            }
+            "get_reference" => {
+                if name.starts_with("contracts/") {
+                    return None;
+                }
+                let reference = spindle_adapters::get_reference(name)?;
+                let output = crate::tools::resolve_reference_output_for_profile(
+                    profile.as_deref(),
+                    reference,
+                );
+                serde_json::to_value(output).ok()?
+            }
+            _ => return None,
+        };
+        Some(CallToolResult::structured(value))
+    }
+
+    /// Switch the secondary's local profile. The target must be fully covered
+    /// by the primary's discovered catalog; otherwise the proxy returns a
+    /// structured `profile_not_available` error and keeps the old profile.
+    async fn switch_profile(
+        &self,
+        request: &CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(arguments) = request.arguments.clone() else {
+            return Ok(crate::tools::profile_switch_error(
+                "invalid_arguments",
+                "",
+                "use_profile requires a profile argument",
+            ));
+        };
+        let input: UseProfileInput =
+            match serde_json::from_value(serde_json::Value::Object(arguments)) {
+                Ok(input) => input,
+                Err(error) => {
+                    return Ok(crate::tools::profile_switch_error(
+                        "invalid_arguments",
+                        "",
+                        &format!("invalid use_profile arguments: {error}"),
+                    ));
+                }
+            };
+        if let Err(error) = crate::tools::validate_tool_profile(Some(&input.profile)) {
+            return Ok(crate::tools::profile_switch_error(
+                "unknown_profile",
+                &input.profile,
+                &format!("{error:#}"),
+            ));
+        }
+        let Some(target) = crate::tools::profile_allowed_tool_names(&input.profile) else {
+            return Ok(crate::tools::profile_switch_error(
+                "unknown_profile",
+                &input.profile,
+                &format!("unknown tool profile '{}'", input.profile),
+            ));
+        };
+        let primary = self.map_proxy_error(self.client.list_all_tools().await)?;
+        let available: BTreeSet<&str> = primary.iter().map(|tool| tool.name.as_ref()).collect();
+        let missing: Vec<&str> = target
+            .iter()
+            .copied()
+            .filter(|name| !available.contains(name))
+            .collect();
+        if !missing.is_empty() {
+            let preview = missing
+                .iter()
+                .take(10)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let remainder = missing.len().saturating_sub(10);
+            let suffix = if remainder > 0 {
+                format!(" and {remainder} more")
+            } else {
+                String::new()
+            };
+            let message = format!(
+                "profile '{}' is not available from this primary; a secondary proxy cannot expand beyond its primary (missing: {preview}{suffix})",
+                input.profile,
+            );
+            return Ok(crate::tools::profile_switch_error(
+                "profile_not_available",
+                &input.profile,
+                &message,
+            ));
+        }
+        *self
+            .tool_profile
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(input.profile.clone());
+        let tools: Vec<String> = target.iter().map(|name| (*name).to_owned()).collect();
+        let output = UseProfileOutput {
+            profile: input.profile,
+            tool_count: tools.len(),
+            tools,
+        };
+        if let Err(error) = context.peer.notify_tool_list_changed().await {
+            tracing::warn!(
+                %error,
+                "failed to send tools/list_changed after secondary profile switch"
+            );
+        }
+        let value = serde_json::to_value(output)
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        Ok(CallToolResult::structured(value))
     }
 }
 
@@ -64,13 +197,12 @@ impl ServerHandler for ProxyHandler {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
+        let profile = self.current_profile();
         let mut tools = self.map_proxy_error(self.client.list_all_tools().await)?;
-        tools.retain(|tool| {
-            crate::tools::profile_has_tool(self.tool_profile.as_deref(), &tool.name)
-        });
+        tools.retain(|tool| crate::tools::profile_has_tool(profile.as_deref(), &tool.name));
         let tools = tools
             .into_iter()
-            .map(|tool| crate::tools::project_tool_discovery(self.tool_profile.as_deref(), tool))
+            .map(|tool| crate::tools::project_tool_discovery(profile.as_deref(), tool))
             .collect();
         Ok(ListToolsResult::with_all_items(tools))
     }
@@ -82,9 +214,16 @@ impl ServerHandler for ProxyHandler {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        if !crate::tools::profile_has_tool(self.tool_profile.as_deref(), &request.name) {
+        if request.name == "use_profile" {
+            return self.switch_profile(&request, &context).await;
+        }
+        if let Some(result) = self.local_unit_result(&request) {
+            return Ok(result);
+        }
+        let profile = self.current_profile();
+        if !crate::tools::profile_has_tool(profile.as_deref(), &request.name) {
             return Ok(CallToolResult::error(vec![rmcp::model::Content::text(
                 format!("unknown tool: {}", request.name),
             )]));

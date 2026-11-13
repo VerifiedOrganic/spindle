@@ -178,7 +178,8 @@
       "update_promise_status",
       "update_relationship",
       "update_world_rule",
-      "update_writer_position"
+      "update_writer_position",
+      "use_profile"
     ],
     "units": [
       "authoring-supervisor",
@@ -221,7 +222,8 @@
       "planning_begin",
       "planning_decide",
       "planning_status",
-      "set_active_project"
+      "set_active_project",
+      "use_profile"
     ],
     "units": [
       "new-book",
@@ -270,7 +272,8 @@
       "update_character_arc",
       "update_conflict",
       "update_entity",
-      "update_promise_status"
+      "update_promise_status",
+      "use_profile"
     ],
     "units": [
       "plot-architect",
@@ -343,7 +346,8 @@
       "set_active_project",
       "set_arc_pacing_constraints",
       "switch_branch",
-      "update_promise_status"
+      "update_promise_status",
+      "use_profile"
     ],
     "units": [
       "bible-librarian",
@@ -369,7 +373,8 @@
       "research_query",
       "research_search",
       "research_usage_for_scene",
-      "set_active_project"
+      "set_active_project",
+      "use_profile"
     ],
     "units": [
       "researcher",
@@ -413,7 +418,8 @@
       "switch_branch",
       "undo_change",
       "update_entity",
-      "update_writer_position"
+      "update_writer_position",
+      "use_profile"
     ],
     "units": [
       "revision-manager",
@@ -432,7 +438,8 @@
       "get_writer_state",
       "list_projects",
       "list_skills",
-      "set_active_project"
+      "set_active_project",
+      "use_profile"
     ],
     "units": [
       "spindle",
@@ -483,7 +490,8 @@
       "run_dual_persona_review",
       "save_summary",
       "search_bible",
-      "set_active_project"
+      "set_active_project",
+      "use_profile"
     ],
     "units": [
       "editor",
@@ -571,7 +579,8 @@
       "update_promise_status",
       "update_relationship",
       "update_world_rule",
-      "update_writer_position"
+      "update_writer_position",
+      "use_profile"
     ],
     "units": [
       "authoring-supervisor",
@@ -608,7 +617,8 @@
       "push_chapter_to_file",
       "record_knowledge",
       "register_canonical_fact",
-      "set_active_project"
+      "set_active_project",
+      "use_profile"
     ],
     "units": [
       "manuscript-importer",
@@ -663,7 +673,8 @@
       "update_promise_status",
       "update_relationship",
       "update_world_rule",
-      "update_writer_position"
+      "update_writer_position",
+      "use_profile"
     ],
     "units": [
       "scene-writer",
@@ -728,7 +739,8 @@
       "update_entity",
       "update_location",
       "update_relationship",
-      "update_world_rule"
+      "update_world_rule",
+      "use_profile"
     ],
     "units": [
       "character-creator",
