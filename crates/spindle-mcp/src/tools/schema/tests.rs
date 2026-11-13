@@ -810,6 +810,36 @@ fn planning_action_schemas_publish_string_enums() {
     }
 }
 
+#[test]
+fn planning_action_parser_accepts_published_and_legacy_forms() {
+    for (tool_name, action, legacy) in [
+        (
+            "planning_advance",
+            "stage_host_artifact",
+            serde_json::json!({"stage_host_artifact": null}),
+        ),
+        (
+            "planning_decide",
+            "prepare_authoring_run",
+            serde_json::json!({"prepare_authoring_run": null}),
+        ),
+    ] {
+        let tool = all_tool_schemas()
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} is registered"));
+        for wire_action in [Value::String(action.to_string()), legacy] {
+            let input = serde_json::json!({
+                "session_id": "session-1",
+                "action": wire_action,
+            });
+            (tool.parse_input)(input).unwrap_or_else(|error| {
+                panic!("{tool_name} rejected a supported action form: {error}")
+            });
+        }
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn planning_tools_accept_inputs_built_from_the_published_schema() {
     let router = router().await;

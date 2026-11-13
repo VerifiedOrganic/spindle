@@ -2144,6 +2144,30 @@ mod tests {
     }
 
     #[test]
+    fn planning_action_published_and_legacy_forms_share_one_path() {
+        // The published schema form is a plain string. Serialization must
+        // produce that form, and deserializing it must reach the same variant
+        // as the legacy externally tagged unit-variant object.
+        let published = serde_json::to_value(PlanningAdvanceAction::StageHostArtifact).unwrap();
+        assert_eq!(published, json!("stage_host_artifact"));
+        assert_eq!(
+            advance_action(published).unwrap(),
+            advance_action(json!({"stage_host_artifact": null})).unwrap()
+        );
+        assert_eq!(
+            advance_action(json!("generate")).unwrap(),
+            advance_action(json!({"generate": null})).unwrap()
+        );
+
+        let published = serde_json::to_value(PlanningDecideAction::PrepareAuthoringRun).unwrap();
+        assert_eq!(published, json!("prepare_authoring_run"));
+        assert_eq!(
+            decide_action(published).unwrap(),
+            decide_action(json!({"prepare_authoring_run": null})).unwrap()
+        );
+    }
+
+    #[test]
     fn planning_actions_reject_other_shapes_with_actionable_errors() {
         let unknown = advance_action(json!("stage_artifact")).unwrap_err();
         assert!(
