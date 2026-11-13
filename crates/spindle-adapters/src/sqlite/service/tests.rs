@@ -3650,3 +3650,49 @@ async fn chapter_critic_dispatches_each_planned_window_and_aggregates() {
     assert_eq!(controller.scenes[0].ledger.scene_used().calls, 2);
     assert_eq!(server.join().unwrap(), 2, "one charged call per window");
 }
+
+#[test]
+fn respawn_declarations_require_positive_death_context() {
+    assert!(declares_respawn("respawns after every death"));
+    assert!(declares_respawn("resurrection"));
+    assert!(declares_respawn("the dead return from the dead"));
+    assert!(declares_respawn("death is not permanent"));
+    assert!(declares_respawn("mortality: immortal"));
+    assert!(!declares_respawn("no resurrection"));
+    assert!(!declares_respawn("resurrection is impossible"));
+    assert!(!declares_respawn("never returns from the dead"));
+    assert!(!declares_respawn("the dead stay dead"));
+
+    assert!(declares_respawn_in_rule_text("the dead are immortal"));
+    assert!(declares_respawn_in_rule_text("the dead are undying"));
+    assert!(!declares_respawn_in_rule_text("the immortal emperor"));
+    assert!(!declares_respawn_in_rule_text(
+        "the immortal emperor rules forever; no one can kill him"
+    ));
+    assert!(!declares_respawn_in_rule_text("no resurrection"));
+}
+
+#[test]
+fn pending_statuses_keep_only_living_replacements() {
+    let alive = vec!["alive".to_string(), "respawned".to_string()];
+    let dead = vec!["dead".to_string()];
+    let empty: Vec<String> = Vec::new();
+    assert_eq!(
+        pending_character_statuses([("character:ada", Some(&alive))]),
+        vec![PendingCharacterStatus {
+            character_id: "character:ada".to_string(),
+            status: alive.clone(),
+        }]
+    );
+    assert!(pending_character_statuses([("character:ada", Some(&dead))]).is_empty());
+    assert!(pending_character_statuses([("character:ada", Some(&empty))]).is_empty());
+    assert!(pending_character_statuses([("character:ada", None)]).is_empty());
+    assert!(
+        pending_character_statuses([
+            ("character:ada", Some(&alive)),
+            ("character:ada", Some(&dead)),
+        ])
+        .is_empty(),
+        "a later explicit dead status must win over an earlier living one"
+    );
+}

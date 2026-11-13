@@ -375,6 +375,23 @@ impl SqliteSpindleService {
         project_id: &str,
         scene: &crate::sqlite::records::Scene,
     ) -> Result<Vec<spindle_core::models::RetconFinding>> {
+        self.scan_retcon_findings_with_pending(project_id, scene, &[])
+            .await
+    }
+
+    /// Scan a scene for retcon findings, including character states declared
+    /// by the commit that is about to write this scene.
+    ///
+    /// `pending_states` carries only statuses that replace a prior status with
+    /// a living one. They are treated as the newest state at this scene's
+    /// position, so a respawn committed in the same write supersedes the death
+    /// that the scan would otherwise find in the persisted state history.
+    pub(super) async fn scan_retcon_findings_with_pending(
+        &self,
+        project_id: &str,
+        scene: &crate::sqlite::records::Scene,
+        pending_states: &[PendingCharacterStatus],
+    ) -> Result<Vec<spindle_core::models::RetconFinding>> {
         use spindle_core::models::RetconFinding;
         use std::collections::BTreeMap;
 
@@ -536,6 +553,11 @@ impl SqliteSpindleService {
             .repository
             .list_active_canonical_facts_by_project_and_branch(project_id, branch_id)
             .await?;
+        let world_rules = self
+            .repository
+            .list_world_rules_by_project_and_branch(project_id, branch_id)
+            .await?;
+        let world_declares_respawn = world_rules.iter().any(world_rule_declares_respawn);
         let mention_records: Vec<spindle_core::character_mentions::CharacterMentionRecord> =
             characters
                 .iter()
@@ -579,8 +601,20 @@ impl SqliteSpindleService {
                 character_id,
                 scene_position,
             );
-            let state_position = latest_state
-                .map(|state| (state.book_number, state.chapter_number, state.scene_order));
+            // A pending living status is the newest state at this scene's
+            // position: the commit is about to append it, so it supersedes any
+            // persisted dead state even before the row exists.
+            let pending_status = pending_states.iter().find(|pending| {
+                pending.character_id == *character_id
+                    && !pending.status.is_empty()
+                    && !pending.status.iter().any(|status| is_dead_status(status))
+            });
+            let state_position = if pending_status.is_some() {
+                Some(scene_position)
+            } else {
+                latest_state
+                    .map(|state| (state.book_number, state.chapter_number, state.scene_order))
+            };
             let current_scene_state = state_position == Some(scene_position);
             // A same-scene state proves cast presence, not that a canonical
             // death happened in this scene; only a same-scene dead status is
@@ -653,11 +687,15 @@ impl SqliteSpindleService {
                 }
                 (Some(status), None) => status,
                 (None, Some((fact_position, fact_status))) => {
-                    let later_living_state = latest_state.is_some_and(|state| {
-                        state_position.is_some_and(|position| position > fact_position)
-                            && !state.status.is_empty()
-                            && !state.status.iter().any(|status| is_dead_status(status))
-                    });
+                    let later_living_state = if pending_status.is_some() {
+                        scene_position >= fact_position
+                    } else {
+                        latest_state.is_some_and(|state| {
+                            state_position.is_some_and(|position| position >= fact_position)
+                                && !state.status.is_empty()
+                                && !state.status.iter().any(|status| is_dead_status(status))
+                        })
+                    };
                     if later_living_state {
                         continue;
                     }
@@ -665,6 +703,12 @@ impl SqliteSpindleService {
                 }
                 (None, None) => continue,
             };
+            // A declared respawn cycle is the author's explicit statement that
+            // this character returns after death. Without one, a recorded
+            // death followed by action still reports.
+            if world_declares_respawn || character_declares_respawn(character_id, &life_facts) {
+                continue;
+            }
             findings.push(RetconFinding::DeadCharacterAct {
                 character_id: character_id.clone(),
                 character_name: character.name.clone(),
