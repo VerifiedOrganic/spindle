@@ -21,6 +21,16 @@ const MAX_PARENT_ARTIFACT_CHARS: usize = 5_000;
 const MAX_PARENT_SECTION_CHARS: usize = 8_000;
 const MAX_AUX_SECTION_CHARS: usize = 2_000;
 
+/// Routed generation receives the full prompt and cannot call tools, so it
+/// keeps complete parent context. Host fallback output is copied by a person
+/// or client and is bounded; oversized parent payloads are referenced by id
+/// and hash there instead.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromptMode {
+    Routed,
+    Host,
+}
+
 fn truncate_chars(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
@@ -53,7 +63,95 @@ fn bounded_lines(lines: Vec<String>, max_chars: usize) -> String {
     }
 }
 
-/// A parent payload that is too large for the prompt is replaced by its
+/// Revision direction is ordered newest first and puts the decision note and
+/// author questions before descriptive fields. Truncating a serialized JSON
+/// map could drop the latest decision note, which is the instruction the
+/// replacement must follow.
+fn revision_feedback_section(
+    proposals_in_session: &[PlanningProposal],
+    level: PlanningLevel,
+    bounded: bool,
+) -> String {
+    let mut records: Vec<&PlanningProposal> = proposals_in_session
+        .iter()
+        .filter(|p| {
+            p.artifact.level == level
+                && matches!(
+                    p.status,
+                    PlanningProposalStatus::Rejected | PlanningProposalStatus::Superseded
+                )
+        })
+        .collect();
+    if records.is_empty() {
+        return "none".to_string();
+    }
+    records.sort_by_key(|p| std::cmp::Reverse(p.decided_at.unwrap_or(p.created_at)));
+    let field_cap = if bounded { 1_500 } else { usize::MAX };
+    let mut lines = Vec::with_capacity(records.len());
+    for p in records {
+        let mut line = format!("- {} ({:?}", p.id, p.status);
+        if let Some(by) = &p.decided_by {
+            line.push_str(&format!(" by {by}"));
+        }
+        line.push(')');
+        let note = p
+            .decision_note
+            .as_deref()
+            .map(|note| truncate_chars(note, field_cap))
+            .unwrap_or_else(|| "none".to_string());
+        line.push_str(&format!("; decision_note={note}"));
+        if !p.artifact.author_questions.is_empty() {
+            let questions = p
+                .artifact
+                .author_questions
+                .iter()
+                .map(|q| truncate_chars(&format!("{}: {}", q.id, q.question), field_cap))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            line.push_str(&format!("; author_questions={questions}"));
+        }
+        if !p.artifact.assumptions.is_empty() {
+            let assumptions = p
+                .artifact
+                .assumptions
+                .iter()
+                .map(|assumption| truncate_chars(assumption, field_cap))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            line.push_str(&format!("; assumptions={assumptions}"));
+        }
+        line.push_str(&format!(
+            "; rationale={}",
+            truncate_chars(&p.artifact.rationale, field_cap)
+        ));
+        lines.push(line);
+    }
+    let text = lines.join("\n");
+    if bounded {
+        truncate_chars(&text, MAX_AUX_SECTION_CHARS)
+    } else {
+        text
+    }
+}
+
+fn full_parent_artifact(proposal: &PlanningProposal) -> String {
+    let full = serde_json::json!({
+        "proposal_id": proposal.id,
+        "level": proposal.artifact.level,
+        "status": proposal.status,
+        "payload_hash": proposal.payload_hash,
+        "target_range": proposal.artifact.target_range,
+        "rationale": proposal.artifact.rationale,
+        "assumptions": proposal.artifact.assumptions,
+        "decision_note": proposal.decision_note,
+        "operations": proposal.artifact.operations,
+        "schedule": proposal.artifact.schedule,
+        "author_questions": proposal.artifact.author_questions,
+    });
+    serde_json::to_string(&full).unwrap_or_else(|_| proposal.artifact.rationale.clone())
+}
+
+/// A parent payload that is too large for the host prompt is replaced by its
 /// identity, hash and operation coordinates. The host can fetch the exact
 /// payload with `planning_status(proposal_ids=[...], include_payloads=true)`.
 fn compact_parent_artifact(proposal: &PlanningProposal) -> serde_json::Value {
@@ -110,21 +208,7 @@ fn compact_parent_artifact(proposal: &PlanningProposal) -> serde_json::Value {
 }
 
 fn parent_artifact_summary(proposal: &PlanningProposal) -> String {
-    let full = serde_json::json!({
-        "proposal_id": proposal.id,
-        "level": proposal.artifact.level,
-        "status": proposal.status,
-        "payload_hash": proposal.payload_hash,
-        "target_range": proposal.artifact.target_range,
-        "rationale": proposal.artifact.rationale,
-        "assumptions": proposal.artifact.assumptions,
-        "decision_note": proposal.decision_note,
-        "operations": proposal.artifact.operations,
-        "schedule": proposal.artifact.schedule,
-        "author_questions": proposal.artifact.author_questions,
-    });
-    let rendered =
-        serde_json::to_string(&full).unwrap_or_else(|_| proposal.artifact.rationale.clone());
+    let rendered = full_parent_artifact(proposal);
     if rendered.chars().count() <= MAX_PARENT_ARTIFACT_CHARS {
         rendered
     } else {
@@ -186,6 +270,7 @@ fn build_level_prompt(
     scope_digest: &[String],
     budget: &PlanningBudget,
     usage: &PlanningBudgetUsage,
+    mode: PromptMode,
 ) -> PromptBundle {
     let prompt_id = level.prompt_id();
     let (artifact_schema, schema_hash) = canonical_artifact_schema();
@@ -227,33 +312,7 @@ fn build_level_prompt(
     let mut available_refs = Vec::new();
     let mut unresolved_questions = Vec::new();
     let mut shared_schedules = Vec::new();
-    let mut revision_feedback = Vec::new();
     for p in proposals_in_session {
-        // A rejected or superseded proposal at this level is the author's
-        // revision direction for the replacement. It is not an active parent,
-        // so its decision note and questions must be carried explicitly or the
-        // model regenerates from the original intent unchanged.
-        if p.artifact.level == level
-            && matches!(
-                p.status,
-                PlanningProposalStatus::Rejected | PlanningProposalStatus::Superseded
-            )
-        {
-            let feedback = serde_json::json!({
-                "proposal_id": p.id,
-                "status": p.status,
-                "rationale": truncate_chars(&p.artifact.rationale, 500),
-                "decision_note": p.decision_note,
-                "decided_by": p.decided_by,
-                "author_questions": p.artifact.author_questions,
-                "assumptions": p.artifact.assumptions,
-            });
-            revision_feedback.push(format!(
-                "- {}: {}",
-                p.id,
-                serde_json::to_string(&feedback).unwrap_or_else(|_| p.artifact.rationale.clone())
-            ));
-        }
         if ancestor_ids.contains(&p.id) {
             for q in &p.artifact.author_questions {
                 unresolved_questions.push(format!("{}: {}", q.id, q.question));
@@ -274,21 +333,26 @@ fn build_level_prompt(
     }
 
     // Immediate parents carry the detail the next level needs most, so render
-    // them before transitive ancestors when the prompt budget is tight.
+    // them before transitive ancestors when the host prompt budget is tight.
     let mut ordered_parents: Vec<&PlanningProposal> = proposals_in_session
         .iter()
         .filter(|p| ancestor_ids.contains(&p.id))
         .collect();
     ordered_parents.sort_by_key(|p| !parents.contains_key(&p.id));
+    let bounded = mode == PromptMode::Host;
     let mut parent_summaries = Vec::new();
     let mut parent_section_chars = 0;
     for p in ordered_parents {
-        let rendered = parent_artifact_summary(p);
+        let rendered = if bounded {
+            parent_artifact_summary(p)
+        } else {
+            full_parent_artifact(p)
+        };
         let line = format!(
             "- proposal {} (level={:?}, status={:?}, hash={}): {}",
             p.id, p.artifact.level, p.status, p.payload_hash, rendered
         );
-        if parent_section_chars + line.chars().count() <= MAX_PARENT_SECTION_CHARS {
+        if !bounded || parent_section_chars + line.chars().count() <= MAX_PARENT_SECTION_CHARS {
             parent_section_chars += line.chars().count() + 1;
             parent_summaries.push(line);
         } else {
@@ -304,17 +368,47 @@ fn build_level_prompt(
     let remaining_out = budget.max_output_tokens.saturating_sub(usage.output_tokens);
     let remaining_total = budget.max_total_tokens.saturating_sub(usage.total_tokens);
     let allowed_ops = allowed_operations_for_level(level, session.scope.is_some());
-    let premise_section = truncate_chars(&session.premise, MAX_PREMISE_CHARS);
+    let premise_section = if bounded {
+        truncate_chars(&session.premise, MAX_PREMISE_CHARS)
+    } else {
+        session.premise.clone()
+    };
     let parent_section = if parent_summaries.is_empty() {
         "none".to_string()
-    } else {
+    } else if bounded {
         truncate_chars(&parent_summaries.join("\n"), MAX_PARENT_SECTION_CHARS)
+    } else {
+        parent_summaries.join("\n")
     };
-    let refs_section = bounded_lines(available_refs, MAX_AUX_SECTION_CHARS);
-    let scope_section = bounded_lines(scope_digest.to_vec(), MAX_SCOPE_DIGEST_CHARS);
-    let questions_section = bounded_lines(unresolved_questions, MAX_AUX_SECTION_CHARS);
-    let revision_section = bounded_lines(revision_feedback, MAX_AUX_SECTION_CHARS);
-    let schedule_section = bounded_lines(shared_schedules, MAX_AUX_SECTION_CHARS);
+    let refs_section = if bounded {
+        bounded_lines(available_refs, MAX_AUX_SECTION_CHARS)
+    } else if available_refs.is_empty() {
+        "none".to_string()
+    } else {
+        available_refs.join(", ")
+    };
+    let scope_section = if bounded {
+        bounded_lines(scope_digest.to_vec(), MAX_SCOPE_DIGEST_CHARS)
+    } else if scope_digest.is_empty() {
+        "none".to_string()
+    } else {
+        scope_digest.join("\n")
+    };
+    let questions_section = if bounded {
+        bounded_lines(unresolved_questions, MAX_AUX_SECTION_CHARS)
+    } else if unresolved_questions.is_empty() {
+        "none".to_string()
+    } else {
+        unresolved_questions.join("\n")
+    };
+    let revision_section = revision_feedback_section(proposals_in_session, level, bounded);
+    let schedule_section = if bounded {
+        bounded_lines(shared_schedules, MAX_AUX_SECTION_CHARS)
+    } else if shared_schedules.is_empty() {
+        "none".to_string()
+    } else {
+        shared_schedules.join("\n")
+    };
 
     let user_prompt = format!(
         "[SPINDLE_PROMPT_ID:{}]\n\
@@ -372,7 +466,7 @@ fn build_level_prompt(
         schema_hash,
         serde_json::to_string(&artifact_schema).unwrap_or_default()
     );
-    let user_prompt = if user_prompt.chars().count() > MAX_USER_PROMPT_CHARS {
+    let user_prompt = if bounded && user_prompt.chars().count() > MAX_USER_PROMPT_CHARS {
         let marker = "\n…[prompt truncated to the display budget; fetch parent payloads with planning_status(proposal_ids=[...], include_payloads=true)]";
         let keep = MAX_USER_PROMPT_CHARS.saturating_sub(marker.chars().count());
         let mut truncated: String = user_prompt.chars().take(keep).collect();
@@ -416,7 +510,6 @@ fn build_repair_prompt(
         truncated_prior,
         findings_json
     );
-    let user_prompt = truncate_chars(&user_prompt, 60_000);
     let prompt_hash = sha256_hex(format!("{system_prompt}\n---\n{user_prompt}").as_bytes());
     PromptBundle {
         prompt_id,
@@ -843,7 +936,7 @@ impl SqliteSpindleService {
             .repository
             .describe_planning_scope_digest(session.scope.clone())
             .await?;
-        let base_prompt = build_level_prompt(
+        let route_prompt = build_level_prompt(
             &session,
             level,
             &session.horizon,
@@ -852,6 +945,18 @@ impl SqliteSpindleService {
             &scope_digest,
             &session.budget,
             &session.usage,
+            PromptMode::Routed,
+        );
+        let host_prompt = build_level_prompt(
+            &session,
+            level,
+            &session.horizon,
+            &parents,
+            &existing_proposals,
+            &scope_digest,
+            &session.budget,
+            &session.usage,
+            PromptMode::Host,
         );
 
         if let Some(submission) = input.host_submission {
@@ -870,9 +975,9 @@ impl SqliteSpindleService {
                 .any(|f| f.severity == PlanningFindingSeverity::Blocking);
             let receipt = PlanningGenerationReceipt {
                 source: submission.source,
-                prompt_id: base_prompt.prompt_id,
-                prompt_hash: base_prompt.prompt_hash.clone(),
-                schema_hash: base_prompt.schema_hash.clone(),
+                prompt_id: host_prompt.prompt_id,
+                prompt_hash: host_prompt.prompt_hash.clone(),
+                schema_hash: host_prompt.schema_hash.clone(),
                 route_task: None,
                 resolved_route: None,
                 agent_name: None,
@@ -893,7 +998,7 @@ impl SqliteSpindleService {
                 let fallback_host_request = make_host_request(
                     &session,
                     level,
-                    &base_prompt,
+                    &host_prompt,
                     &parents,
                     None,
                     findings.clone(),
@@ -933,7 +1038,7 @@ impl SqliteSpindleService {
             let host_req = make_host_request(
                 &session,
                 level,
-                &base_prompt,
+                &host_prompt,
                 &parents,
                 None,
                 findings.clone(),
@@ -977,7 +1082,7 @@ impl SqliteSpindleService {
                 let host_req = make_host_request(
                     &session,
                     level,
-                    &base_prompt,
+                    &host_prompt,
                     &parents,
                     Some(problem.clone()),
                     Vec::new(),
@@ -1013,8 +1118,8 @@ impl SqliteSpindleService {
             }
         };
 
-        let est_input_1 =
-            estimate_tokens(&base_prompt.system_prompt) + estimate_tokens(&base_prompt.user_prompt);
+        let est_input_1 = estimate_tokens(&route_prompt.system_prompt)
+            + estimate_tokens(&route_prompt.user_prompt);
         let reservation_1 = match self
             .repository
             .reserve_planning_model_call(
@@ -1035,7 +1140,7 @@ impl SqliteSpindleService {
             Err((reason, live_usage)) => {
                 session.usage = live_usage;
                 let host_req =
-                    make_host_request(&session, level, &base_prompt, &parents, None, Vec::new());
+                    make_host_request(&session, level, &host_prompt, &parents, None, Vec::new());
                 let report = PlanningAdvanceReport {
                     attempt_id,
                     session_id: session.id.clone(),
@@ -1067,9 +1172,9 @@ impl SqliteSpindleService {
 
         let ctx_1 = RequestContext {
             project_id: session.scope.as_ref().map(|s| s.project_id.clone()),
-            prompt_template_id: Some(base_prompt.prompt_id.as_str().to_string()),
+            prompt_template_id: Some(route_prompt.prompt_id.as_str().to_string()),
             prompt_version: Some("v1".to_string()),
-            context_packet_hash: Some(base_prompt.prompt_hash.clone()),
+            context_packet_hash: Some(route_prompt.prompt_hash.clone()),
             ..Default::default()
         };
         let resp_1 = match self
@@ -1078,8 +1183,8 @@ impl SqliteSpindleService {
             .complete_planning(
                 &resolved_route,
                 session.rating_ceiling.clone(),
-                &base_prompt.system_prompt,
-                &base_prompt.user_prompt,
+                &route_prompt.system_prompt,
+                &route_prompt.user_prompt,
                 session.budget.max_output_tokens_per_call,
                 ctx_1,
             )
@@ -1103,7 +1208,7 @@ impl SqliteSpindleService {
                 let host_req = make_host_request(
                     &session,
                     level,
-                    &base_prompt,
+                    &host_prompt,
                     &parents,
                     Some(problem.clone()),
                     Vec::new(),
@@ -1141,7 +1246,7 @@ impl SqliteSpindleService {
             &session.budget,
             1,
             &resolved_route,
-            &base_prompt,
+            &route_prompt,
             reservation_1.estimated_input_tokens,
             reservation_1.reserved_output_tokens,
             &resp_1,
@@ -1171,9 +1276,9 @@ impl SqliteSpindleService {
         if !blocking_1 && let Some(stage_input) = candidate_1 {
             let receipt = PlanningGenerationReceipt {
                 source: PlanningOutputSource::Model,
-                prompt_id: base_prompt.prompt_id,
-                prompt_hash: base_prompt.prompt_hash.clone(),
-                schema_hash: base_prompt.schema_hash.clone(),
+                prompt_id: route_prompt.prompt_id,
+                prompt_hash: route_prompt.prompt_hash.clone(),
+                schema_hash: route_prompt.schema_hash.clone(),
                 route_task: Some(resolved_route.route_task),
                 resolved_route: Some(resolved_route.resolved_route),
                 agent_name: Some(resolved_route.agent_name),
@@ -1193,7 +1298,7 @@ impl SqliteSpindleService {
             let fallback_host_request = make_host_request(
                 &session,
                 level,
-                &base_prompt,
+                &host_prompt,
                 &parents,
                 None,
                 findings_1.clone(),
@@ -1244,9 +1349,9 @@ impl SqliteSpindleService {
         if unrepairable_state_change {
             let receipt = PlanningGenerationReceipt {
                 source: PlanningOutputSource::Model,
-                prompt_id: base_prompt.prompt_id,
-                prompt_hash: base_prompt.prompt_hash.clone(),
-                schema_hash: base_prompt.schema_hash.clone(),
+                prompt_id: route_prompt.prompt_id,
+                prompt_hash: route_prompt.prompt_hash.clone(),
+                schema_hash: route_prompt.schema_hash.clone(),
                 route_task: Some(resolved_route.route_task),
                 resolved_route: Some(resolved_route.resolved_route),
                 agent_name: Some(resolved_route.agent_name),
@@ -1260,7 +1365,7 @@ impl SqliteSpindleService {
             let host_req = make_host_request(
                 &session,
                 level,
-                &base_prompt,
+                &host_prompt,
                 &parents,
                 None,
                 findings_1.clone(),
@@ -1297,7 +1402,7 @@ impl SqliteSpindleService {
         }
 
         // Exactly ONE bounded repair attempt (`planning_repair_v1`).
-        let repair_prompt = build_repair_prompt(&base_prompt, &resp_1.output, &findings_1);
+        let repair_prompt = build_repair_prompt(&route_prompt, &resp_1.output, &findings_1);
         let est_input_2 = estimate_tokens(&repair_prompt.system_prompt)
             + estimate_tokens(&repair_prompt.user_prompt);
         let reservation_2 = match self
@@ -1321,9 +1426,9 @@ impl SqliteSpindleService {
                 session.usage = live_usage;
                 let receipt = PlanningGenerationReceipt {
                     source: PlanningOutputSource::Model,
-                    prompt_id: base_prompt.prompt_id,
-                    prompt_hash: base_prompt.prompt_hash.clone(),
-                    schema_hash: base_prompt.schema_hash.clone(),
+                    prompt_id: repair_prompt.prompt_id,
+                    prompt_hash: repair_prompt.prompt_hash.clone(),
+                    schema_hash: repair_prompt.schema_hash.clone(),
                     route_task: Some(resolved_route.route_task),
                     resolved_route: Some(resolved_route.resolved_route),
                     agent_name: Some(resolved_route.agent_name),
@@ -1337,7 +1442,7 @@ impl SqliteSpindleService {
                 let host_req = make_host_request(
                     &session,
                     level,
-                    &base_prompt,
+                    &host_prompt,
                     &parents,
                     None,
                     findings_1.clone(),
@@ -1424,7 +1529,7 @@ impl SqliteSpindleService {
                 let host_req = make_host_request(
                     &session,
                     level,
-                    &base_prompt,
+                    &host_prompt,
                     &parents,
                     Some(problem.clone()),
                     findings_1.clone(),
@@ -1515,7 +1620,7 @@ impl SqliteSpindleService {
             let fallback_host_request = make_host_request(
                 &session,
                 level,
-                &base_prompt,
+                &host_prompt,
                 &parents,
                 None,
                 findings_2.clone(),
@@ -1557,7 +1662,7 @@ impl SqliteSpindleService {
         let host_req = make_host_request(
             &session,
             level,
-            &base_prompt,
+            &host_prompt,
             &parents,
             None,
             findings_2.clone(),

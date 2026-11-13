@@ -7376,3 +7376,195 @@ async fn planning_advance_bounds_host_prompts_and_returns_compact_proposals_by_d
         "include_payloads must return staged operations"
     );
 }
+
+#[tokio::test]
+async fn bounded_revision_feedback_keeps_the_latest_author_direction() {
+    use serde_json::json;
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, root, first, character_id, location_id) = large_chapter_fixture(&svc).await;
+    svc.decide_planning(DecidePlanningInput {
+        session_id: s.id.clone(),
+        scope: s.scope.clone(),
+        decision: PlanningDecision::Reject,
+        expected_hashes: BTreeMap::from([(first.id.clone(), first.payload_hash.clone())]),
+        actor: "author:test".into(),
+        note: format!("OLDER_DIRECTION: {}", "o".repeat(1_200)),
+    })
+    .await
+    .unwrap();
+
+    let mut latest_note = String::new();
+    for (index, note) in [
+        (1, format!("MIDDLE_DIRECTION: {}", "m".repeat(1_200))),
+        (2, format!("LATEST_DIRECTION: {}", "l".repeat(1_200))),
+    ] {
+        let mut a = artifact(&s, "unused");
+        a.level = PlanningLevel::Chapter;
+        a.parents = BTreeMap::from([(root.id.clone(), root.payload_hash.clone())]);
+        a.operations = vec![planned(
+            "plan:revision",
+            "plan_chapter",
+            json!({
+                "book_number": 1,
+                "chapter_number": 1,
+                "synopsis": format!("Revision {index}"),
+                "scenes": [
+                    {
+                        "scene_order": 1,
+                        "summary": "A bounded revision scene.",
+                        "character_ids": [{"kind": "existing_record_id", "value": character_id}],
+                        "location_id": {"kind": "existing_record_id", "value": location_id},
+                        "content_rating": "general",
+                        "purpose": "Keep the revision direction visible."
+                    }
+                ]
+            }),
+        )];
+        a.rationale = "R".repeat(800);
+        a.assumptions = vec!["A".repeat(1_500), "B".repeat(1_500)];
+        a.author_questions = vec![PlanningAuthorQuestion {
+            id: format!("q{index}"),
+            question: "Q".repeat(1_500),
+            choices: Vec::new(),
+            recommended: None,
+        }];
+        let proposal = svc.stage_planning(a).await.unwrap();
+        svc.decide_planning(DecidePlanningInput {
+            session_id: s.id.clone(),
+            scope: s.scope.clone(),
+            decision: PlanningDecision::Reject,
+            expected_hashes: BTreeMap::from([(proposal.id.clone(), proposal.payload_hash.clone())]),
+            actor: "author:test".into(),
+            note: note.clone(),
+        })
+        .await
+        .unwrap();
+        latest_note = note;
+    }
+
+    let report = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: s.scope.clone(),
+            level: Some(PlanningLevel::Chapter),
+            parents: None,
+            target_range: None,
+            allow_review_backend: Some(false),
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: Some("revision-feedback".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.outcome, PlanningSessionOutcome::NeedsRoute);
+    let prompt = &report.host_request.expect("host fallback").user_prompt;
+    assert!(
+        prompt.contains(&latest_note),
+        "the latest decision note must survive prompt bounding"
+    );
+    assert!(
+        !prompt.contains("OLDER_DIRECTION"),
+        "the oldest revision may be dropped, but the latest must remain"
+    );
+}
+
+#[tokio::test]
+async fn routed_generation_keeps_full_parent_context_for_large_artifacts() {
+    use serde_json::json;
+
+    let (tmp, svc) = fresh_service_local().await;
+    let (s, _root, chapter, character_id, location_id) = large_chapter_fixture(&svc).await;
+    accept(&svc, &s, &chapter).await;
+    svc.configure_planning_session(ConfigurePlanningSessionInput {
+        session_id: s.id.clone(),
+        scope: s.scope.clone(),
+        horizon: Some(PlanningTargetRange {
+            book_number: 1,
+            chapter_start: 1,
+            chapter_end: 1,
+            scenes_per_chapter: 2,
+        }),
+        budget: None,
+        rating_ceiling: None,
+        allow_review_backend: None,
+    })
+    .await
+    .unwrap();
+
+    let scene_payload = json!({
+        "schema_version": 1,
+        "level": "scene",
+        "rationale": "A complete scene manifest for the routed generation test.",
+        "operations": [{
+            "output_ref": "plan:routed",
+            "operation": {
+                "operation": "plan_chapter",
+                "input": large_scene_manifest(&character_id, &location_id, 2)
+            }
+        }]
+    });
+    let (endpoint, captured, handle) = spawn_planning_http_server(vec![(
+        200,
+        json!({
+            "choices": [{"message": {"content": scene_payload.to_string()}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 500, "completion_tokens": 200}
+        }),
+    )]);
+    let config_path = tmp.path().join("routed-planning.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "outline-agent"
+name = "Outline Agent"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "outline-v1"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "outline"
+agent = "outline-agent"
+"#
+        ),
+    )
+    .unwrap();
+    svc.repository
+        .model_router()
+        .configure(Some(&config_path.display().to_string()))
+        .unwrap();
+
+    let report = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: s.scope.clone(),
+            level: Some(PlanningLevel::Scene),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: Some("routed-large-parent".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        report.outcome,
+        PlanningSessionOutcome::Staged,
+        "{:?}",
+        report.findings
+    );
+    assert_eq!(handle.join().unwrap(), 1);
+    let request = captured.lock().unwrap()[0].clone();
+    assert!(
+        request.contains("Scene 12 summary"),
+        "routed prompt must include the full parent scene summary"
+    );
+}
