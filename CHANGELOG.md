@@ -1,33 +1,39 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 — 2026-11-13
 
 ### Added
 
-- A generated `full` startup profile composes every model-facing skill and
-  reference unit (177 tools), restoring one-server access to the complete
-  skill-declared model surface without the removed `legacy-all` compatibility
-  catalog. Operator-only commands remain CLI-only, and unset still starts
-  `workflow-write`.
+- **One MCP server again.** The generated `full` startup profile composes every
+  model-facing skill and reference unit (177 tools), restoring one-server
+  access to the complete skill-declared model surface without the removed
+  `legacy-all` compatibility catalog. It is the largest catalog at about 43.5k
+  input tokens of schema, so prefer a smaller profile unless one session must
+  cover everything. Operator-only commands remain CLI-only, and unset still
+  starts `workflow-write`.
 - Runtime profile switching on one MCP server: `use_profile` validates a
   generated profile name, changes the session's active profile, returns the new
   tool list summary, and emits `notifications/tools/list_changed` (with the
-  `tools.listChanged` capability declared). Startup `SPINDLE_TOOL_PROFILE`
-  remains the initial profile; the switch is session-scoped and not persisted.
-  StdIO and HTTP sessions switch independently, and a secondary proxy cannot
-  expand beyond its primary's catalog.
+  `tools.listChanged` capability declared), so capable clients refresh
+  `tools/list`. Startup `SPINDLE_TOOL_PROFILE` remains the initial profile; the
+  switch is session-scoped and not persisted. StdIO and HTTP sessions switch
+  independently, and a secondary proxy cannot expand beyond its primary's
+  catalog.
 
 ### Fixed
 
-- `planning_advance` and `planning_decide` now publish their `action` fields as
-  JSON Schema string enums instead of bare objects, matching the server's
-  deserializer. Plain strings and the legacy `{"variant": null}` object form
-  are both accepted; other shapes return an actionable error. A catalog-wide
-  contract test now checks every tool's published input schema against its
-  typed deserializer and validates canonical schemars examples against the
-  published schema, so sanitizer transforms cannot silently erase a contract
-  again.
-
+- **Planning actions are plain strings again.** `planning_advance` and
+  `planning_decide` now publish their `action` fields as JSON Schema string
+  enums instead of bare objects, matching the server's deserializer. Plain
+  strings and the legacy `{"variant": null}` object form are both accepted;
+  other shapes return an actionable error. The same schema/server mismatch
+  affected tagged unions on `commit_scene` (`authorship`, `expected_phase`),
+  `commit_scene_changes` (`continuity_gate`), `commit_character_state`
+  (`anchor`), and `import_apply_review_decisions` (`correction`); those schemas
+  now publish their union structure. A catalog-wide contract test now checks
+  every tool's published input schema against its typed deserializer and
+  validates canonical schemars examples against the published schema, so
+  sanitizer transforms cannot silently erase a contract again.
 - Semantic continuity precision round (the lane still ships **off by
   default**): quantity contradictions require balance/stock evidence,
   dead-character state is selected only from strictly prior scenes,
@@ -35,9 +41,23 @@
   and secret disclosures require a distinctive value detail or a public
   audience. Deterministic dedupe now covers same-subject/same-scene findings
   beyond world rules. Shadow and on runs are measured from their own passes;
-  on-mode repairs are <=4.17% of calls, control warnings do not rise, warning
-  precision is 1.0 where warnings exist, and the judge-policy revision is
-  bumped so pre-change cached reports cannot bypass the new gates.
+  on-mode repairs are <=4.17% of calls on the precision sets, control warnings
+  do not rise, warning precision is 1.0 where warnings exist on those sets, and
+  the judge-policy revision is bumped so pre-change cached reports cannot bypass
+  the new gates.
+
+### Upgrade notes
+
+- No new database migrations since 0.4.0. Back up `.spindle/` before upgrading,
+  as usual.
+
+### Known limitations
+
+- The semantic continuity lane remains **off by default** and experimental.
+  The blind held-out-4 measurement adds +1 localized plant over deterministic
+  (30/55 vs 29/55 corrected; 31/56 vs 30/56 as frozen), with semantic warning
+  precision 0.50 (1 TP / 1 FP). Activation gates are not met, so
+  `semantic_mode=on` is not recommended.
 
 ## 0.4.0 — 2026-11-11
 
