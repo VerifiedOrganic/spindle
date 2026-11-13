@@ -6992,3 +6992,579 @@ async fn phase_d_tightening_pov_and_pacing_policy_after_staging_revalidates_and_
         "delegated acceptance must not bypass tightened POV/pacing constraints"
     );
 }
+
+fn large_scene_manifest(
+    character_id: &str,
+    location_id: &str,
+    scene_count: usize,
+) -> serde_json::Value {
+    let scenes: Vec<serde_json::Value> = (1..=scene_count)
+        .map(|order| {
+            serde_json::json!({
+                "scene_order": order,
+                "summary": format!("Scene {order} summary {}", "x".repeat(1_500)),
+                "beat_structure": ["hook", "turn"],
+                "character_ids": [{"kind": "existing_record_id", "value": character_id}],
+                "location_id": {"kind": "existing_record_id", "value": location_id},
+                "content_rating": "general",
+                "purpose": format!("Scene {order} purpose {}", "y".repeat(1_500)),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "book_number": 1,
+        "chapter_number": 1,
+        "pov_character_id": {"kind": "existing_record_id", "value": character_id},
+        "synopsis": "A bounded plan for the near horizon.",
+        "scenes": scenes,
+    })
+}
+
+async fn large_chapter_fixture(
+    svc: &SqliteSpindleService,
+) -> (
+    PlanningSession,
+    PlanningProposal,
+    PlanningProposal,
+    String,
+    String,
+) {
+    use serde_json::json;
+    let (s, root) = accepted_root(svc).await;
+    let scope = s.scope.clone().unwrap();
+    let character = svc
+        .create_character(
+            serde_json::from_value(json!({
+                "project_id": scope.project_id,
+                "name": "Lead",
+                "summary": "The point-of-view lead.",
+                "role": "protagonist",
+                "realm": null,
+                "initial_state": null
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let location = svc
+        .create_location(
+            serde_json::from_value(json!({
+                "project_id": scope.project_id,
+                "name": "Main Place",
+                "kind": "building",
+                "realm": null,
+                "summary": "The near-horizon setting."
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let plan = large_scene_manifest(&character.character_id, &location.location_id, 12);
+    let chapter = bundle(
+        svc,
+        &s,
+        PlanningLevel::Chapter,
+        &[&root],
+        vec![planned("plan:chapter", "plan_chapter", plan)],
+    )
+    .await;
+    (
+        s,
+        root,
+        chapter,
+        character.character_id,
+        location.location_id,
+    )
+}
+
+#[tokio::test]
+async fn planning_status_defaults_to_compact_proposals_and_fetches_payloads_by_id() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, root, chapter, character_id, location_id) = large_chapter_fixture(&svc).await;
+
+    // A superseded proposal is history, not active work. It must not inflate
+    // the default response, but it stays fetchable by id.
+    svc.decide_planning(DecidePlanningInput {
+        session_id: s.id.clone(),
+        scope: s.scope.clone(),
+        decision: PlanningDecision::Supersede,
+        expected_hashes: BTreeMap::from([(chapter.id.clone(), chapter.payload_hash.clone())]),
+        actor: "author:test".into(),
+        note: "Replace the staged chapter plan with a narrower version.".into(),
+    })
+    .await
+    .unwrap();
+    let replacement = bundle(
+        &svc,
+        &s,
+        PlanningLevel::Chapter,
+        &[&root],
+        vec![planned(
+            "plan:replacement",
+            "plan_chapter",
+            large_scene_manifest(&character_id, &location_id, 6),
+        )],
+    )
+    .await;
+
+    let compact = svc
+        .planning_status(PlanningStatusInput {
+            session_id: Some(s.id.clone()),
+            project_id: None,
+            branch_id: None,
+            target_range: None,
+            include_readiness: Some(false),
+            include_payloads: None,
+            proposal_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        compact.proposals.len(),
+        2,
+        "active root and replacement only"
+    );
+    assert!(
+        compact
+            .proposals
+            .iter()
+            .all(|proposal| proposal.proposal_id != chapter.id),
+        "superseded proposals are omitted by default"
+    );
+    assert!(
+        compact
+            .proposals
+            .iter()
+            .any(|proposal| proposal.proposal_id == replacement.id)
+    );
+    for proposal in &compact.proposals {
+        let value = serde_json::to_value(proposal).unwrap();
+        let object = value.as_object().unwrap();
+        for required in ["proposal_id", "level", "status", "payload_hash"] {
+            assert!(
+                object.contains_key(required),
+                "compact summary must carry {required}: {value}"
+            );
+        }
+        for omitted in [
+            "rationale",
+            "operations",
+            "schedule",
+            "assumptions",
+            "author_questions",
+            "findings",
+            "created_at",
+        ] {
+            assert!(
+                !object.contains_key(omitted),
+                "compact summary must omit {omitted}: {value}"
+            );
+        }
+        if proposal.status == PlanningProposalStatus::Staged {
+            assert_eq!(
+                object.len(),
+                4,
+                "a staged proposal summary carries identity only: {value}"
+            );
+        }
+    }
+    let compact_size = serde_json::to_string(&compact).unwrap().len();
+    assert!(
+        compact_size < 8_000,
+        "compact status must stay displayable, got {compact_size} bytes"
+    );
+
+    let full = svc
+        .planning_status(PlanningStatusInput {
+            session_id: Some(s.id.clone()),
+            project_id: None,
+            branch_id: None,
+            target_range: None,
+            include_readiness: Some(false),
+            include_payloads: Some(true),
+            proposal_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let full_size = serde_json::to_string(&full).unwrap().len();
+    assert!(
+        full_size > compact_size + 20_000,
+        "include_payloads must return the operations: compact={compact_size}, full={full_size}"
+    );
+    assert!(
+        full.proposals
+            .iter()
+            .find(|proposal| proposal.proposal_id == replacement.id)
+            .is_some_and(|proposal| !proposal.operations.is_empty())
+    );
+
+    let fetched = svc
+        .planning_status(PlanningStatusInput {
+            session_id: Some(s.id.clone()),
+            project_id: None,
+            branch_id: None,
+            target_range: None,
+            include_readiness: Some(false),
+            include_payloads: None,
+            proposal_ids: vec![chapter.id.clone()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(fetched.proposals.len(), 1);
+    assert_eq!(
+        fetched.proposals[0].status,
+        PlanningProposalStatus::Superseded
+    );
+    assert!(
+        !fetched.proposals[0].operations.is_empty(),
+        "proposal_ids must fetch a superseded payload by id"
+    );
+
+    let missing = svc
+        .planning_status(PlanningStatusInput {
+            session_id: Some(s.id.clone()),
+            project_id: None,
+            branch_id: None,
+            target_range: None,
+            include_readiness: Some(false),
+            include_payloads: None,
+            proposal_ids: vec!["planning_proposal:missing".into()],
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        missing
+            .to_string()
+            .contains("proposal_ids not in planning session")
+    );
+}
+
+#[tokio::test]
+async fn planning_advance_bounds_host_prompts_and_returns_compact_proposals_by_default() {
+    use serde_json::json;
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, _root, chapter, character_id, location_id) = large_chapter_fixture(&svc).await;
+    accept(&svc, &s, &chapter).await;
+
+    let generated = svc
+        .planning_advance_entry(PlanningAdvanceInput {
+            session_id: s.id.clone(),
+            project_id: None,
+            branch_id: None,
+            action: PlanningAdvanceAction::Generate,
+            level: Some(PlanningLevel::Scene),
+            parents: None,
+            target_range: None,
+            allow_review_backend: Some(false),
+            rating_ceiling: None,
+            budget: None,
+            host_artifact: None,
+            retry_key: Some("bounded-host-request".into()),
+            policy: None,
+            policy_actor: None,
+            policy_note: None,
+            mining_policy: None,
+            checkpoint_policy: None,
+            include_payloads: None,
+        })
+        .await
+        .unwrap();
+    let advance = generated.advance.expect("generation report");
+    assert_eq!(advance.outcome, PlanningSessionOutcome::NeedsRoute);
+    let host = advance.host_request.expect("host fallback request");
+    assert!(
+        host.user_prompt.chars().count() <= 52_000,
+        "host user_prompt must stay bounded, got {} chars",
+        host.user_prompt.chars().count()
+    );
+    assert!(
+        host.parent_proposals.contains_key(&chapter.id),
+        "bounded prompt must keep the parent identity and hash"
+    );
+
+    let compact = svc
+        .planning_advance_entry(PlanningAdvanceInput {
+            session_id: s.id.clone(),
+            project_id: None,
+            branch_id: None,
+            action: PlanningAdvanceAction::StageHostArtifact,
+            level: Some(PlanningLevel::Scene),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_artifact: Some(json!({
+                "schema_version": 1,
+                "level": "scene",
+                "rationale": "A staged scene replacement.",
+                "operations": [{
+                    "output_ref": "plan:staged",
+                    "operation": {
+                        "operation": "plan_chapter",
+                        "input": large_scene_manifest(&character_id, &location_id, 2)
+                    }
+                }]
+            })),
+            retry_key: Some("compact-staged-proposal".into()),
+            policy: None,
+            policy_actor: None,
+            policy_note: None,
+            mining_policy: None,
+            checkpoint_policy: None,
+            include_payloads: None,
+        })
+        .await
+        .unwrap();
+    let compact_proposal = compact
+        .advance
+        .as_ref()
+        .unwrap()
+        .proposal
+        .as_ref()
+        .expect("staged proposal")
+        .clone();
+    let compact_value = serde_json::to_value(&compact_proposal).unwrap();
+    assert!(
+        compact_value.get("operations").is_none(),
+        "default advance proposal is identity-only: {compact_value}"
+    );
+    let compact_size = serde_json::to_string(&compact).unwrap().len();
+    assert!(
+        compact_size < 12_000,
+        "compact advance response must stay displayable, got {compact_size} bytes"
+    );
+
+    let full = svc
+        .planning_advance_entry(PlanningAdvanceInput {
+            session_id: s.id.clone(),
+            project_id: None,
+            branch_id: None,
+            action: PlanningAdvanceAction::StageHostArtifact,
+            level: Some(PlanningLevel::Scene),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_artifact: Some(json!({
+                "schema_version": 1,
+                "level": "scene",
+                "rationale": "A second staged scene replacement.",
+                "operations": [{
+                    "output_ref": "plan:staged_full",
+                    "operation": {
+                        "operation": "plan_chapter",
+                        "input": large_scene_manifest(&character_id, &location_id, 2)
+                    }
+                }]
+            })),
+            retry_key: Some("full-staged-proposal".into()),
+            policy: None,
+            policy_actor: None,
+            policy_note: None,
+            mining_policy: None,
+            checkpoint_policy: None,
+            include_payloads: Some(true),
+        })
+        .await
+        .unwrap();
+    let full_proposal = full.advance.unwrap().proposal.expect("staged proposal");
+    assert!(
+        !full_proposal.operations.is_empty(),
+        "include_payloads must return staged operations"
+    );
+}
+
+#[tokio::test]
+async fn bounded_revision_feedback_keeps_the_latest_author_direction() {
+    use serde_json::json;
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, root, first, character_id, location_id) = large_chapter_fixture(&svc).await;
+    svc.decide_planning(DecidePlanningInput {
+        session_id: s.id.clone(),
+        scope: s.scope.clone(),
+        decision: PlanningDecision::Reject,
+        expected_hashes: BTreeMap::from([(first.id.clone(), first.payload_hash.clone())]),
+        actor: "author:test".into(),
+        note: format!("OLDER_DIRECTION: {}", "o".repeat(1_200)),
+    })
+    .await
+    .unwrap();
+
+    let mut latest_note = String::new();
+    for (index, note) in [
+        (1, format!("MIDDLE_DIRECTION: {}", "m".repeat(1_200))),
+        (2, format!("LATEST_DIRECTION: {}", "l".repeat(1_200))),
+    ] {
+        let mut a = artifact(&s, "unused");
+        a.level = PlanningLevel::Chapter;
+        a.parents = BTreeMap::from([(root.id.clone(), root.payload_hash.clone())]);
+        a.operations = vec![planned(
+            "plan:revision",
+            "plan_chapter",
+            json!({
+                "book_number": 1,
+                "chapter_number": 1,
+                "synopsis": format!("Revision {index}"),
+                "scenes": [
+                    {
+                        "scene_order": 1,
+                        "summary": "A bounded revision scene.",
+                        "character_ids": [{"kind": "existing_record_id", "value": character_id}],
+                        "location_id": {"kind": "existing_record_id", "value": location_id},
+                        "content_rating": "general",
+                        "purpose": "Keep the revision direction visible."
+                    }
+                ]
+            }),
+        )];
+        a.rationale = "R".repeat(800);
+        a.assumptions = vec!["A".repeat(1_500), "B".repeat(1_500)];
+        a.author_questions = vec![PlanningAuthorQuestion {
+            id: format!("q{index}"),
+            question: "Q".repeat(1_500),
+            choices: Vec::new(),
+            recommended: None,
+        }];
+        let proposal = svc.stage_planning(a).await.unwrap();
+        svc.decide_planning(DecidePlanningInput {
+            session_id: s.id.clone(),
+            scope: s.scope.clone(),
+            decision: PlanningDecision::Reject,
+            expected_hashes: BTreeMap::from([(proposal.id.clone(), proposal.payload_hash.clone())]),
+            actor: "author:test".into(),
+            note: note.clone(),
+        })
+        .await
+        .unwrap();
+        latest_note = note;
+    }
+
+    let report = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: s.scope.clone(),
+            level: Some(PlanningLevel::Chapter),
+            parents: None,
+            target_range: None,
+            allow_review_backend: Some(false),
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: Some("revision-feedback".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.outcome, PlanningSessionOutcome::NeedsRoute);
+    let prompt = &report.host_request.expect("host fallback").user_prompt;
+    assert!(
+        prompt.contains(&latest_note),
+        "the latest decision note must survive prompt bounding"
+    );
+    assert!(
+        !prompt.contains("OLDER_DIRECTION"),
+        "the oldest revision may be dropped, but the latest must remain"
+    );
+}
+
+#[tokio::test]
+async fn routed_generation_keeps_full_parent_context_for_large_artifacts() {
+    use serde_json::json;
+
+    let (tmp, svc) = fresh_service_local().await;
+    let (s, _root, chapter, character_id, location_id) = large_chapter_fixture(&svc).await;
+    accept(&svc, &s, &chapter).await;
+    svc.configure_planning_session(ConfigurePlanningSessionInput {
+        session_id: s.id.clone(),
+        scope: s.scope.clone(),
+        horizon: Some(PlanningTargetRange {
+            book_number: 1,
+            chapter_start: 1,
+            chapter_end: 1,
+            scenes_per_chapter: 2,
+        }),
+        budget: None,
+        rating_ceiling: None,
+        allow_review_backend: None,
+    })
+    .await
+    .unwrap();
+
+    let scene_payload = json!({
+        "schema_version": 1,
+        "level": "scene",
+        "rationale": "A complete scene manifest for the routed generation test.",
+        "operations": [{
+            "output_ref": "plan:routed",
+            "operation": {
+                "operation": "plan_chapter",
+                "input": large_scene_manifest(&character_id, &location_id, 2)
+            }
+        }]
+    });
+    let (endpoint, captured, handle) = spawn_planning_http_server(vec![(
+        200,
+        json!({
+            "choices": [{"message": {"content": scene_payload.to_string()}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 500, "completion_tokens": 200}
+        }),
+    )]);
+    let config_path = tmp.path().join("routed-planning.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[health_check]
+enabled = false
+
+[[agents]]
+id = "outline-agent"
+name = "Outline Agent"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "outline-v1"
+ratings = ["general", "teen", "mature"]
+
+[[routing]]
+route = "outline"
+agent = "outline-agent"
+"#
+        ),
+    )
+    .unwrap();
+    svc.repository
+        .model_router()
+        .configure(Some(&config_path.display().to_string()))
+        .unwrap();
+
+    let report = svc
+        .advance_planning(AdvancePlanningInput {
+            session_id: s.id.clone(),
+            scope: s.scope.clone(),
+            level: Some(PlanningLevel::Scene),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_submission: None,
+            retry_key: Some("routed-large-parent".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        report.outcome,
+        PlanningSessionOutcome::Staged,
+        "{:?}",
+        report.findings
+    );
+    assert_eq!(handle.join().unwrap(), 1);
+    let request = captured.lock().unwrap()[0].clone();
+    assert!(
+        request.contains("Scene 12 summary"),
+        "routed prompt must include the full parent scene summary"
+    );
+}

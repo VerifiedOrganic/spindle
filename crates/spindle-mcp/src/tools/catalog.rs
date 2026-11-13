@@ -703,11 +703,11 @@ pub(super) fn build_all_tools() -> Vec<CatalogTool> {
         ),
         tool::<PlanningAdvanceInput, PlanningAdvanceOutput>(
             "planning_advance",
-            "Generate one planning level, submit a host-authored artifact when no route is available, retry a rejected attempt, recompute readiness, or update the session gate policy. Returns stage status, findings, usage and the next action.",
+            "Generate one planning level, submit a host-authored artifact when no route is available, retry a rejected attempt, recompute readiness, or update the session gate policy. Returns stage status, findings, usage and the next action. Proposals are identity-only by default; pass include_payloads=true to return their operations. Host prompts are bounded and large parent payloads are referenced by proposal id and hash.",
         ),
         tool::<PlanningStatusInput, PlanningStatusOutput>(
             "planning_status",
-            "Read compact planning status: active sessions, staged proposals, gate, findings, readiness and the real authoring prepare report. Omit session_id to reconnect to existing planning work.",
+            "Read compact planning status: active sessions, staged proposals, gate, findings, readiness and the real authoring prepare report. Omit session_id to reconnect to existing planning work. By default each proposal returns only proposal_id, level, status and payload_hash; pass include_payloads=true or name proposal_ids to fetch operations. Superseded and rejected proposals are omitted unless named.",
         ),
         tool::<PlanningDecideInput, PlanningDecideOutput>(
             "planning_decide",
