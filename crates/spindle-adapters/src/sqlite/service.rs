@@ -2596,19 +2596,11 @@ fn declares_respawn(text: &str) -> bool {
     declares_respawn_with(text, true)
 }
 
-/// Free-text rule names and descriptions only treat `immortal`/`undying` as a
-/// respawn declaration when the same phrase is about death. This keeps a rule
-/// about an unrelated immortal ruler from exempting every character.
-fn declares_respawn_in_rule_text(text: &str) -> bool {
-    if declares_respawn_with(text, false) {
-        return true;
-    }
-    let lower = text.to_ascii_lowercase();
-    let tokens: Vec<&str> = lower
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .collect();
-    let death_word = |token: &&str| {
+/// True when a death word appears within `radius` tokens of `index`.
+fn has_death_word_near(tokens: &[&str], index: usize, radius: usize) -> bool {
+    let start = index.saturating_sub(radius);
+    let end = (index + radius + 1).min(tokens.len());
+    tokens[start..end].iter().any(|token| {
         matches!(
             *token,
             "dead"
@@ -2622,7 +2614,21 @@ fn declares_respawn_in_rule_text(text: &str) -> bool {
                 | "killed"
                 | "slain"
         )
-    };
+    })
+}
+
+/// Free-text rule names and descriptions only treat `immortal`/`undying` as a
+/// respawn declaration when the same phrase is about death. This keeps a rule
+/// about an unrelated immortal ruler from exempting every character.
+fn declares_respawn_in_rule_text(text: &str) -> bool {
+    if declares_respawn_with(text, false) {
+        return true;
+    }
+    let lower = text.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
     tokens.iter().enumerate().any(|(index, token)| {
         if !(token.starts_with("immortal") || *token == "undying") {
             return false;
@@ -2630,9 +2636,7 @@ fn declares_respawn_in_rule_text(text: &str) -> bool {
         if respawn_marker_is_negated(&tokens, index) {
             return false;
         }
-        let start = index.saturating_sub(4);
-        let end = (index + 5).min(tokens.len());
-        tokens[start..end].iter().any(death_word)
+        has_death_word_near(&tokens, index, 4)
     })
 }
 
@@ -2656,8 +2660,10 @@ fn declares_respawn_with(text: &str, allow_immortality: bool) -> bool {
                 && (tokens_match_at(&tokens, index + 1, &["stay", "dead"])
                     || tokens_match_at(&tokens, index + 1, &["stays", "dead"])
                     || tokens_match_at(&tokens, index + 1, &["remain", "dead"])
-                    || tokens_match_at(&tokens, index + 1, &["remains", "dead"])
-                    || tokens_match_at(&tokens, index + 1, &["permanent"])
+                    || tokens_match_at(&tokens, index + 1, &["remains", "dead"])))
+            || (matches!(*token, "not" | "never")
+                && has_death_word_near(&tokens, index, 3)
+                && (tokens_match_at(&tokens, index + 1, &["permanent"])
                     || tokens_match_at(&tokens, index + 1, &["permanently"])
                     || tokens_match_at(&tokens, index + 1, &["final"])
                     || tokens_match_at(&tokens, index + 1, &["the", "end"])));
