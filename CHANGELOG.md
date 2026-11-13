@@ -59,6 +59,16 @@
   rule that forbids resurrection does not. A death followed by action with no
   respawn recorded still reports, as does a same-commit status that keeps the
   dead marker.
+- **Deep consistency checks no longer lose their result to a client timeout.**
+  `check_consistency` with `deep_check: true` now starts a detached job and
+  returns `status: "in_progress"` with a `job_id`, the deep checks finished so
+  far, and the findings banked so far. Calling again with the same project,
+  scope, check selection, and unchanged audit inputs joins the job or collects its
+  finished result; fast checks stay synchronous. When the client supplies a
+  progress token, the server emits `notifications/progress` after each deep
+  check. Jobs are in-memory, so a server restart drops the job and the next call
+  starts fresh while reusing per-scene deep-tier cache rows. Checkpoint audit
+  recording rejects an in-progress payload instead of blessing partial coverage.
 - Research search now splits multi-word queries into terms and matches them
   across source titles, note text, claim text, and tags, ranking results by the
   number of matching terms. Tag matching normalizes case, hyphens,

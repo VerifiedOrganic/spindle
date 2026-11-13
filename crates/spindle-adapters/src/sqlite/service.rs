@@ -267,6 +267,26 @@ const REVIEW_JOB_RETENTION: Duration = if cfg!(test) {
     Duration::from_secs(300)
 };
 
+/// How long a deep `check_consistency` call waits on a detached job before
+/// answering `status: "in_progress"`. Like the review join wait, this is well
+/// under a typical MCP request timeout: the point is to hand the caller a
+/// usable partial result while the job keeps running.
+const CONSISTENCY_JOB_JOIN_WAIT: Duration = if cfg!(test) {
+    // Unit tests that do not exercise the in-progress path still need the job
+    // to finish so their assertions see a complete audit.
+    Duration::from_secs(30)
+} else {
+    Duration::from_secs(25)
+};
+
+/// How long a finished deep-check result stays collectable. A retry after a
+/// client timeout should get the result, not start the whole audit again.
+const CONSISTENCY_JOB_RETENTION: Duration = if cfg!(test) {
+    Duration::from_secs(60)
+} else {
+    Duration::from_secs(600)
+};
+
 /// Deep-tier model calls in flight at once. The per-scene calls are independent,
 /// so fanning them out is what lets a chapter range finish; the cap keeps a wide
 /// range from opening one connection per scene against the review provider.
@@ -298,6 +318,26 @@ pub struct SqliteSpindleService {
     /// retry arriving on a different service clone joins the SAME job instead
     /// of launching a duplicate run against the model.
     review_jobs: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, ReviewJob>>>,
+    /// Detached deep-consistency jobs, keyed by the request scope plus a
+    /// fingerprint of the scoped prose and audit inputs. Shared across clones so a retry
+    /// joins the same audit. In-memory only: a server restart drops the job
+    /// and the next call starts fresh (per-scene deep-tier cache rows survive).
+    consistency_jobs: std::sync::Arc<
+        std::sync::Mutex<std::collections::BTreeMap<String, consistency_jobs::ConsistencyJob>>,
+    >,
+    /// Overridable join wait so tests can exercise the in-progress path
+    /// without waiting on a real model call.
+    consistency_job_join_wait: Duration,
+    /// How long a finished job stays collectable. Overridable so tests can
+    /// exercise the reaper without sleeping for the production window.
+    consistency_job_retention: Duration,
+    /// Test-only gate held by a spawned deep-check job before it starts. Lets
+    /// a test observe the `in_progress` response and a join deterministically.
+    #[cfg(any(test, feature = "test-support"))]
+    consistency_job_gate: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+    /// Test-only failure injection for the next detached deep-check job.
+    #[cfg(any(test, feature = "test-support"))]
+    consistency_job_fail_next: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Test-only failure injection for post-commit derived-work tests.
     #[cfg(test)]
     batch_index_refresh_failure: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -467,6 +507,8 @@ mod canon_mining;
 mod canon_policy;
 mod canon_ratification;
 mod consistency;
+mod consistency_jobs;
+pub use consistency_jobs::{ConsistencyProgress, ConsistencyProgressSink};
 mod context;
 mod drafting;
 mod editorial;
@@ -513,11 +555,53 @@ impl SqliteSpindleService {
             review_jobs: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::BTreeMap::new(),
             )),
+            consistency_jobs: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            )),
+            consistency_job_join_wait: CONSISTENCY_JOB_JOIN_WAIT,
+            consistency_job_retention: CONSISTENCY_JOB_RETENTION,
+            #[cfg(any(test, feature = "test-support"))]
+            consistency_job_gate: None,
+            #[cfg(any(test, feature = "test-support"))]
+            consistency_job_fail_next: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
             #[cfg(test)]
             batch_index_refresh_failure: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
         }
+    }
+
+    /// Test-only: shorten the join wait so the `in_progress` response is
+    /// observable without a slow model.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_consistency_job_join_wait(&mut self, wait: Duration) {
+        self.consistency_job_join_wait = wait;
+    }
+
+    /// Test-only: shorten the completed-result retention window so a reaper
+    /// can be exercised without sleeping for ten minutes.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_consistency_job_retention(&mut self, retention: Duration) {
+        self.consistency_job_retention = retention;
+    }
+
+    /// Test-only: hold every new deep-check job at its start until the test
+    /// adds a permit. This makes start/join/collect deterministic.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_consistency_job_gate(
+        &mut self,
+        gate: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+    ) {
+        self.consistency_job_gate = gate;
+    }
+
+    /// Test-only: make the next detached deep-check job fail before it runs.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_next_consistency_job(&self) {
+        self.consistency_job_fail_next
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Test-only hook: make the next post-commit batch index refresh fail so

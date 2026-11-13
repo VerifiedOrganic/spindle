@@ -387,7 +387,7 @@ pub(super) fn build_all_tools() -> Vec<CatalogTool> {
         ),
         tool::<CheckConsistencyInput, CheckConsistencyOutput>(
             "check_consistency",
-            "Run a structured consistency audit (includes scene_divergence and canonical_fact_consistency checks)",
+            "Run a structured consistency audit (includes scene_divergence and canonical_fact_consistency checks). Fast checks run inline. A deep check starts a detached job and returns status in_progress with a job_id and the deep checks finished so far; call again with the same project and scope to join or collect it. Jobs are in-memory: a server restart drops the job and the next call starts a fresh one, while per-scene deep-tier cache rows are reused.",
         ),
         tool::<PrepareSemanticContinuityInput, PrepareSemanticContinuityOutput>(
             "prepare_semantic_continuity",
