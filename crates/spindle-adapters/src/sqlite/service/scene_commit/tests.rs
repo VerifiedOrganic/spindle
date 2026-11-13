@@ -885,3 +885,58 @@ async fn commit_scene_applies_quantity_promises_and_timeline_atomically() {
     assert_eq!(output.applied.total_applied, 4);
     assert_eq!(output.version_number, 1);
 }
+
+#[tokio::test]
+async fn same_commit_respawn_state_supersedes_prior_death() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let project = project(&svc, "respawn-commit").await;
+    let character_id = character(&svc, &project.project_id, "Ada Ward").await;
+
+    let mut death = base_commit(
+        &project.project_id,
+        "Ada Ward closed the atlas and went still.",
+    );
+    death.scene_order = Some(1);
+    death.continuity.character_states = vec![CommitSceneCharacterStateEntry {
+        character_id: character_id.clone(),
+        changes: CommitSceneCharacterStatePatch {
+            status: Some(vec!["dead at the crossing: killed by a rival".into()]),
+            ..Default::default()
+        },
+    }];
+    svc.commit_scene(death).await.unwrap();
+    svc.create_chapter(spindle_core::models::CreateChapterInput {
+        project_id: project.project_id.clone(),
+        book_id: None,
+        book_number: Some(1),
+        chapter_number: Some(2),
+        title: None,
+    })
+    .await
+    .unwrap();
+
+    let mut respawn = base_commit(
+        &project.project_id,
+        "Ada Ward woke somewhere new and crossed the yard.",
+    );
+    respawn.book_number = Some(1);
+    respawn.chapter_number = Some(2);
+    respawn.scene_order = Some(1);
+    respawn.continuity.character_states = vec![CommitSceneCharacterStateEntry {
+        character_id: character_id.clone(),
+        changes: CommitSceneCharacterStatePatch {
+            status: Some(vec!["alive".into(), "respawned".into()]),
+            ..Default::default()
+        },
+    }];
+    let output = svc.commit_scene(respawn).await.unwrap();
+    assert_eq!(output.blocking_count, 0, "{:?}", output.issues);
+    assert!(
+        !output
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("Ada Ward")),
+        "the respawn state committed with the scene must supersede the prior death: {:?}",
+        output.issues
+    );
+}

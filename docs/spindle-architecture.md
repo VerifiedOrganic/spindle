@@ -444,6 +444,17 @@ family-specific antonyms, first-person subjects for every family and
 conservative negated forms ("not tall", "no scar"), while keeping the subject +
 head + antonym precision gate.
 
+Dead-character detection treats a newer living `character_state` as a
+respawn/resurrection that supersedes an earlier death. The newest state is
+selected at the scene's position, so a scene's own state clears the flag from
+that scene onward, and a state declared by the same `commit_scene` /
+`commit_scene_changes` call is applied to the write-time scan before it is
+persisted. A per-character canonical `mortality` setting (for example
+`respawns`) or a world rule that declares a return-from-death mechanism exempts
+that character; negated declarations such as "no resurrection" do not. A death
+followed by action with no respawn recorded, and a same-commit state that keeps
+the dead marker, still report.
+
 The deterministic lanes are wired into `check_consistency`'s
 `canonical_fact_prose_drift`, `knowledge_timing` and `secret_leak` checks and
 into the shared retcon scanner used by verify/commit. World-rule scanning

@@ -151,7 +151,15 @@ impl SqliteSpindleService {
                             evidence: None,
                         })
                         .collect();
-            let retcons = self.scan_retcon_findings(&project_id, &scene).await?;
+            let pending_states = pending_character_statuses(
+                input
+                    .character_states
+                    .iter()
+                    .map(|entry| (entry.character_id.as_str(), entry.changes.status.as_ref())),
+            );
+            let retcons = self
+                .scan_retcon_findings_with_pending(&project_id, &scene, &pending_states)
+                .await?;
             findings.extend(retcons.iter().map(retcon_finding_to_consistency_issue));
             (findings, retcons)
         };

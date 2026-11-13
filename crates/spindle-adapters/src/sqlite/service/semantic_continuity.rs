@@ -137,6 +137,7 @@ impl SqliteSpindleService {
             .repository
             .list_world_rules_by_project_and_branch(project_id, branch_id)
             .await?;
+        let world_declares_respawn = rules.iter().any(world_rule_declares_respawn);
         let quantities = self
             .repository
             .list_quantity_states_by_project_and_branch(project_id, branch_id)
@@ -264,16 +265,24 @@ impl SqliteSpindleService {
             }
 
             for character_id in &mentioned {
+                if world_declares_respawn || character_declares_respawn(character_id, &facts) {
+                    continue;
+                }
+                // Include same-scene states in the selection so an explicit
+                // respawn status supersedes an earlier death. A state at the
+                // scene's own position is ambiguous for the opposite reason:
+                // the character may die in this scene, so it never seeds a
+                // "was already dead" candidate.
                 let Some(state) = crate::sqlite::repository::select_latest_character_state(
-                    states.iter().filter(|state| {
-                        (state.book_number, state.chapter_number, state.scene_order)
-                            < scene_position
-                    }),
+                    states.iter(),
                     character_id,
                     scene_position,
                 ) else {
                     continue;
                 };
+                if (state.book_number, state.chapter_number, state.scene_order) == scene_position {
+                    continue;
+                }
                 let dead = state.status.iter().find(|status| is_dead_status(status));
                 let Some(dead) = dead else {
                     continue;

@@ -2471,6 +2471,261 @@ fn is_dead_status(status: &str) -> bool {
     false
 }
 
+/// A character status declared by a scene commit but not yet persisted.
+///
+/// The write-time retcon scan runs before a commit's character states are
+/// inserted. Carrying the prospective status into the scan lets a same-commit
+/// respawn supersede an earlier death without weakening the check for commits
+/// that leave the dead status in place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingCharacterStatus {
+    pub(crate) character_id: String,
+    pub(crate) status: Vec<String>,
+}
+
+/// Collapse same-character status patches in commit order.
+///
+/// A later patch with an explicit status replaces the earlier one, matching
+/// `apply_continuity_in_tx`. Patches that leave status untouched inherit the
+/// last explicit status. Only a non-empty status with no dead marker is
+/// returned: it is the only shape that supersedes a recorded death. An empty
+/// status vector or one that still contains a dead marker leaves the prior
+/// death in force.
+pub(crate) fn pending_character_statuses<'a>(
+    entries: impl IntoIterator<Item = (&'a str, Option<&'a Vec<String>>)>,
+) -> Vec<PendingCharacterStatus> {
+    use std::collections::BTreeMap;
+
+    let mut order: Vec<&str> = Vec::new();
+    let mut statuses: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (character_id, status) in entries {
+        if !statuses.contains_key(character_id) {
+            order.push(character_id);
+        }
+        match status {
+            Some(status) => {
+                statuses.insert(character_id, status.clone());
+            }
+            None => {
+                statuses.entry(character_id).or_default();
+            }
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|character_id| {
+            let status = statuses.get(character_id)?;
+            if status.is_empty() || status.iter().any(|status| is_dead_status(status)) {
+                return None;
+            }
+            Some(PendingCharacterStatus {
+                character_id: character_id.to_string(),
+                status: status.clone(),
+            })
+        })
+        .collect()
+}
+
+/// True when one lower-cased token names a return-from-death mechanism.
+///
+/// `immortal`/`undying` only count when the surrounding text is about death or
+/// when the caller is reading a typed per-character setting; otherwise a world
+/// rule that merely mentions an immortal emperor would exempt every character.
+fn is_respawn_marker_token(token: &str, allow_immortality: bool) -> bool {
+    let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    token.starts_with("respawn")
+        || token.starts_with("resurrect")
+        || token.starts_with("reincarnat")
+        || token.starts_with("reviv")
+        || token == "rebirth"
+        || (allow_immortality && (token.starts_with("immortal") || token == "undying"))
+}
+
+fn tokens_match_at(tokens: &[&str], index: usize, expected: &[&str]) -> bool {
+    tokens
+        .get(index..index + expected.len())
+        .is_some_and(|window| window == expected)
+}
+
+/// Reject negated mentions such as "no resurrection", "never returns from the
+/// dead", or "resurrection is impossible". A rule that merely forbids the
+/// mechanism must not exempt a dead character from acting.
+fn respawn_marker_is_negated(tokens: &[&str], index: usize) -> bool {
+    const NEGATORS: &[&str] = &[
+        "no",
+        "not",
+        "never",
+        "cannot",
+        "cant",
+        "without",
+        "impossible",
+        "forbid",
+        "forbids",
+        "forbidden",
+        "prohibit",
+        "prohibits",
+        "prohibited",
+        "prevent",
+        "prevents",
+        "prevented",
+        "deny",
+        "denies",
+        "denied",
+        "none",
+    ];
+    let start = index.saturating_sub(3);
+    if tokens[start..index]
+        .iter()
+        .any(|token| NEGATORS.contains(token))
+    {
+        return true;
+    }
+    let end = (index + 4).min(tokens.len());
+    tokens[index + 1..end].iter().any(|token| {
+        matches!(
+            *token,
+            "impossible" | "forbidden" | "prohibited" | "never" | "cannot" | "cant" | "not"
+        )
+    })
+}
+
+/// True when prose, a rule field, or a fact value positively declares that
+/// death is followed by a return (respawn, resurrection, reincarnation,
+/// revival, immortality, or an explicit loop-style return).
+fn declares_respawn(text: &str) -> bool {
+    declares_respawn_with(text, true)
+}
+
+/// True when a death word appears within `radius` tokens of `index`.
+fn has_death_word_near(tokens: &[&str], index: usize, radius: usize) -> bool {
+    let start = index.saturating_sub(radius);
+    let end = (index + radius + 1).min(tokens.len());
+    tokens[start..end].iter().any(|token| {
+        matches!(
+            *token,
+            "dead"
+                | "death"
+                | "deaths"
+                | "die"
+                | "dies"
+                | "died"
+                | "dying"
+                | "kill"
+                | "killed"
+                | "slain"
+        )
+    })
+}
+
+/// Free-text rule names and descriptions only treat `immortal`/`undying` as a
+/// respawn declaration when the same phrase is about death. This keeps a rule
+/// about an unrelated immortal ruler from exempting every character.
+fn declares_respawn_in_rule_text(text: &str) -> bool {
+    if declares_respawn_with(text, false) {
+        return true;
+    }
+    let lower = text.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
+    tokens.iter().enumerate().any(|(index, token)| {
+        if !(token.starts_with("immortal") || *token == "undying") {
+            return false;
+        }
+        if respawn_marker_is_negated(&tokens, index) {
+            return false;
+        }
+        has_death_word_near(&tokens, index, 4)
+    })
+}
+
+fn declares_respawn_with(text: &str, allow_immortality: bool) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
+    for (index, token) in tokens.iter().enumerate() {
+        let marker = is_respawn_marker_token(token, allow_immortality)
+            || tokens_match_at(&tokens, index, &["back", "from", "the", "dead"])
+            || (matches!(*token, "return" | "returns" | "returned" | "returning")
+                && (tokens_match_at(&tokens, index + 1, &["to", "life"])
+                    || tokens_match_at(&tokens, index + 1, &["from", "the", "dead"])))
+            || (matches!(*token, "come" | "comes" | "came" | "coming")
+                && tokens_match_at(&tokens, index + 1, &["back", "from", "the", "dead"]))
+            || (matches!(*token, "rise" | "rises" | "rose" | "risen" | "rising")
+                && tokens_match_at(&tokens, index + 1, &["from", "the", "dead"]))
+            || (matches!(*token, "not" | "never")
+                && (tokens_match_at(&tokens, index + 1, &["stay", "dead"])
+                    || tokens_match_at(&tokens, index + 1, &["stays", "dead"])
+                    || tokens_match_at(&tokens, index + 1, &["remain", "dead"])
+                    || tokens_match_at(&tokens, index + 1, &["remains", "dead"])))
+            || (matches!(*token, "not" | "never")
+                && has_death_word_near(&tokens, index, 3)
+                && (tokens_match_at(&tokens, index + 1, &["permanent"])
+                    || tokens_match_at(&tokens, index + 1, &["permanently"])
+                    || tokens_match_at(&tokens, index + 1, &["final"])
+                    || tokens_match_at(&tokens, index + 1, &["the", "end"])));
+        if marker && !respawn_marker_is_negated(&tokens, index) {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when a canonical fact records a per-character return-from-death
+/// setting, e.g. `mortality = respawns` or `respawns = true`.
+fn canonical_fact_declares_respawn(fact: &crate::sqlite::records::CanonicalFact) -> bool {
+    let predicate = fact
+        .predicate
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_");
+    let value = crate::format::canonical_fact_value(fact);
+    let value_lower = value.trim().to_ascii_lowercase();
+    match predicate.as_str() {
+        "mortality" | "respawn" | "respawns" | "resurrection" | "revival" | "rebirth"
+        | "immortality" | "life_cycle" | "lifecycle" | "death_behavior" | "death_behaviour"
+        | "death_cycle" | "afterlife" => {
+            matches!(
+                value_lower.as_str(),
+                "true" | "yes" | "1" | "on" | "enabled"
+            ) || declares_respawn(&value)
+        }
+        "life_status" | "vital_status" | "status" | "vital" | "state" | "condition" => {
+            declares_respawn(&value)
+        }
+        _ => false,
+    }
+}
+
+/// True when the character has an active canonical setting that declares they
+/// return from death. A per-character declaration exempts that character from
+/// dead-acting findings; characters without one still report genuine
+/// contradictions after a recorded death.
+fn character_declares_respawn(
+    character_id: &str,
+    facts: &[crate::sqlite::records::CanonicalFact],
+) -> bool {
+    facts.iter().any(|fact| {
+        fact.subject_id.as_deref() == Some(character_id) && canonical_fact_declares_respawn(fact)
+    })
+}
+
+/// True when a world rule declares a return-from-death mechanism. The typed
+/// `rule_type`, relevance tags, name, and description are all checked, but a
+/// negated declaration ("no resurrection") is not an exemption.
+fn world_rule_declares_respawn(rule: &crate::sqlite::records::WorldRule) -> bool {
+    declares_respawn(&rule.rule_type)
+        || rule
+            .relevance_tags_or_empty()
+            .iter()
+            .any(|tag| declares_respawn(tag))
+        || declares_respawn_in_rule_text(&rule.rule_name)
+        || declares_respawn_in_rule_text(&rule.description)
+}
+
 /// Group Phase-4 validator issues into per-validator-id sections (each
 /// listing the affected scenes with positions, sorted by book/chapter/
 /// scene_order). Non-Phase-4 issues are skipped; empty sections are
