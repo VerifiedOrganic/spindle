@@ -5231,6 +5231,151 @@ mod scene_purpose_fulfillment {
         }
     }
 
+    /// A deep check that hits max_tokens with empty content is INCONCLUSIVE:
+    /// the audit keeps running and coverage records the scene, while the model
+    /// call ledger records `outcome = "truncated"` and the reasoning-token
+    /// count the provider reported.
+    #[tokio::test]
+    async fn truncated_deep_check_is_inconclusive_and_records_truncated_outcome() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": { "content": "" },
+                "finish_reason": "length"
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 131072,
+                "completion_tokens_details": { "reasoning_tokens": 130000 }
+            }
+        })
+        .to_string();
+        let (endpoint, server) = spawn_deep_check_http_server(body, None);
+        let (tmp, svc) = fresh_service_local().await;
+        install_review_http_agent(&tmp, &svc, &endpoint, 5_000);
+        let project_id = seed_project(&svc, "deep-truncated").await;
+        save_scene(
+            &svc,
+            &project_id,
+            1,
+            1,
+            "Morning light filled the room. By nightfall the lamps were lit.",
+            ContentRating::General,
+        )
+        .await;
+
+        let out = svc
+            .check_consistency(temporal_deep_input(&project_id))
+            .await
+            .expect("a truncated deep check must not fail the audit");
+        let coverage = out
+            .audit_coverage
+            .iter()
+            .find(|coverage| coverage.check_type == "temporal_coherence")
+            .expect("temporal coverage");
+        assert_eq!(coverage.eligible, 1);
+        assert_eq!(coverage.inconclusive_ids.len(), 1);
+        assert!(
+            coverage
+                .inconclusive_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("truncated"),
+            "reason must name truncation: {coverage:?}"
+        );
+        assert!(coverage.evaluated_ids.is_empty());
+        assert!(
+            coverage.not_evaluated_ids.is_empty(),
+            "inconclusive units must not also count as not evaluated: {coverage:?}"
+        );
+        assert_eq!(server.join().expect("server join"), 1);
+
+        let usage = svc
+            .get_model_usage(spindle_core::models::GetModelUsageInput {
+                project_id: Some(project_id),
+                ..Default::default()
+            })
+            .await
+            .expect("model usage");
+        let call = usage
+            .calls
+            .iter()
+            .find(|call| call.route == "review")
+            .expect("review call recorded");
+        assert_eq!(call.outcome, "truncated");
+        assert_eq!(
+            call.usage.as_ref().and_then(|usage| usage.reasoning_tokens),
+            Some(130_000)
+        );
+    }
+
+    /// A slow deep check times out per call and is INCONCLUSIVE: the audit
+    /// returns promptly, keeps auditing, and records the timed-out call.
+    #[tokio::test]
+    async fn timed_out_deep_check_is_inconclusive_and_audit_returns_promptly() {
+        let body = serde_json::json!({
+            "choices": [{ "message": { "content": "{}" }, "finish_reason": "stop" }]
+        })
+        .to_string();
+        let (endpoint, server) =
+            spawn_deep_check_http_server(body, Some(std::time::Duration::from_millis(400)));
+        let (tmp, svc) = fresh_service_local().await;
+        install_review_http_agent(&tmp, &svc, &endpoint, 50);
+        let project_id = seed_project(&svc, "deep-timeout").await;
+        save_scene(
+            &svc,
+            &project_id,
+            1,
+            1,
+            "Morning light filled the room. By nightfall the lamps were lit.",
+            ContentRating::General,
+        )
+        .await;
+
+        let started = std::time::Instant::now();
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            svc.check_consistency(temporal_deep_input(&project_id)),
+        )
+        .await
+        .expect("a slow deep check must not block the audit")
+        .expect("timeout must not fail the audit");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "audit should return after the per-call budget, took {:?}",
+            started.elapsed()
+        );
+        let coverage = out
+            .audit_coverage
+            .iter()
+            .find(|coverage| coverage.check_type == "temporal_coherence")
+            .expect("temporal coverage");
+        assert_eq!(coverage.inconclusive_ids.len(), 1);
+        assert!(
+            coverage
+                .inconclusive_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("timed out"),
+            "reason must name the timeout: {coverage:?}"
+        );
+        assert!(coverage.evaluated_ids.is_empty());
+        assert_eq!(server.join().expect("server join"), 1);
+
+        let usage = svc
+            .get_model_usage(spindle_core::models::GetModelUsageInput {
+                project_id: Some(project_id),
+                ..Default::default()
+            })
+            .await
+            .expect("model usage");
+        let call = usage
+            .calls
+            .iter()
+            .find(|call| call.route == "review")
+            .expect("review call recorded");
+        assert_eq!(call.outcome, "timed_out");
+    }
+
     /// A `review` agent declaring exactly `ratings`, written to a TempDir and
     /// installed. A rated agent (not a built-in local route) makes the
     /// clearance gate actually engage.
@@ -5267,6 +5412,91 @@ agent = "review-rated"
             config_path: Some(config_path.display().to_string()),
         })
         .unwrap();
+    }
+
+    /// Install an HTTP `review` agent pointed at a test server, with an
+    /// explicit per-call deep-check budget.
+    fn install_review_http_agent(
+        tmp: &TempDir,
+        svc: &SqliteSpindleService,
+        endpoint: &str,
+        deep_check_timeout_ms: u64,
+    ) {
+        let config_path = tmp.path().join("review-http-agent.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+[health_check]
+enabled = false
+
+[deep_check]
+timeout_ms = {deep_check_timeout_ms}
+
+[[agents]]
+id = "review-http"
+name = "Review HTTP"
+provider = "openai-compatible"
+endpoint = "{endpoint}"
+model = "review-model"
+ratings = ["general", "teen", "mature", "explicit"]
+
+[[routing]]
+route = "review"
+agent = "review-http"
+"#
+            ),
+        )
+        .unwrap();
+        svc.configure_agents(ConfigureAgentsInput {
+            config_path: Some(config_path.display().to_string()),
+        })
+        .unwrap();
+    }
+
+    /// One-shot OpenAI-compatible test server. `delay` simulates a slow
+    /// reasoning model; the response is sent even if the client has already
+    /// timed out and closed the socket.
+    fn spawn_deep_check_http_server(
+        body: String,
+        delay: Option<std::time::Duration>,
+    ) -> (String, std::thread::JoinHandle<usize>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut buffer = [0_u8; 8192];
+            let _ = stream.read(&mut buffer);
+            if let Some(delay) = delay {
+                std::thread::sleep(delay);
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            1
+        });
+        (format!("http://{address}/v1"), handle)
+    }
+
+    fn temporal_deep_input(project_id: &str) -> CheckConsistencyInput {
+        CheckConsistencyInput {
+            deep_scan_offset: None,
+            project_id: project_id.to_string(),
+            scope: ConsistencyScopeInput::full(),
+            checks: vec!["temporal_coherence".to_string()],
+            severity_filter: Vec::new(),
+            deep_check: Some(true),
+            semantic_mode: None,
+            semantic_host_reports: Vec::new(),
+            subjects: Vec::new(),
+            format: None,
+            budget_tokens: None,
+        }
     }
 
     fn purpose_findings(

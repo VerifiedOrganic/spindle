@@ -15,6 +15,16 @@
   `messages`, `max_tokens`, `stream`, `reasoning_effort`) are rejected at load
   time so they can never be silently overridden, and values are never logged.
 
+### Fixed
+
+- A model call that hits `max_tokens` is now logged with
+  `outcome = "truncated"` instead of `"succeeded"`. Provider-reported
+  reasoning-token counts are retained in the call's usage block.
+- Deep consistency checks now run under a per-call wall-clock timeout
+  (`[deep_check].timeout_ms`, default five minutes). Truncated or timed-out
+  checks are reported as INCONCLUSIVE in `audit_coverage` and no longer stall
+  or fail the whole audit.
+
 ## 0.4.1 — 2026-11-13
 
 ### Added

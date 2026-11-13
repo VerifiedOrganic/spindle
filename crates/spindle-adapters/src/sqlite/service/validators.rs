@@ -3,6 +3,14 @@ use spindle_core::canon::{
     KnowledgeValidationFactV1, SceneValidationInputV1, detect_knowledge_paraphrase_leak,
 };
 
+/// True when a deep-tier model call exceeded its wall-clock budget. A timeout
+/// makes that unit INCONCLUSIVE; it must not be treated as a dead route.
+fn is_deep_check_timeout(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<crate::ai::DeepCheckTimedOut>()
+        .is_some()
+}
+
 impl SqliteSpindleService {
     /// Narrow a scene list to only those that reference any of the
     /// supplied subjects. A scene matches if its id is a direct hit for
@@ -1160,6 +1168,13 @@ impl SqliteSpindleService {
             let model_violations = match output {
                 None => heuristic_world_rule_violations(scene, &applicable_rules),
                 Some(output) => match output {
+                    Ok(response) if response.truncated => {
+                        coverage.mark_inconclusive(
+                            scene.id.clone(),
+                            "deep check output was truncated at max_tokens",
+                        );
+                        heuristic_world_rule_violations(scene, &applicable_rules)
+                    }
                     Ok(response) if !response.local_stub => {
                         match parse_deep_world_rule_check_output(&response.output) {
                             Ok(findings) => {
@@ -1183,6 +1198,16 @@ impl SqliteSpindleService {
                     {
                         issues.push(world_rule_deep_skip_issue(&err));
                         return Ok(issues);
+                    }
+                    // A wall-clock timeout is INCONCLUSIVE for this scene, not a
+                    // dead route: keep auditing the remaining scenes and keep the
+                    // deterministic heuristic fallback for this one.
+                    Err(err) if is_deep_check_timeout(&err) => {
+                        coverage.mark_inconclusive(
+                            scene.id.clone(),
+                            "deep check timed out before producing a verdict",
+                        );
+                        heuristic_world_rule_violations(scene, &applicable_rules)
                     }
                     // Generic transport error (dead/unreachable route): emit ONE
                     // degradation finding, mark the route dead so no further model
@@ -1275,6 +1300,7 @@ impl SqliteSpindleService {
             return Ok(DeepTierOutput {
                 output: cached,
                 local_stub: false,
+                truncated: false,
             });
         }
 
@@ -1284,7 +1310,7 @@ impl SqliteSpindleService {
         let response = self
             .repository
             .model_router()
-            .complete(&ModelRequest {
+            .complete_deep(&ModelRequest {
                 route: "review".to_string(),
                 prompt,
                 rating: Some(scene.content_rating.trim().to_ascii_lowercase()),
@@ -1297,7 +1323,9 @@ impl SqliteSpindleService {
             .await?;
 
         let local_stub = response.adapter_kind == "local";
-        if !local_stub {
+        // A truncated response is not a verdict: never cache it, and let the
+        // caller mark the unit INCONCLUSIVE instead of parsing partial JSON.
+        if !local_stub && !response.truncated {
             // A cache write must never fail the audit: the analysis in hand is
             // still valid, we just lose the chance to reuse it.
             if let Err(error) = self
@@ -1316,6 +1344,7 @@ impl SqliteSpindleService {
         Ok(DeepTierOutput {
             output: response.output,
             local_stub,
+            truncated: response.truncated,
         })
     }
 
@@ -1407,6 +1436,15 @@ impl SqliteSpindleService {
             let scene = scanned[index];
             index += 1;
             let findings = match output {
+                // A truncated response is not a verdict: mark the scene
+                // INCONCLUSIVE and keep auditing the remaining scenes.
+                Ok(output) if output.truncated => {
+                    coverage.mark_inconclusive(
+                        scene.id.clone(),
+                        "deep check output was truncated at max_tokens",
+                    );
+                    Vec::new()
+                }
                 // Parse regardless of adapter kind: a non-JSON local stub
                 // (the default `review` route) parses to nothing, so Tier 2 is
                 // a no-op unless a real review model returns structured findings.
@@ -1434,6 +1472,15 @@ impl SqliteSpindleService {
                 {
                     issues.push(temporal_deep_skip_issue(&err));
                     return Ok(issues);
+                }
+                // A wall-clock timeout is INCONCLUSIVE for this scene, not a
+                // dead route: keep auditing the remaining scenes.
+                Err(err) if is_deep_check_timeout(&err) => {
+                    coverage.mark_inconclusive(
+                        scene.id.clone(),
+                        "deep check timed out before producing a verdict",
+                    );
+                    Vec::new()
                 }
                 // Generic transport error (dead/unreachable route): a dead route
                 // won't heal mid-run, so emit ONE deep-tier skip finding and STOP
@@ -1522,7 +1569,7 @@ impl SqliteSpindleService {
             let matches = match self
                 .repository
                 .model_router()
-                .complete(&ModelRequest {
+                .complete_deep(&ModelRequest {
                     route: "review".to_string(),
                     prompt: build_promise_payoff_deep_check_prompt(promise, scenes),
                     rating: batch_rating.clone(),
@@ -1533,10 +1580,19 @@ impl SqliteSpindleService {
                 })
                 .await
             {
+                // A truncated response is not a verdict: mark the promise
+                // INCONCLUSIVE and keep auditing the remaining promises.
+                Ok(response) if response.truncated => {
+                    coverage.mark_inconclusive(
+                        promise.id.clone(),
+                        "deep check output was truncated at max_tokens",
+                    );
+                    Vec::new()
+                }
                 // A non-JSON local stub (the default `review` route) parses to
                 // nothing, so a local-only deployment degrades to no proposals.
                 Ok(response) => match parse_deep_promise_payoff_output(&response.output) {
-                    Ok(findings) if !response.truncated => {
+                    Ok(findings) => {
                         if response.adapter_kind == "local" {
                             coverage.heuristic_ids.push(promise.id.clone());
                         } else {
@@ -1546,6 +1602,15 @@ impl SqliteSpindleService {
                     }
                     _ => Vec::new(),
                 },
+                // A wall-clock timeout is INCONCLUSIVE for this promise, not a
+                // dead route: keep auditing the remaining promises.
+                Err(err) if is_deep_check_timeout(&err) => {
+                    coverage.mark_inconclusive(
+                        promise.id.clone(),
+                        "deep check timed out before producing a verdict",
+                    );
+                    Vec::new()
+                }
                 // Honest skip: the review route is unreachable/missing or not
                 // cleared for the batch rating. Emit one info finding that reads
                 // as SKIPPED rather than clean, then stop (every promise hits the
@@ -1647,11 +1712,20 @@ impl SqliteSpindleService {
         for unit in units {
             let prompt = build_scene_purpose_prompt(&unit.purpose, &unit.scene_text);
             let request = build_scene_purpose_request(&unit.scene_rating, prompt);
-            let verdict = match self.repository.model_router().complete(&request).await {
+            let verdict = match self.repository.model_router().complete_deep(&request).await {
+                // A truncated response is not a verdict: mark the scene
+                // INCONCLUSIVE and keep auditing the remaining scenes.
+                Ok(response) if response.truncated => {
+                    coverage.mark_inconclusive(
+                        unit.scene_id.clone(),
+                        "deep check output was truncated at max_tokens",
+                    );
+                    continue;
+                }
                 // A non-JSON local stub (the default `review` route) parses to
                 // an error the caller treats as no finding rather than a guess.
                 Ok(response) => match parse_scene_purpose_output(&response.output) {
-                    Ok(verdict) if !response.truncated && verdict.fulfilled.is_some() => {
+                    Ok(verdict) if verdict.fulfilled.is_some() => {
                         if response.adapter_kind == "local" {
                             coverage.heuristic_ids.push(unit.scene_id.clone());
                         } else {
@@ -1661,6 +1735,15 @@ impl SqliteSpindleService {
                     }
                     _ => continue,
                 },
+                // A wall-clock timeout is INCONCLUSIVE for this scene, not a
+                // dead route: keep auditing the remaining scenes.
+                Err(err) if is_deep_check_timeout(&err) => {
+                    coverage.mark_inconclusive(
+                        unit.scene_id.clone(),
+                        "deep check timed out before producing a verdict",
+                    );
+                    continue;
+                }
                 // Honest skip: the review route is unreachable/missing or not
                 // cleared for the scene rating. Emit one info finding that reads
                 // as SKIPPED rather than clean, then stop (every unit hits the
@@ -1749,11 +1832,20 @@ impl SqliteSpindleService {
         for unit in units {
             let prompt = build_secret_behavioral_leak_prompt(&unit.scene_text, &unit.secrets);
             let request = build_secret_behavioral_leak_request(&unit.scene_rating, prompt);
-            let findings = match self.repository.model_router().complete(&request).await {
+            let findings = match self.repository.model_router().complete_deep(&request).await {
+                // A truncated response is not a verdict: mark the scene
+                // INCONCLUSIVE and keep auditing the remaining scenes.
+                Ok(response) if response.truncated => {
+                    coverage.mark_inconclusive(
+                        unit.scene_id.clone(),
+                        "deep check output was truncated at max_tokens",
+                    );
+                    Vec::new()
+                }
                 // A non-JSON local stub (the default `review` route) parses to
                 // nothing, so a local-only deployment adds no behavioral findings.
                 Ok(response) => match parse_deep_secret_leak_output(&response.output) {
-                    Ok(findings) if !response.truncated => {
+                    Ok(findings) => {
                         if response.adapter_kind == "local" {
                             coverage.heuristic_ids.push(unit.scene_id.clone());
                         } else {
@@ -1763,6 +1855,15 @@ impl SqliteSpindleService {
                     }
                     _ => Vec::new(),
                 },
+                // A wall-clock timeout is INCONCLUSIVE for this scene, not a
+                // dead route: keep auditing the remaining scenes.
+                Err(err) if is_deep_check_timeout(&err) => {
+                    coverage.mark_inconclusive(
+                        unit.scene_id.clone(),
+                        "deep check timed out before producing a verdict",
+                    );
+                    Vec::new()
+                }
                 // Honest skip: the review route is unreachable/missing or not
                 // cleared for the scene rating. Emit one info finding that reads
                 // as SKIPPED rather than clean, then stop (every unit hits the

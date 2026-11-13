@@ -12,6 +12,11 @@ pub struct SpindleConfigFile {
     #[serde(default)]
     pub routing: Vec<RoutingRule>,
     pub health_check: Option<HealthCheckConfig>,
+    /// Wall-clock budget for one model-backed deep consistency check. When a
+    /// deep call exceeds it, that check is reported INCONCLUSIVE in
+    /// `audit_coverage` instead of blocking the rest of the audit.
+    #[serde(default)]
+    pub deep_check: Option<DeepCheckConfig>,
     /// Route the manuscript-import routes (`import_extract`, `import_synthesize`)
     /// through the operator's explicit-cleared offload agent.
     ///
@@ -168,6 +173,18 @@ pub struct HealthCheckConfig {
     pub timeout_ms: Option<u64>,
 }
 
+/// `[deep_check]` runtime budget for model-backed consistency passes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeepCheckConfig {
+    /// Per-call wall-clock timeout in milliseconds. Defaults to five minutes.
+    pub timeout_ms: Option<u64>,
+}
+
+/// Default per-call wall-clock budget for one deep consistency model call.
+/// Deep checks that finish normally answer in seconds; a call still running
+/// after this long is the truncation/stall case the timeout exists to bound.
+pub const DEFAULT_DEEP_CHECK_TIMEOUT_MS: u64 = 300_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LoadedAgentConfig {
     pub source_path: Option<String>,
@@ -176,6 +193,9 @@ pub struct LoadedAgentConfig {
     #[serde(default)]
     pub routing: Vec<RoutingRule>,
     pub health_check: HealthCheckConfig,
+    /// Normalized `[deep_check]` budget (defaults applied).
+    #[serde(default)]
+    pub deep_check: DeepCheckConfig,
     /// See [`SpindleConfigFile::route_import_to_explicit`].
     #[serde(default)]
     pub route_import_to_explicit: bool,
@@ -253,6 +273,7 @@ pub fn load_agent_config(explicit: Option<&str>) -> anyhow::Result<LoadedAgentCo
             agents: Vec::new(),
             routing: Vec::new(),
             health_check: default_health_check_config(),
+            deep_check: default_deep_check_config(),
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         });
@@ -268,6 +289,7 @@ pub fn load_agent_config(explicit: Option<&str>) -> anyhow::Result<LoadedAgentCo
         agents: config.agents,
         routing: config.routing,
         health_check: normalized_health_check_config(config.health_check),
+        deep_check: normalized_deep_check_config(config.deep_check),
         route_import_to_explicit: config.route_import_to_explicit,
         anti_slop: config.anti_slop,
     })
@@ -295,6 +317,30 @@ pub fn health_checks_enabled(config: &LoadedAgentConfig) -> bool {
 
 pub fn health_check_timeout(config: &LoadedAgentConfig) -> Duration {
     Duration::from_millis(config.health_check.timeout_ms.unwrap_or(1500))
+}
+
+pub fn default_deep_check_config() -> DeepCheckConfig {
+    DeepCheckConfig {
+        timeout_ms: Some(DEFAULT_DEEP_CHECK_TIMEOUT_MS),
+    }
+}
+
+pub fn normalized_deep_check_config(value: Option<DeepCheckConfig>) -> DeepCheckConfig {
+    let default = default_deep_check_config();
+    DeepCheckConfig {
+        timeout_ms: value
+            .and_then(|value| value.timeout_ms)
+            .or(default.timeout_ms),
+    }
+}
+
+pub fn deep_check_timeout(config: &LoadedAgentConfig) -> Duration {
+    Duration::from_millis(
+        config
+            .deep_check
+            .timeout_ms
+            .unwrap_or(DEFAULT_DEEP_CHECK_TIMEOUT_MS),
+    )
 }
 
 /// Grok CLI's documented `--effort` values. Kept in sync with `grok --help`
@@ -353,6 +399,9 @@ fn agent_speaks_http(agent: &ConfiguredAgent) -> bool {
 }
 
 fn validate_config(config: &SpindleConfigFile) -> anyhow::Result<()> {
+    if config.deep_check.as_ref().and_then(|c| c.timeout_ms) == Some(0) {
+        anyhow::bail!("deep_check.timeout_ms must be >= 1");
+    }
     let mut agent_ids = BTreeSet::new();
     for agent in &config.agents {
         if agent.id.trim().is_empty() {
@@ -659,6 +708,7 @@ mod tests {
             ],
             routing: Vec::new(),
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -709,6 +759,7 @@ mod tests {
                 extra_body: None,
             }],
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -759,6 +810,7 @@ mod tests {
                 extra_body: None,
             }],
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -828,6 +880,7 @@ mod tests {
                 make_routing("draft", "explicit-agent", Some("explicit")),
             ],
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -843,6 +896,7 @@ mod tests {
                 make_routing("draft", "agent-b", None),
             ],
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -862,6 +916,7 @@ mod tests {
                 make_routing("draft", "agent-b", Some("explicit")),
             ],
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -880,6 +935,7 @@ mod tests {
             agents: vec![make_agent("agent-a")],
             routing: vec![make_routing("draft", "agent-a", Some("nc-17"))],
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -922,6 +978,7 @@ mod tests {
             agents: vec![make_grok_agent("grok-local")],
             routing: vec![make_routing("draft", "grok-local", Some("explicit"))],
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -936,6 +993,7 @@ mod tests {
             agents: vec![agent],
             routing: Vec::new(),
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -954,6 +1012,7 @@ mod tests {
             agents: vec![agent],
             routing: Vec::new(),
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -972,6 +1031,7 @@ mod tests {
             agents: vec![agent],
             routing: Vec::new(),
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -1068,6 +1128,7 @@ service_tier = "priority"
             agents: vec![agent],
             routing: Vec::new(),
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -1083,6 +1144,7 @@ service_tier = "priority"
             agents: vec![make_agent("http-agent")],
             routing: vec![rule],
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -1104,6 +1166,7 @@ service_tier = "priority"
             agents: vec![agent],
             routing: Vec::new(),
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -1127,6 +1190,7 @@ service_tier = "priority"
             agents: vec![make_agent("http-agent")],
             routing: vec![rule],
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -1150,6 +1214,7 @@ service_tier = "priority"
             agents: vec![grok],
             routing: Vec::new(),
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
@@ -1169,12 +1234,41 @@ service_tier = "priority"
             agents: vec![local],
             routing: Vec::new(),
             health_check: None,
+            deep_check: None,
             route_import_to_explicit: false,
             anti_slop: AntiSlopProjectConfig::default(),
         })
         .expect_err("extra_body on a local agent must fail");
         assert!(
             error.to_string().contains("not an HTTP agent"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn parses_deep_check_timeout_and_defaults_to_five_minutes() {
+        let parsed: SpindleConfigFile =
+            toml::from_str("[deep_check]\ntimeout_ms = 120000\n").expect("parse");
+        assert_eq!(
+            normalized_deep_check_config(parsed.deep_check.clone()).timeout_ms,
+            Some(120_000)
+        );
+        assert_eq!(
+            default_deep_check_config().timeout_ms,
+            Some(DEFAULT_DEEP_CHECK_TIMEOUT_MS)
+        );
+        validate_config(&parsed).expect("valid deep_check budget");
+    }
+
+    #[test]
+    fn rejects_zero_deep_check_timeout() {
+        let parsed: SpindleConfigFile =
+            toml::from_str("[deep_check]\ntimeout_ms = 0\n").expect("parse");
+        let error = validate_config(&parsed).expect_err("zero timeout must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("deep_check.timeout_ms must be >= 1"),
             "unexpected error: {error}"
         );
     }
