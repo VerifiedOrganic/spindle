@@ -11,19 +11,23 @@ fn premise_preview(premise: &str) -> String {
     preview
 }
 
-fn next_level(proposals: &[PlanningProposal]) -> PlanningLevel {
-    PlanningLevel::all()
-        .into_iter()
-        .find(|level| {
-            !proposals.iter().any(|p| {
-                p.artifact.level == *level
-                    && matches!(
-                        p.status,
-                        PlanningProposalStatus::Staged | PlanningProposalStatus::Applied
-                    )
-            })
-        })
-        .unwrap_or(PlanningLevel::Scene)
+fn next_level(
+    proposals: &[PlanningProposal],
+    scene_manifests_complete: bool,
+) -> Option<PlanningLevel> {
+    PlanningLevel::all().into_iter().find(|level| {
+        let active = proposals.iter().any(|p| {
+            p.artifact.level == *level
+                && matches!(
+                    p.status,
+                    PlanningProposalStatus::Staged | PlanningProposalStatus::Applied
+                )
+        });
+        if active {
+            return false;
+        }
+        !(*level == PlanningLevel::Scene && scene_manifests_complete)
+    })
 }
 
 fn policy_summary(policy: &PlanningPolicy) -> PlanningPolicySummary {
@@ -40,6 +44,7 @@ fn policy_summary(policy: &PlanningPolicy) -> PlanningPolicySummary {
 fn session_summary(
     session: &PlanningSession,
     proposals: &[PlanningProposal],
+    scene_manifests_complete: bool,
 ) -> PlanningSessionSummary {
     PlanningSessionSummary {
         session_id: session.id.clone(),
@@ -47,7 +52,8 @@ fn session_summary(
         intent_hash: session.intent_hash.clone(),
         project_id: session.scope.as_ref().map(|scope| scope.project_id.clone()),
         branch_id: session.scope.as_ref().map(|scope| scope.branch_id.clone()),
-        next_level: next_level(proposals),
+        next_level: next_level(proposals, scene_manifests_complete),
+        scene_manifests_complete,
         policy: policy_summary(&session.policy),
         horizon: session.horizon.clone(),
         budget: session.budget.clone(),
@@ -196,15 +202,22 @@ fn gate_for(session: &PlanningSession, level: PlanningLevel) -> PlanningGate {
 /// The active gate belongs to a proposal awaiting a decision, not to the next
 /// unfilled level. Falling through to `next_level` would report Scene's gate
 /// while a human-gated Chapter proposal is still staged.
-fn gate_level(proposals: &[PlanningProposal]) -> PlanningLevel {
+fn gate_level(
+    proposals: &[PlanningProposal],
+    scene_manifests_complete: bool,
+) -> Option<PlanningLevel> {
     proposals
         .iter()
         .find(|p| p.status == PlanningProposalStatus::Staged)
         .map(|p| p.artifact.level)
-        .unwrap_or_else(|| next_level(proposals))
+        .or_else(|| next_level(proposals, scene_manifests_complete))
 }
 
-fn review_next_action(session: &PlanningSession, proposals: &[PlanningProposal]) -> String {
+fn review_next_action(
+    session: &PlanningSession,
+    proposals: &[PlanningProposal],
+    scene_manifests_complete: bool,
+) -> String {
     if session.projection_stale {
         return "Resolve the stale planning projection before continuing: review the staged reconciliation proposal and record a human decision."
             .to_string();
@@ -227,11 +240,14 @@ fn review_next_action(session: &PlanningSession, proposals: &[PlanningProposal])
     if session.scope.is_none() {
         return "Call planning_advance to stage the Contract proposal. It stays staged until a human decision.".to_string();
     }
-    let next = next_level(proposals);
-    format!(
-        "Call planning_advance to generate the next {} level, or planning_status to recheck readiness.",
-        proposal_level_name(next)
-    )
+    match next_level(proposals, scene_manifests_complete) {
+        Some(next) => format!(
+            "Call planning_advance to generate the next {} level, or planning_status to recheck readiness.",
+            proposal_level_name(next)
+        ),
+        None if scene_manifests_complete => "Every required planning level is satisfied, including the scene manifests already persisted by the accepted chapter plan. Call planning_decide with action=prepare_authoring_run to check readiness, then start drafting only on the author's instruction.".to_string(),
+        None => "Every required planning level is satisfied. Call planning_decide with action=prepare_authoring_run to check readiness, then start drafting only on the author's instruction.".to_string(),
+    }
 }
 
 fn proposal_level_name(level: PlanningLevel) -> &'static str {
@@ -418,16 +434,13 @@ impl SqliteSpindleService {
         let proposals = self
             .list_planning_proposals(&session.id, session.scope.clone())
             .await?;
-        let next_action = if proposals
-            .iter()
-            .any(|p| p.status == PlanningProposalStatus::Staged)
-        {
-            review_next_action(&session, &proposals)
-        } else {
-            "Call planning_advance to generate the first planning level. Every level stays staged until a human decision.".to_string()
-        };
+        let scene_manifests_complete = self
+            .repository
+            .planning_scene_manifests_complete(session.scope.clone(), session.horizon.clone())
+            .await?;
+        let next_action = review_next_action(&session, &proposals, scene_manifests_complete);
         Ok(PlanningBeginOutput {
-            session: session_summary(&session, &proposals),
+            session: session_summary(&session, &proposals, scene_manifests_complete),
             resumed,
             next_action,
             message: if resumed {
@@ -444,6 +457,16 @@ impl SqliteSpindleService {
     ) -> Result<PlanningAdvanceOutput> {
         let session = self.get_planning_session(&input.session_id).await?;
         let include_payloads = input.include_payloads.unwrap_or(false);
+        let scene_manifests_complete = self
+            .repository
+            .planning_scene_manifests_complete(
+                session.scope.clone(),
+                input
+                    .target_range
+                    .clone()
+                    .unwrap_or_else(|| session.horizon.clone()),
+            )
+            .await?;
         Self::verify_requested_scope(
             &session,
             input.project_id.as_deref(),
@@ -484,11 +507,11 @@ impl SqliteSpindleService {
                 .list_planning_proposals(&session.id, session.scope.clone())
                 .await?;
             return Ok(PlanningAdvanceOutput {
-                session: session_summary(&session, &proposals),
+                session: session_summary(&session, &proposals, scene_manifests_complete),
                 action: input.action,
                 advance: None,
                 readiness: None,
-                next_action: review_next_action(&session, &proposals),
+                next_action: review_next_action(&session, &proposals, scene_manifests_complete),
             });
         }
 
@@ -519,14 +542,49 @@ impl SqliteSpindleService {
                     .missing_requirements
                     .first()
                     .map(|missing| format!("Readiness is blocked: {missing}"))
-                    .unwrap_or_else(|| review_next_action(&session, &proposals))
+                    .unwrap_or_else(|| {
+                        review_next_action(&session, &proposals, scene_manifests_complete)
+                    })
             };
             return Ok(PlanningAdvanceOutput {
-                session: session_summary(&session, &proposals),
+                session: session_summary(&session, &proposals, scene_manifests_complete),
                 action: input.action,
                 advance: None,
                 readiness: Some(readiness),
                 next_action,
+            });
+        }
+
+        // Scene detail is already durable when the accepted chapter plan
+        // persisted every target manifest. Do not generate another huge host
+        // request whose only operation would be plan_chapter again.
+        let proposals = self
+            .list_planning_proposals(&session.id, session.scope.clone())
+            .await?;
+        let scene_history = proposals.iter().any(|p| {
+            p.artifact.level == PlanningLevel::Scene
+                && matches!(
+                    p.status,
+                    PlanningProposalStatus::Staged | PlanningProposalStatus::Rejected
+                )
+        });
+        let wants_scene = input.level == Some(PlanningLevel::Scene)
+            || (input.level.is_none()
+                && next_level(&proposals, scene_manifests_complete).is_none());
+        if scene_manifests_complete
+            && !scene_history
+            && wants_scene
+            && matches!(
+                input.action,
+                PlanningAdvanceAction::Generate | PlanningAdvanceAction::RepairLastProposal
+            )
+        {
+            return Ok(PlanningAdvanceOutput {
+                session: session_summary(&session, &proposals, scene_manifests_complete),
+                action: input.action,
+                advance: None,
+                readiness: None,
+                next_action: "The Scene level is already satisfied: every target chapter has a persisted scene manifest. Call planning_decide with action=prepare_authoring_run to check readiness, then start drafting only on the author's instruction.".to_string(),
             });
         }
 
@@ -606,8 +664,12 @@ impl SqliteSpindleService {
         let proposals = self
             .list_planning_proposals(&session.id, session.scope.clone())
             .await?;
+        let scene_manifests_complete = self
+            .repository
+            .planning_scene_manifests_complete(session.scope.clone(), session.horizon.clone())
+            .await?;
         Ok(PlanningAdvanceOutput {
-            session: session_summary(&session, &proposals),
+            session: session_summary(&session, &proposals, scene_manifests_complete),
             action: input.action,
             advance: Some(advance_summary(report, include_payloads)?),
             readiness: None,
@@ -648,7 +710,18 @@ impl SqliteSpindleService {
             let proposals = self
                 .list_planning_proposals(&candidate.id, candidate.scope.clone())
                 .await?;
-            sessions.push(session_summary(candidate, &proposals));
+            let scene_manifests_complete = self
+                .repository
+                .planning_scene_manifests_complete(
+                    candidate.scope.clone(),
+                    candidate.horizon.clone(),
+                )
+                .await?;
+            sessions.push(session_summary(
+                candidate,
+                &proposals,
+                scene_manifests_complete,
+            ));
         }
 
         let Some(session) = session else {
@@ -679,8 +752,22 @@ impl SqliteSpindleService {
                 missing.join(", ")
             );
         }
+        let scene_manifests_complete = self
+            .repository
+            .planning_scene_manifests_complete(
+                session.scope.clone(),
+                input
+                    .target_range
+                    .clone()
+                    .unwrap_or_else(|| session.horizon.clone()),
+            )
+            .await?;
         if sessions.is_empty() {
-            sessions = vec![session_summary(&session, &proposals)];
+            sessions = vec![session_summary(
+                &session,
+                &proposals,
+                scene_manifests_complete,
+            )];
         }
         let selected: Vec<&PlanningProposal> = proposals
             .iter()
@@ -704,7 +791,8 @@ impl SqliteSpindleService {
                 )
             })
             .collect::<Result<Vec<_>>>()?;
-        let gate = Some(gate_for(&session, gate_level(&proposals)));
+        let gate =
+            gate_level(&proposals, scene_manifests_complete).map(|level| gate_for(&session, level));
 
         let readiness = if include_readiness {
             match session.scope.clone() {
@@ -750,14 +838,18 @@ impl SqliteSpindleService {
             if readiness.ready_to_draft {
                 "The planned range is ready. Call planning_decide with action=prepare_authoring_run, then start drafting only on the author's instruction.".to_string()
             } else {
-                review_next_action(&session, &proposals)
+                review_next_action(&session, &proposals, scene_manifests_complete)
             }
         } else {
-            review_next_action(&session, &proposals)
+            review_next_action(&session, &proposals, scene_manifests_complete)
         };
 
         Ok(PlanningStatusOutput {
-            session: Some(session_summary(&session, &proposals)),
+            session: Some(session_summary(
+                &session,
+                &proposals,
+                scene_manifests_complete,
+            )),
             sessions,
             gate,
             proposals: proposal_summaries,
@@ -774,11 +866,56 @@ impl SqliteSpindleService {
     ) -> Result<PlanningDecideOutput> {
         let session = self.get_planning_session(&input.session_id).await?;
         let include_payloads = input.include_payloads.unwrap_or(false);
+        let scene_manifests_complete = self
+            .repository
+            .planning_scene_manifests_complete(
+                session.scope.clone(),
+                input
+                    .target_range
+                    .clone()
+                    .unwrap_or_else(|| session.horizon.clone()),
+            )
+            .await?;
         Self::verify_requested_scope(
             &session,
             input.project_id.as_deref(),
             input.branch_id.as_deref(),
         )?;
+
+        if input.action == PlanningDecideAction::Rebase {
+            anyhow::ensure!(
+                !input.expected_hashes.is_empty(),
+                "expected_hashes is required for the rebase action"
+            );
+            let rebased = self
+                .rebase_planning(
+                    session.id.clone(),
+                    session.scope.clone(),
+                    input.expected_hashes.clone(),
+                )
+                .await?;
+            let session = self.get_planning_session(&session.id).await?;
+            let proposals = self
+                .list_planning_proposals(&session.id, session.scope.clone())
+                .await?;
+            let decided = rebased
+                .iter()
+                .map(|proposal| proposal_summary(proposal, include_payloads))
+                .collect::<Result<Vec<_>>>()?;
+            let next_action = review_next_action(&session, &proposals, scene_manifests_complete);
+            return Ok(PlanningDecideOutput {
+                session: session_summary(
+                    &session,
+                    &proposals,
+                    scene_manifests_complete,
+                ),
+                action: input.action,
+                decided,
+                readiness: None,
+                next_action,
+                message: "Re-staged the selected proposals against the current base. Payload hashes are unchanged, so prior approvals remain valid.".to_string(),
+            });
+        }
 
         if input.action == PlanningDecideAction::PrepareAuthoringRun {
             let scope = session.scope.clone().ok_or_else(|| {
@@ -814,7 +951,7 @@ impl SqliteSpindleService {
                 .list_planning_proposals(&session.id, session.scope.clone())
                 .await?;
             return Ok(PlanningDecideOutput {
-                session: session_summary(&session, &proposals),
+                session: session_summary(&session, &proposals, scene_manifests_complete),
                 action: input.action,
                 decided: Vec::new(),
                 readiness: Some(readiness),
@@ -859,13 +996,25 @@ impl SqliteSpindleService {
         let proposals = self
             .list_planning_proposals(&session.id, session.scope.clone())
             .await?;
+        // Acceptance can persist chapter manifests, so completion must be read
+        // from the post-decision state rather than the entry snapshot.
+        let scene_manifests_complete = self
+            .repository
+            .planning_scene_manifests_complete(
+                session.scope.clone(),
+                input
+                    .target_range
+                    .clone()
+                    .unwrap_or_else(|| session.horizon.clone()),
+            )
+            .await?;
         let decided_summaries = decided
             .iter()
             .map(|proposal| proposal_summary(proposal, include_payloads))
             .collect::<Result<Vec<_>>>()?;
-        let next_action = review_next_action(&session, &proposals);
+        let next_action = review_next_action(&session, &proposals, scene_manifests_complete);
         Ok(PlanningDecideOutput {
-            session: session_summary(&session, &proposals),
+            session: session_summary(&session, &proposals, scene_manifests_complete),
             action: input.action,
             decided: decided_summaries,
             readiness: None,

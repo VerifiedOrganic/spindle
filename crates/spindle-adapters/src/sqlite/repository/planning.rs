@@ -2,6 +2,7 @@
 use super::*;
 use sha2::{Digest, Sha256};
 use spindle_core::planning::*;
+use std::collections::BTreeMap;
 pub(super) mod apply;
 
 fn hash<T: serde::Serialize>(value: &T) -> Result<String> {
@@ -414,6 +415,85 @@ impl Repository {
         );
         self.pool()
             .write(move |conn| Ok(stage_in_transaction(conn, input)))
+            .await?
+    }
+
+    /// Re-stage staged proposals against the current base without changing
+    /// their artifact or payload hash. Because the hash is unchanged, any
+    /// approval already recorded for that payload remains valid. Only staged
+    /// proposals can be rebased; applied proposals are history.
+    pub async fn rebase_planning(
+        &self,
+        session_id: String,
+        scope: Option<PlanningScope>,
+        expected_hashes: BTreeMap<String, String>,
+    ) -> Result<Vec<PlanningProposal>> {
+        anyhow::ensure!(
+            !expected_hashes.is_empty(),
+            "rebase requires at least one proposal hash"
+        );
+        self.pool()
+            .write(move |conn| {
+                Ok((|| -> Result<Vec<PlanningProposal>> {
+                    let tx = conn.transaction()?;
+                    let s = match scope.as_ref() {
+                        Some(scope) => check_session(&tx, &session_id, &Some(scope.clone()))?,
+                        None => {
+                            let s = session(&tx, &session_id)?;
+                            check_scope(&tx, &s.scope)?;
+                            s
+                        }
+                    };
+                    let mut all = proposals(&tx, &s.id)?;
+                    for (id, expected) in &expected_hashes {
+                        let p = all
+                            .iter()
+                            .find(|p| &p.id == id)
+                            .context("proposal not in planning session")?;
+                        anyhow::ensure!(
+                            &p.payload_hash == expected && hash(&p.artifact)? == *expected,
+                            "stale planning proposal hash"
+                        );
+                        anyhow::ensure!(
+                            p.status == PlanningProposalStatus::Staged,
+                            "only staged proposals can be rebased"
+                        );
+                        anyhow::ensure!(
+                            p.artifact.intent_hash == s.intent_hash,
+                            "stale planning intent"
+                        );
+                    }
+                    let mut rebased = Vec::new();
+                    for p in &mut all {
+                        if !expected_hashes.contains_key(&p.id) {
+                            continue;
+                        }
+                        let findings = validate_stage_input_in_conn_excluding(
+                            &tx,
+                            &p.artifact,
+                            s.rating_ceiling.clone(),
+                            Some(&p.id),
+                        )?;
+                        let blocking: Vec<String> = findings
+                            .iter()
+                            .filter(|f| f.severity == PlanningFindingSeverity::Blocking)
+                            .map(|f| format!("{}: {} (at {})", f.code, f.actual, f.path))
+                            .collect();
+                        anyhow::ensure!(
+                            blocking.is_empty(),
+                            "cannot rebase proposal {}: {}",
+                            p.id,
+                            blocking.join("; ")
+                        );
+                        p.base_state = apply::base_state(&tx, &s.scope, &p.artifact)?;
+                        p.findings = findings;
+                        save(&tx, p)?;
+                        rebased.push(p.clone());
+                    }
+                    tx.commit()?;
+                    Ok(rebased)
+                })())
+            })
             .await?
     }
 
@@ -3450,6 +3530,64 @@ impl Repository {
                         None,
                         Some(&p.id),
                     )
+                })())
+            })
+            .await?
+    }
+
+    /// True when every chapter in the target range has a persisted chapter
+    /// plan whose scene manifest meets the requested scene count. This is the
+    /// durable signal that the Scene planning level is already satisfied by an
+    /// accepted chapter proposal.
+    pub async fn planning_scene_manifests_complete(
+        &self,
+        scope: Option<PlanningScope>,
+        target_range: PlanningTargetRange,
+    ) -> Result<bool> {
+        let Some(scope) = scope else {
+            return Ok(false);
+        };
+        self.pool()
+            .read(move |conn| {
+                Ok((|| -> Result<bool> {
+                    let lineage = resolve_branch_lineage_in_conn(
+                        conn,
+                        Some(&scope.project_id),
+                        &scope.branch_id,
+                    )?;
+                    let required = target_range.scenes_per_chapter.max(1) as usize;
+                    for chapter_number in
+                        target_range.chapter_start..=target_range.chapter_end
+                    {
+                        // Resolve the effective plan with the same shadowing
+                        // rule as readiness: the nearest persisted chapter plan
+                        // wins, even when it is incomplete. Never fall through
+                        // to an ancestor plan that the child branch replaced.
+                        let mut effective: Option<Vec<serde_json::Value>> = None;
+                        for branch_id in &lineage {
+                            let scenes: Option<String> = conn
+                                .query_row(
+                                    "SELECT scenes FROM chapter_plan WHERE project_id=?1 AND branch_id=?2 AND book_number=?3 AND chapter_number=?4",
+                                    rusqlite::params![
+                                        scope.project_id,
+                                        branch_id,
+                                        target_range.book_number,
+                                        chapter_number
+                                    ],
+                                    |row| row.get(0),
+                                )
+                                .optional_inner()?;
+                            if let Some(scenes) = scenes {
+                                effective =
+                                    Some(serde_json::from_str(&scenes).unwrap_or_default());
+                                break;
+                            }
+                        }
+                        if !effective.is_some_and(|scenes| scenes.len() >= required) {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
                 })())
             })
             .await?
