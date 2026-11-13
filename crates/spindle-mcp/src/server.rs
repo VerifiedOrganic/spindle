@@ -6,7 +6,8 @@ use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Implementation, InitializeResult,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ReadResourceRequestParams, ReadResourceResult, ServerCapabilities, ServerInfo, Tool,
+    ProgressNotificationParam, ReadResourceRequestParams, ReadResourceResult, ServerCapabilities,
+    ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -243,10 +244,53 @@ All hosts can use the `list_skills`, `get_skill`, and `get_reference` tools as e
             None
         };
         let router = self.router(internal, requested.as_deref());
-        let call = router.call_tool_with_internal_token(
+        // A deep `check_consistency` can run for tens of minutes. When the
+        // client supplied a progress token, forward one notification per
+        // finished deep-tier check so the client sees liveness instead of
+        // silence. Other tools ignore the sink.
+        let progress_token = request
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get_progress_token())
+            .or_else(|| context.meta.get_progress_token());
+        let progress = if request.name == "check_consistency" {
+            progress_token.map(|token| {
+                let (sink, mut events) = tokio::sync::mpsc::unbounded_channel::<
+                    spindle_adapters::sqlite::service::ConsistencyProgress,
+                >();
+                let peer = context.peer.clone();
+                tokio::spawn(async move {
+                    while let Some(event) = events.recv().await {
+                        let completed = event.checks_completed.len();
+                        let total = completed + event.checks_pending.len();
+                        let message = format!(
+                            "check_consistency job {}: {completed} of {total} deep checks complete; {} finding(s) so far",
+                            event.job_id, event.issue_count
+                        );
+                        if peer
+                            .notify_progress(ProgressNotificationParam {
+                                progress_token: token.clone(),
+                                progress: completed as f64,
+                                total: Some(total.max(1) as f64),
+                                message: Some(message),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+                sink
+            })
+        } else {
+            None
+        };
+        let call = router.call_tool_with_internal_token_and_progress(
             &request.name,
             request.arguments.as_ref(),
             internal_token.as_deref(),
+            progress,
         );
         match AssertUnwindSafe(call).catch_unwind().await {
             Ok(result) => match result {
@@ -379,6 +423,8 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tempfile::tempdir;
 
     use spindle_adapters::ModelRouter;
@@ -506,6 +552,297 @@ mod tests {
 
         client.cancel().await.unwrap();
         task.await.unwrap().unwrap();
+    }
+
+    /// A deep check must not go silent when the client supplied a progress
+    /// token. This drives the real stdio-style server loop and asserts the
+    /// forwarded notification names the finished deep-tier check.
+    #[derive(Clone, Default)]
+    struct ProgressRecorder {
+        events: std::sync::Arc<std::sync::Mutex<Vec<rmcp::model::ProgressNotificationParam>>>,
+    }
+
+    impl rmcp::ClientHandler for ProgressRecorder {
+        async fn on_progress(
+            &self,
+            params: rmcp::model::ProgressNotificationParam,
+            _context: rmcp::service::NotificationContext<rmcp::RoleClient>,
+        ) {
+            self.events.lock().expect("progress events").push(params);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deep_check_forwards_mcp_progress_notifications() {
+        use rmcp::ServiceExt as _;
+        use rmcp::model::{CallToolRequestParams, ClientRequest, Request};
+        use rmcp::service::PeerRequestOptions;
+
+        let temp = tempdir().expect("temp dir");
+        let db = SqlitePool::open(&temp.path().join("server.db"))
+            .await
+            .expect("db init");
+        let data_dir = temp.path().to_path_buf();
+        let service = SpindleService::new(SpindleRepository::with_model_router(
+            db,
+            data_dir,
+            ModelRouter::local_only(),
+        ));
+        let server = SpindleMcpServer::with_tool_profile(service, None);
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(server.serve(server_io));
+        let recorder = ProgressRecorder::default();
+        let events = recorder.events.clone();
+        let client = tokio::time::timeout(Duration::from_secs(20), recorder.serve(client_io))
+            .await
+            .expect("client init timed out")
+            .expect("client init");
+
+        let project = client
+            .call_tool(
+                CallToolRequestParams::new("create_project").with_arguments(
+                    serde_json::json!({
+                        "name": "Progress Test",
+                        "project_type": "novel",
+                        "genre": "fantasy",
+                        "reader_contract": {
+                            "promise": "A test",
+                            "style_notes": [],
+                            "boundaries": []
+                        }
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+            )
+            .await
+            .expect("create_project");
+        let project_id = project.structured_content.unwrap()["project_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let saved = client
+            .call_tool(
+                CallToolRequestParams::new("save_scene_draft").with_arguments(
+                    serde_json::json!({
+                        "project_id": project_id,
+                        "book_number": 1,
+                        "chapter_number": 1,
+                        "scene_order": 1,
+                        "full_text": "He sat at the long table and turned the matter over. MOCK_TEMPORAL_JUMP. The lamps were lit and the room had gone cold.",
+                        "summary": "a quiet accounting",
+                        "content_rating": "General"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+            )
+            .await
+            .expect("save_scene_draft");
+        assert_ne!(saved.is_error, Some(true), "save failed: {saved:?}");
+
+        let params = CallToolRequestParams::new("check_consistency").with_arguments(
+            serde_json::json!({
+                "project_id": project_id,
+                "scope": {"scope_type": "full"},
+                "checks": ["temporal_coherence"],
+                "severity_filter": [],
+                "deep_check": true,
+                "subjects": []
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        // `call_tool` does not expose the request handle, and the rmcp client
+        // assigns the progress token itself; use the cancellable path so the
+        // test can assert the token the client actually sent.
+        let handle = client
+            .send_cancellable_request(
+                ClientRequest::CallToolRequest(Request::new(params)),
+                PeerRequestOptions::no_options(),
+            )
+            .await
+            .expect("send check_consistency");
+        let token = handle.progress_token.clone();
+        let result = handle
+            .await_response()
+            .await
+            .expect("check_consistency response");
+        let result = match result {
+            rmcp::model::ServerResult::CallToolResult(result) => result,
+            other => panic!("unexpected check_consistency response: {other:?}"),
+        };
+        assert_ne!(result.is_error, Some(true), "deep check failed: {result:?}");
+        let output = result.structured_content.expect("structured output");
+        assert_eq!(
+            output["status"].as_str(),
+            Some(spindle_core::models::ConsistencyStatus::Complete.as_str())
+        );
+        assert!(output["job_id"].as_str().is_some());
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if !events.lock().expect("progress events").is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no progress notification arrived for a deep check"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let seen = events.lock().expect("progress events").clone();
+        assert!(
+            seen.iter().all(|event| event.progress_token == token),
+            "progress token mismatch: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|event| {
+                event.total == Some(1.0)
+                    && event
+                        .message
+                        .as_deref()
+                        .is_some_and(|message| message.contains("deep checks complete"))
+            }),
+            "progress must report the finished deep check: {seen:?}"
+        );
+
+        client.cancel().await.unwrap();
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deep_check_tool_starts_joins_and_collects_a_job() {
+        use rmcp::ServiceExt as _;
+        use rmcp::model::CallToolRequestParams;
+
+        let temp = tempdir().expect("temp dir");
+        let db = SqlitePool::open(&temp.path().join("server.db"))
+            .await
+            .expect("db init");
+        let data_dir = temp.path().to_path_buf();
+        let mut service = SpindleService::new(SpindleRepository::with_model_router(
+            db,
+            data_dir,
+            ModelRouter::local_only(),
+        ));
+        service.set_consistency_job_join_wait(Duration::from_millis(50));
+        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        service.set_consistency_job_gate(Some(gate.clone()));
+        let server = SpindleMcpServer::with_tool_profile(service, None);
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let server_task = tokio::spawn(server.serve(server_io));
+        let client = tokio::time::timeout(Duration::from_secs(20), ().serve(client_io))
+            .await
+            .expect("client init timed out")
+            .expect("client init");
+
+        async fn call(
+            client: &rmcp::service::RunningService<rmcp::service::RoleClient, ()>,
+            name: &str,
+            args: serde_json::Value,
+        ) -> serde_json::Value {
+            let result = client
+                .call_tool(
+                    CallToolRequestParams::new(name.to_string())
+                        .with_arguments(args.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap();
+            assert_ne!(result.is_error, Some(true), "{name}: {result:?}");
+            serde_json::from_value(result.structured_content.unwrap()).unwrap()
+        }
+
+        let project = call(
+            &client,
+            "create_project",
+            serde_json::json!({
+                "name": "Deep Job Test",
+                "project_type": "novel",
+                "genre": "fantasy",
+                "reader_contract": {
+                    "promise": "A test",
+                    "style_notes": [],
+                    "boundaries": []
+                }
+            }),
+        )
+        .await;
+        let project_id = project["project_id"].as_str().unwrap().to_string();
+        call(
+            &client,
+            "save_scene_draft",
+            serde_json::json!({
+                "project_id": project_id,
+                "book_number": 1,
+                "chapter_number": 1,
+                "scene_order": 1,
+                "full_text": "He sat at the long table and turned the matter over. MOCK_TEMPORAL_JUMP. The lamps were lit and the room had gone cold.",
+                "summary": "a quiet accounting",
+                "content_rating": "General"
+            }),
+        )
+        .await;
+
+        let deep_args = || {
+            serde_json::json!({
+                "project_id": project_id,
+                "scope": {"scope_type": "full"},
+                "checks": ["temporal_coherence"],
+                "severity_filter": [],
+                "deep_check": true,
+                "subjects": []
+            })
+        };
+
+        let first = call(&client, "check_consistency", deep_args()).await;
+        assert_eq!(
+            first["status"].as_str(),
+            Some(spindle_core::models::ConsistencyStatus::InProgress.as_str())
+        );
+        let job_id = first["job_id"].as_str().unwrap().to_string();
+        assert_eq!(
+            first["checks_pending"],
+            serde_json::json!(["temporal_coherence.deep"])
+        );
+        let second = call(&client, "check_consistency", deep_args()).await;
+        assert_eq!(
+            second["status"].as_str(),
+            Some(spindle_core::models::ConsistencyStatus::InProgress.as_str())
+        );
+        assert_eq!(second["job_id"].as_str(), Some(job_id.as_str()));
+
+        gate.add_permits(1);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let collected = loop {
+            let output = call(&client, "check_consistency", deep_args()).await;
+            if output["status"].as_str()
+                == Some(spindle_core::models::ConsistencyStatus::Complete.as_str())
+            {
+                break output;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "deep-check job did not finish: {output:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(collected["job_id"].as_str(), Some(job_id.as_str()));
+        assert!(
+            collected["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue["check_type"] == "temporal_coherence"),
+            "collected audit must include the deep finding: {collected:?}"
+        );
+
+        client.cancel().await.unwrap();
+        server_task.await.unwrap().unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]

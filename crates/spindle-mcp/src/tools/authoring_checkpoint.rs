@@ -348,6 +348,15 @@ pub(super) fn auto_strict_anti_slop_blocks(
         .any(|issue| issue.check_type == spindle_core::style::antislop::ANTI_SLOP_CHECK)
 }
 
+/// True when a serialized deep-consistency payload is a detached job's
+/// in-progress snapshot rather than a finished audit. Recording one as the
+/// checkpoint audit would silently bless partial coverage, so both the manual
+/// and automatic checkpoint paths reject it.
+pub(super) fn deep_consistency_in_progress(payload: &serde_json::Value) -> bool {
+    payload.get("status").and_then(serde_json::Value::as_str)
+        == Some(spindle_core::models::ConsistencyStatus::InProgress.as_str())
+}
+
 pub(super) fn auto_checkpoint_severity_counts(
     output: &spindle_core::models::CheckConsistencyOutput,
 ) -> std::collections::BTreeMap<String, i64> {
@@ -745,6 +754,21 @@ impl ToolRouter {
                 )
             })?;
 
+        if deep_consistency_in_progress(&input.deep_consistency) {
+            let job = input
+                .deep_consistency
+                .get("job_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            anyhow::bail!(
+                "checkpoint {}-{} deep consistency is still running (job {job}). Call \
+                 check_consistency again with the same project and scope to collect the \
+                 completed payload, then record it.",
+                input.start_chapter,
+                input.end_chapter
+            );
+        }
+
         report.deep_consistency = Some(input.deep_consistency);
         report.deep_consistency_status = "complete".to_string();
         report.deep_consistency_instruction =
@@ -1032,6 +1056,25 @@ impl ToolRouter {
                 ));
             }
         };
+
+        // A detached job that has not finished is not a clean audit. Block the
+        // checkpoint honestly and let the next execute call join/collect the
+        // same job; never record a partial payload as complete.
+        if deep.status == spindle_core::models::ConsistencyStatus::InProgress {
+            tracing::warn!(
+                run_id,
+                step = "deep_consistency",
+                job_id = deep.job_id.as_deref().unwrap_or("unknown"),
+                "auto-checkpoint deep consistency is still running; blocking checkpoint"
+            );
+            return Ok(auto_checkpoint_block(
+                harness_state,
+                start_chapter,
+                end_chapter,
+                "deep_consistency_in_progress",
+                Vec::new(),
+            ));
+        }
 
         // Record the deep audit into the report artifact — the same shape
         // `handle_authoring_record_checkpoint_audit` writes.
@@ -1395,5 +1438,23 @@ impl ToolRouter {
         })?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_in_progress_deep_payload_is_rejected() {
+        assert!(deep_consistency_in_progress(
+            &serde_json::json!({"status": "in_progress", "job_id": "consistency-1"})
+        ));
+        assert!(!deep_consistency_in_progress(
+            &serde_json::json!({"status": "complete"})
+        ));
+        // Legacy payloads without a status field predate detached jobs and are
+        // treated as complete, preserving the established recording path.
+        assert!(!deep_consistency_in_progress(&serde_json::json!({})));
     }
 }
