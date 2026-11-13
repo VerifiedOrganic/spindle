@@ -1,8 +1,9 @@
 use spindle_adapters::sqlite::{Repository, SqlitePool, SqliteSpindleService};
 use spindle_core::models::{
-    CheckConsistencyInput, ConsistencyScopeInput, ContentRating, CreateCharacterInput,
-    CreateProjectInput, CreateWorldRuleInput, PrepareSemanticContinuityInput, ReaderContract,
-    RegisterCanonicalFactInput, SaveSceneDraftInput, SecrecyScope,
+    CharacterStatePatch, CheckConsistencyInput, CommitCharacterStateInput, ConsistencyScopeInput,
+    ContentRating, CreateCharacterInput, CreateProjectInput, CreateWorldRuleInput,
+    PrepareSemanticContinuityInput, ReaderContract, RegisterCanonicalFactInput,
+    SaveSceneDraftInput, SecrecyScope,
 };
 use spindle_core::semantic_continuity::{SemanticCandidateFamily, SemanticMode};
 use tempfile::TempDir;
@@ -431,4 +432,87 @@ async fn prepare_candidates_world_rules_and_keeps_modes_finding_neutral() {
     // scene is honestly recorded as not evaluated rather than clean.
     assert!(semantic.evaluated_ids.is_empty());
     assert_eq!(semantic.not_evaluated_ids.len(), 1);
+}
+
+#[tokio::test]
+async fn same_scene_respawn_suppresses_death_candidate_but_keeps_unrespawned_death() {
+    let (_tmp, svc) = fresh_service().await;
+    let project_id = project(&svc, "Respawn candidates").await;
+    let respawning = character(&svc, &project_id, "Ada Ward").await;
+    let mortal = character(&svc, &project_id, "Borin Hale").await;
+    let death_scene = scene(
+        &svc,
+        &project_id,
+        1,
+        "Ada Ward and Borin Hale fell in the courtyard.",
+    )
+    .await;
+    for character_id in [&respawning, &mortal] {
+        svc.commit_character_state(CommitCharacterStateInput {
+            character_id: character_id.clone(),
+            scene_id: Some(death_scene.clone()),
+            anchor: None,
+            changes: CharacterStatePatch {
+                emotional_state: Default::default(),
+                goals: None,
+                status: Some(vec!["dead at the crossing: killed by a rival".into()]),
+                notes: None,
+                source_summary: None,
+            },
+        })
+        .await
+        .unwrap();
+    }
+    let action_scene = scene(
+        &svc,
+        &project_id,
+        2,
+        "Ada Ward crossed the yard while Borin Hale drew his sword.",
+    )
+    .await;
+    svc.commit_character_state(CommitCharacterStateInput {
+        character_id: respawning.clone(),
+        scene_id: Some(action_scene.clone()),
+        anchor: None,
+        changes: CharacterStatePatch {
+            emotional_state: Default::default(),
+            goals: None,
+            status: Some(vec!["alive".into(), "respawned".into()]),
+            notes: None,
+            source_summary: None,
+        },
+    })
+    .await
+    .unwrap();
+
+    let prepared = svc
+        .prepare_semantic_continuity(PrepareSemanticContinuityInput {
+            project_id,
+            scope: ConsistencyScopeInput::full(),
+            subjects: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let candidates = prepared
+        .requests
+        .iter()
+        .find(|request| request.candidate_set.scene_id == action_scene)
+        .map(|request| &request.candidate_set.candidates)
+        .expect("the action scene must have a semantic request");
+    let death_candidates: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| candidate.family == SemanticCandidateFamily::Death)
+        .collect();
+    assert!(
+        death_candidates
+            .iter()
+            .all(|candidate| !candidate.subject_ids.contains(&respawning)),
+        "a same-scene respawn must suppress the death candidate: {death_candidates:?}"
+    );
+    assert!(
+        death_candidates
+            .iter()
+            .any(|candidate| candidate.subject_ids.contains(&mortal)),
+        "an un-respawned death must still produce a candidate: {death_candidates:?}"
+    );
 }
