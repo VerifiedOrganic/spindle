@@ -54,3 +54,29 @@ units = ["editor", "bible-librarian"]
 name = "setup"
 description = "New-book setup over the current entry workflow."
 units = ["spindle/setup"]
+
+[[profiles]]
+name = "full"
+description = "Every model-facing skill and reference unit on one server; largest context cost."
+units = [
+  "authoring-supervisor",
+  "bible-librarian",
+  "canon-steward",
+  "character-creator",
+  "continuity-editor",
+  "editor",
+  "editor/style",
+  "manuscript-importer",
+  "new-book",
+  "plot-architect",
+  "researcher",
+  "revision-manager",
+  "scene-writer",
+  "scene-writer/authoring-runs",
+  "scene-writer/craft-and-voice",
+  "scene-writer/drafting-packets",
+  "scene-writer/offloaded-generation",
+  "scene-writer/research-and-sources",
+  "spindle/setup",
+  "worldbuilder",
+]

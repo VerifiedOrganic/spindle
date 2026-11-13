@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- A generated `full` startup profile composes every model-facing skill and
+  reference unit (176 tools), restoring one-server access to the complete
+  skill-declared model surface without the removed `legacy-all` compatibility
+  catalog. Operator-only commands remain CLI-only, and unset still starts
+  `workflow-write`.
+
 ### Fixed
 
 - Semantic continuity precision round (the lane still ships **off by

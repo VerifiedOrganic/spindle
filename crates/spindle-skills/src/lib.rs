@@ -119,7 +119,7 @@ mod profile_contract_tests {
     #[test]
     fn generated_profiles_are_sorted_and_resolve_dependency_closure() {
         let profiles = list_profiles();
-        assert_eq!(profiles.len(), 11);
+        assert_eq!(profiles.len(), 12);
         assert!(profiles.iter().any(|profile| profile.name == "new-book"));
         assert!(profiles.windows(2).all(|p| p[0].name < p[1].name));
         for profile in profiles {
@@ -135,6 +135,25 @@ mod profile_contract_tests {
             ] {
                 assert!(profile.tools.contains(&name), "{}: {name}", profile.name);
             }
+        }
+        let full = profiles.iter().find(|p| p.name == "full").unwrap();
+        assert_eq!(full.tools.len(), 176);
+        for profile in profiles {
+            for tool in profile.tools {
+                assert!(
+                    full.tools.contains(tool),
+                    "full is missing {tool} from {}",
+                    profile.name
+                );
+            }
+        }
+        for tool in [
+            "apply_style_profile",
+            "bind_canonical_fact_to_scene",
+            "continue_generation",
+            "mine_scene_canon",
+        ] {
+            assert!(full.tools.contains(&tool), "full is missing {tool}");
         }
         let import = profiles
             .iter()
