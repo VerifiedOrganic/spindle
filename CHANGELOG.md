@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Research search now splits multi-word queries into terms and matches them
+  across source titles, note text, claim text, and tags, ranking results by the
+  number of matching terms. Tag matching normalizes case, hyphens,
+  underscores, and spaces, so `supply-lines`, `supply_lines`, and
+  `supply lines` are equivalent. The authoring research gate uses the same
+  matching, so a scene no longer stays blocked when its multi-word research
+  tags overlap existing note tags.
+
 ## 0.4.1 — 2026-11-13
 
 ### Added

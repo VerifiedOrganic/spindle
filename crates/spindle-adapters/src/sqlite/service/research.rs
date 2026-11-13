@@ -892,7 +892,7 @@ impl SqliteSpindleService {
                 }
             }
             for t in &target_tags {
-                if s.tags.iter().any(|st| st.eq_ignore_ascii_case(t)) {
+                if spindle_core::research_match::research_tag_matches(t, &s.tags) {
                     score += 2;
                 }
             }
@@ -932,7 +932,7 @@ impl SqliteSpindleService {
                 }
             }
             for t in &target_tags {
-                if n.tags.iter().any(|nt| nt.eq_ignore_ascii_case(t)) {
+                if spindle_core::research_match::research_tag_matches(t, &n.tags) {
                     score += 2;
                 }
             }
@@ -972,7 +972,7 @@ impl SqliteSpindleService {
                 }
             }
             for t in &target_tags {
-                if c.tags.iter().any(|ct| ct.eq_ignore_ascii_case(t)) {
+                if spindle_core::research_match::research_tag_matches(t, &c.tags) {
                     score += 2;
                 }
             }

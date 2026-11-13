@@ -1036,3 +1036,184 @@ async fn test_check_consistency_research_accuracy() {
     });
     assert!(orphaned_claim_issue.is_some());
 }
+
+#[tokio::test]
+async fn research_search_matches_multi_word_queries_across_fields_and_tags() {
+    use spindle_core::models::{
+        CreateProjectInput, ReaderContract, ResearchAddClaimInput, ResearchAddNoteInput,
+        ResearchAddSourceInput, ResearchSearchInput,
+    };
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let proj = svc
+        .create_project(CreateProjectInput {
+            name: "Search Fixture".to_string(),
+            project_type: "novel".to_string(),
+            genre: "adventure".to_string(),
+            reader_contract: ReaderContract {
+                promise: "generic research matching".to_string(),
+                style_notes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+        })
+        .await
+        .unwrap();
+    let project_id = proj.project_id;
+
+    let source_id = svc
+        .research_add_source(ResearchAddSourceInput {
+            project_id: project_id.clone(),
+            branch_id: None,
+            title: "Camp routines".to_string(),
+            source_type: "book".to_string(),
+            url: None,
+            file_path: None,
+            author: None,
+            publisher: None,
+            published_date: None,
+            accessed_at: None,
+            reliability: "secondary".to_string(),
+            tags: vec!["field-camp".to_string()],
+            summary: None,
+        })
+        .await
+        .unwrap()
+        .source_id;
+
+    let camp_note = svc
+        .research_add_note(ResearchAddNoteInput {
+            project_id: project_id.clone(),
+            source_id: None,
+            branch_id: None,
+            note: "A dry ridge above the water.".to_string(),
+            quote: None,
+            locator: None,
+            tags: vec!["camp".to_string()],
+        })
+        .await
+        .unwrap()
+        .note_id;
+
+    let army_note = svc
+        .research_add_note(ResearchAddNoteInput {
+            project_id: project_id.clone(),
+            source_id: None,
+            branch_id: None,
+            note: "A mounted patrol crossed at dawn.".to_string(),
+            quote: None,
+            locator: None,
+            tags: vec!["army".to_string()],
+        })
+        .await
+        .unwrap()
+        .note_id;
+
+    let supply_note = svc
+        .research_add_note(ResearchAddNoteInput {
+            project_id: project_id.clone(),
+            source_id: None,
+            branch_id: None,
+            note: "Haulers moved barrels along the north road.".to_string(),
+            quote: None,
+            locator: None,
+            tags: vec!["supply-lines".to_string()],
+        })
+        .await
+        .unwrap()
+        .note_id;
+
+    let both_note = svc
+        .research_add_note(ResearchAddNoteInput {
+            project_id: project_id.clone(),
+            source_id: None,
+            branch_id: None,
+            note: "The main column pitched tents beside the river.".to_string(),
+            quote: None,
+            locator: None,
+            tags: vec!["army".to_string(), "camp".to_string()],
+        })
+        .await
+        .unwrap()
+        .note_id;
+
+    let claim_id = svc
+        .research_add_claim(ResearchAddClaimInput {
+            project_id: project_id.clone(),
+            source_id: None,
+            note_id: None,
+            branch_id: None,
+            claim: "Camp layouts followed the ridge.".to_string(),
+            topic: Some("camp".to_string()),
+            time_period: None,
+            location: None,
+            confidence: "high".to_string(),
+            tags: vec!["camp".to_string()],
+        })
+        .await
+        .unwrap()
+        .claim_id;
+
+    let search = |query: &str, tags: Vec<String>| {
+        let project_id = project_id.clone();
+        let query = query.to_string();
+        let svc = svc.clone();
+        async move {
+            svc.research_search(ResearchSearchInput {
+                project_id,
+                branch_id: None,
+                query,
+                tags,
+                time_period: None,
+                location: None,
+                limit: None,
+            })
+            .await
+            .unwrap()
+        }
+    };
+
+    let multi_word = search("army camp", Vec::new()).await;
+    let ids: Vec<&str> = multi_word
+        .results
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect();
+    assert!(ids.contains(&camp_note.as_str()), "camp tag matches");
+    assert!(ids.contains(&army_note.as_str()), "army tag matches");
+    assert!(ids.contains(&both_note.as_str()), "both tags match");
+    assert!(
+        ids.contains(&source_id.as_str()),
+        "source title matches camp"
+    );
+    assert!(ids.contains(&claim_id.as_str()), "claim text matches camp");
+    assert!(
+        !ids.contains(&supply_note.as_str()),
+        "unrelated note must not match"
+    );
+    assert_eq!(
+        multi_word.results[0].id, both_note,
+        "the item matching both query terms ranks first"
+    );
+
+    let hyphen_query = search("supply lines", Vec::new()).await;
+    assert_eq!(hyphen_query.results.len(), 1);
+    assert_eq!(hyphen_query.results[0].id, supply_note);
+
+    let space_query = search("supply-lines", Vec::new()).await;
+    assert_eq!(space_query.results.len(), 1);
+    assert_eq!(space_query.results[0].id, supply_note);
+
+    let partial = search("army camp supply", Vec::new()).await;
+    assert!(
+        partial.results.iter().any(|item| item.id == supply_note),
+        "partial matches are included"
+    );
+    assert_eq!(
+        partial.results[0].id, both_note,
+        "the two-term match still ranks above one-term matches"
+    );
+
+    let filtered = search("barrels", vec!["Supply_Lines".to_string()]).await;
+    assert_eq!(filtered.results.len(), 1);
+    assert_eq!(filtered.results[0].id, supply_note);
+}
