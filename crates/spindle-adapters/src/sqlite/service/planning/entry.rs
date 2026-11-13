@@ -61,13 +61,30 @@ fn session_summary(
     }
 }
 
-fn proposal_summary(proposal: &PlanningProposal) -> Result<PlanningProposalSummary> {
+fn proposal_summary(proposal: &PlanningProposal, detail: bool) -> Result<PlanningProposalSummary> {
+    if !detail {
+        return Ok(PlanningProposalSummary {
+            proposal_id: proposal.id.clone(),
+            level: proposal.artifact.level,
+            status: proposal.status,
+            payload_hash: proposal.payload_hash.clone(),
+            rationale: None,
+            operations: Vec::new(),
+            schedule: None,
+            assumptions: Vec::new(),
+            author_questions: Vec::new(),
+            findings: Vec::new(),
+            decided_by: proposal.decided_by.clone(),
+            decision_note: proposal.decision_note.clone(),
+            created_at: None,
+        });
+    }
     Ok(PlanningProposalSummary {
         proposal_id: proposal.id.clone(),
         level: proposal.artifact.level,
         status: proposal.status,
         payload_hash: proposal.payload_hash.clone(),
-        rationale: proposal.artifact.rationale.clone(),
+        rationale: Some(proposal.artifact.rationale.clone()),
         operations: proposal
             .artifact
             .operations
@@ -79,13 +96,13 @@ fn proposal_summary(proposal: &PlanningProposal) -> Result<PlanningProposalSumma
                 })
             })
             .collect::<Result<Vec<_>>>()?,
-        schedule: serde_json::to_value(&proposal.artifact.schedule)?,
+        schedule: Some(serde_json::to_value(&proposal.artifact.schedule)?),
         assumptions: proposal.artifact.assumptions.clone(),
         author_questions: proposal.artifact.author_questions.clone(),
         findings: proposal.findings.clone(),
         decided_by: proposal.decided_by.clone(),
         decision_note: proposal.decision_note.clone(),
-        created_at: proposal.created_at,
+        created_at: Some(proposal.created_at),
     })
 }
 
@@ -138,8 +155,15 @@ fn host_request_summary(request: &PlanningHostRequest) -> PlanningHostRequestSum
     }
 }
 
-fn advance_summary(report: PlanningAdvanceReport) -> Result<PlanningAdvanceSummary> {
-    let proposal = report.proposal.as_ref().map(proposal_summary).transpose()?;
+fn advance_summary(
+    report: PlanningAdvanceReport,
+    include_payloads: bool,
+) -> Result<PlanningAdvanceSummary> {
+    let proposal = report
+        .proposal
+        .as_ref()
+        .map(|proposal| proposal_summary(proposal, include_payloads))
+        .transpose()?;
     let (source, attempts_used, repaired) = match report.generation_receipt {
         Some(receipt) => (
             Some(receipt.source),
@@ -419,6 +443,7 @@ impl SqliteSpindleService {
         input: PlanningAdvanceInput,
     ) -> Result<PlanningAdvanceOutput> {
         let session = self.get_planning_session(&input.session_id).await?;
+        let include_payloads = input.include_payloads.unwrap_or(false);
         Self::verify_requested_scope(
             &session,
             input.project_id.as_deref(),
@@ -584,7 +609,7 @@ impl SqliteSpindleService {
         Ok(PlanningAdvanceOutput {
             session: session_summary(&session, &proposals),
             action: input.action,
-            advance: Some(advance_summary(report)?),
+            advance: Some(advance_summary(report, include_payloads)?),
             readiness: None,
             next_action,
         })
@@ -595,6 +620,9 @@ impl SqliteSpindleService {
         input: PlanningStatusInput,
     ) -> Result<PlanningStatusOutput> {
         let include_readiness = input.include_readiness.unwrap_or(true);
+        let include_payloads = input.include_payloads.unwrap_or(false);
+        let requested: std::collections::BTreeSet<&str> =
+            input.proposal_ids.iter().map(String::as_str).collect();
         let (session, session_records) = match input.session_id.as_deref() {
             Some(session_id) => {
                 let session = self.get_planning_session(session_id).await?;
@@ -639,12 +667,42 @@ impl SqliteSpindleService {
         let proposals = self
             .list_planning_proposals(&session.id, session.scope.clone())
             .await?;
+        if !requested.is_empty() {
+            let missing: Vec<&str> = requested
+                .iter()
+                .copied()
+                .filter(|id| !proposals.iter().any(|proposal| proposal.id == *id))
+                .collect();
+            anyhow::ensure!(
+                missing.is_empty(),
+                "proposal_ids not in planning session: {}",
+                missing.join(", ")
+            );
+        }
         if sessions.is_empty() {
             sessions = vec![session_summary(&session, &proposals)];
         }
-        let proposal_summaries = proposals
+        let selected: Vec<&PlanningProposal> = proposals
             .iter()
-            .map(proposal_summary)
+            .filter(|proposal| {
+                if requested.is_empty() {
+                    matches!(
+                        proposal.status,
+                        PlanningProposalStatus::Staged | PlanningProposalStatus::Applied
+                    )
+                } else {
+                    requested.contains(proposal.id.as_str())
+                }
+            })
+            .collect();
+        let proposal_summaries = selected
+            .iter()
+            .map(|proposal| {
+                proposal_summary(
+                    proposal,
+                    include_payloads || requested.contains(proposal.id.as_str()),
+                )
+            })
             .collect::<Result<Vec<_>>>()?;
         let gate = Some(gate_for(&session, gate_level(&proposals)));
 
@@ -715,6 +773,7 @@ impl SqliteSpindleService {
         input: PlanningDecideInput,
     ) -> Result<PlanningDecideOutput> {
         let session = self.get_planning_session(&input.session_id).await?;
+        let include_payloads = input.include_payloads.unwrap_or(false);
         Self::verify_requested_scope(
             &session,
             input.project_id.as_deref(),
@@ -802,7 +861,7 @@ impl SqliteSpindleService {
             .await?;
         let decided_summaries = decided
             .iter()
-            .map(proposal_summary)
+            .map(|proposal| proposal_summary(proposal, include_payloads))
             .collect::<Result<Vec<_>>>()?;
         let next_action = review_next_action(&session, &proposals);
         Ok(PlanningDecideOutput {

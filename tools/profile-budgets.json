@@ -8,13 +8,13 @@
     },
     "full": {
       "tools": 177,
-      "input_bytes": 178193,
-      "full_bytes": 381619
+      "input_bytes": 179487,
+      "full_bytes": 382913
     },
     "new-book": {
       "tools": 15,
-      "input_bytes": 20871,
-      "full_bytes": 27691
+      "input_bytes": 22165,
+      "full_bytes": 28985
     },
     "planning": {
       "tools": 40,
