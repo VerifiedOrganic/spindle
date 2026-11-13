@@ -3798,20 +3798,21 @@ async fn update_relationship_outside_a_scene_validates_details() {
     .await
     .unwrap();
 
-    let input = |relationship_type: Option<&str>, dynamics: Option<Vec<&str>>, trust_delta: i32| {
-        UpdateRelationshipInput {
-            character_a_id: a.clone(),
-            character_b_id: b.clone(),
-            trust_delta,
-            reason: "reason".to_string(),
-            relationship_type: relationship_type.map(str::to_string),
-            dynamics: dynamics.map(|values| values.into_iter().map(str::to_string).collect()),
-            ..Default::default()
-        }
-    };
+    let input =
+        |relationship_type: Option<&str>, dynamics: Option<Vec<&str>>, trust_delta: Option<i32>| {
+            UpdateRelationshipInput {
+                character_a_id: a.clone(),
+                character_b_id: b.clone(),
+                trust_delta,
+                reason: "reason".to_string(),
+                relationship_type: relationship_type.map(str::to_string),
+                dynamics: dynamics.map(|values| values.into_iter().map(str::to_string).collect()),
+                ..Default::default()
+            }
+        };
 
     let err = svc
-        .update_relationship(input(None, None, 0))
+        .update_relationship(input(None, None, None))
         .await
         .expect_err("no-op edit must be rejected");
     assert!(
@@ -3820,13 +3821,13 @@ async fn update_relationship_outside_a_scene_validates_details() {
     );
 
     let err = svc
-        .update_relationship(input(Some("ally"), None, 5))
+        .update_relationship(input(Some("ally"), None, Some(5)))
         .await
         .expect_err("trust delta without a scene must be rejected");
     assert!(err.to_string().contains("scene_id is required"));
 
     let err = svc
-        .update_relationship(input(Some("   "), None, 0))
+        .update_relationship(input(Some("   "), None, None))
         .await
         .expect_err("blank label must be rejected");
     assert!(
@@ -3835,7 +3836,7 @@ async fn update_relationship_outside_a_scene_validates_details() {
     );
 
     let err = svc
-        .update_relationship(input(None, Some(vec!["ok", "  "]), 0))
+        .update_relationship(input(None, Some(vec!["ok", "  "]), None))
         .await
         .expect_err("blank dynamics entry must be rejected");
     assert!(
@@ -3867,8 +3868,8 @@ async fn scene_scoped_relationship_update_can_also_correct_label_and_dynamics() 
         .update_relationship(UpdateRelationshipInput {
             character_a_id: a,
             character_b_id: b,
-            trust_delta: 3,
-            tension_delta: -1,
+            trust_delta: Some(3),
+            tension_delta: Some(-1),
             reason: "scene correction".to_string(),
             scene_id: Some(scene_id),
             relationship_type: Some("ally".to_string()),
@@ -3881,6 +3882,97 @@ async fn scene_scoped_relationship_update_can_also_correct_label_and_dynamics() 
     assert_eq!(updated.dynamics, vec!["new dynamic".to_string()]);
     assert_eq!(updated.trust, 13);
     assert_eq!(updated.tension, 4);
+}
+
+#[tokio::test]
+async fn scene_scoped_relationship_details_preserve_omitted_deltas() {
+    use spindle_core::models::{CreateRelationshipInput, UpdateRelationshipInput};
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene_id, _) = project_with_scene(&svc, "Relationship Omitted Deltas").await;
+    let a = create_character_named(&svc, &project.project_id, "Ari").await;
+    let b = create_character_named(&svc, &project.project_id, "Bex").await;
+    svc.create_relationship(CreateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        relationship_type: "allly".to_string(),
+        initial_trust: 0,
+        initial_tension: 0,
+        dynamics: Vec::new(),
+    })
+    .await
+    .unwrap();
+
+    svc.update_relationship(UpdateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        trust_delta: Some(10),
+        tension_delta: Some(-5),
+        reason: "scene delta".to_string(),
+        scene_id: Some(scene_id.clone()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // A label-only correction on the same scene must not erase the deltas the
+    // scene already recorded.
+    let corrected = svc
+        .update_relationship(UpdateRelationshipInput {
+            character_a_id: a.clone(),
+            character_b_id: b.clone(),
+            reason: "correct the label".to_string(),
+            scene_id: Some(scene_id.clone()),
+            relationship_type: Some("ally".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(corrected.trust, 10);
+    assert_eq!(corrected.tension, -5);
+    assert_eq!(corrected.relationship_type, "ally");
+
+    // Supplying only one delta replaces that delta and leaves the other alone.
+    let trust_only = svc
+        .update_relationship(UpdateRelationshipInput {
+            character_a_id: a.clone(),
+            character_b_id: b.clone(),
+            trust_delta: Some(4),
+            reason: "revise trust".to_string(),
+            scene_id: Some(scene_id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(trust_only.trust, 4);
+    assert_eq!(trust_only.tension, -5);
+
+    let tension_only = svc
+        .update_relationship(UpdateRelationshipInput {
+            character_a_id: a.clone(),
+            character_b_id: b.clone(),
+            tension_delta: Some(-2),
+            reason: "revise tension".to_string(),
+            scene_id: Some(scene_id),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(tension_only.trust, 4);
+    assert_eq!(tension_only.tension, -2);
+
+    let branch = svc
+        .repository
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let stored = svc
+        .repository
+        .get_relationship(&branch.id, &a, &b)
+        .await
+        .unwrap();
+    assert_eq!(stored.trust, 4);
+    assert_eq!(stored.tension, -2);
 }
 
 #[tokio::test]

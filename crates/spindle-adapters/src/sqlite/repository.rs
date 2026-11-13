@@ -2291,8 +2291,10 @@ impl CanonTransaction<'_> {
         };
 
         let (prior_trust, prior_tension) = prior_delta.unwrap_or((0, 0));
-        let net_trust = trust_delta - prior_trust;
-        let net_tension = tension_delta - prior_tension;
+        let effective_trust = trust_delta.unwrap_or(prior_trust);
+        let effective_tension = tension_delta.unwrap_or(prior_tension);
+        let net_trust = effective_trust - prior_trust;
+        let net_tension = effective_tension - prior_tension;
 
         let (in_id, out_id) = if let Some((in_id, out_id)) = existing_local {
             self.tx.execute(
@@ -2383,8 +2385,8 @@ impl CanonTransaction<'_> {
                     book_num,
                     chap_num,
                     sc_order,
-                    trust_delta,
-                    tension_delta,
+                    effective_trust,
+                    effective_tension,
                     reason,
                     now,
                 ],
@@ -2408,8 +2410,8 @@ impl CanonTransaction<'_> {
                     &out_id,
                     scene_id,
                     source,
-                    trust_delta,
-                    tension_delta,
+                    effective_trust,
+                    effective_tension,
                     reason,
                     now,
                 ],

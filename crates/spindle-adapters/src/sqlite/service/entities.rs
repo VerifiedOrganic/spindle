@@ -529,7 +529,9 @@ fn normalize_relationship_update(
         anyhow::bail!("update_relationship requires a non-empty reason");
     }
     if !has_scene {
-        if input.trust_delta != 0 || input.tension_delta != 0 {
+        if input.trust_delta.is_some_and(|delta| delta != 0)
+            || input.tension_delta.is_some_and(|delta| delta != 0)
+        {
             anyhow::bail!("scene_id is required when updating trust or tension");
         }
         if input.relationship_type.is_none() && input.dynamics.is_none() {

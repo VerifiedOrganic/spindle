@@ -1913,8 +1913,8 @@ async fn backfill_all_18_stores_idempotency_progression_dedup_and_shadow_parity(
     svc.update_relationship(UpdateRelationshipInput {
         character_a_id: veyra_id.clone(),
         character_b_id: bram_id.clone(),
-        trust_delta: 10,
-        tension_delta: -5,
+        trust_delta: Some(10),
+        tension_delta: Some(-5),
         reason: "held the eastern parapet together".into(),
         scene_id: Some(scene2_id.clone()),
         ..Default::default()
@@ -3556,8 +3556,8 @@ async fn dual_write_relationship_replaces_prior_scene_delta_and_reverts() {
         svc.update_relationship(UpdateRelationshipInput {
             character_a_id: a.clone(),
             character_b_id: b.clone(),
-            trust_delta,
-            tension_delta: 0,
+            trust_delta: Some(trust_delta),
+            tension_delta: Some(0),
             reason: "scene revision".into(),
             scene_id: Some(scene_id.clone()),
             ..Default::default()
@@ -3741,8 +3741,8 @@ async fn dual_write_relationship_replaces_backfilled_scene_delta_after_cutover()
     svc.update_relationship(UpdateRelationshipInput {
         character_a_id: a.clone(),
         character_b_id: b.clone(),
-        trust_delta: 2,
-        tension_delta: 0,
+        trust_delta: Some(2),
+        tension_delta: Some(0),
         reason: "pre-cutover".into(),
         scene_id: Some(scene_id.clone()),
         ..Default::default()
@@ -3759,8 +3759,8 @@ async fn dual_write_relationship_replaces_backfilled_scene_delta_after_cutover()
         svc.update_relationship(UpdateRelationshipInput {
             character_a_id: a.clone(),
             character_b_id: b.clone(),
-            trust_delta,
-            tension_delta: 0,
+            trust_delta: Some(trust_delta),
+            tension_delta: Some(0),
             reason: "post-cutover revision".into(),
             scene_id: Some(scene_id.clone()),
             ..Default::default()
@@ -3877,8 +3877,8 @@ async fn dual_write_relationship_replaces_live_delta_across_reversed_pair_argume
     let update = |first: &str, second: &str, delta: i32| UpdateRelationshipInput {
         character_a_id: first.to_string(),
         character_b_id: second.to_string(),
-        trust_delta: delta,
-        tension_delta: 0,
+        trust_delta: Some(delta),
+        tension_delta: Some(0),
         reason: "reversed revision".into(),
         scene_id: Some(scene_id.clone()),
         ..Default::default()
@@ -3928,8 +3928,8 @@ async fn dual_write_relationship_replaces_backfilled_delta_across_reversed_pair_
     let update = |first: &str, second: &str, delta: i32| UpdateRelationshipInput {
         character_a_id: first.to_string(),
         character_b_id: second.to_string(),
-        trust_delta: delta,
-        tension_delta: 0,
+        trust_delta: Some(delta),
+        tension_delta: Some(0),
         reason: "reversed revision".into(),
         scene_id: Some(scene_id.clone()),
         ..Default::default()

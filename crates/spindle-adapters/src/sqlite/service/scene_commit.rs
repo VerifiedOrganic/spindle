@@ -193,8 +193,8 @@ fn apply_continuity_in_tx(
             &UpdateRelationshipInput {
                 character_a_id: entry.character_a_id.clone(),
                 character_b_id: entry.character_b_id.clone(),
-                trust_delta: entry.trust_delta,
-                tension_delta: entry.tension_delta,
+                trust_delta: Some(entry.trust_delta),
+                tension_delta: Some(entry.tension_delta),
                 reason: entry.reason.clone(),
                 scene_id: Some(scene.id.clone()),
                 ..Default::default()

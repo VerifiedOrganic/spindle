@@ -4252,12 +4252,14 @@ pub struct UpdateRelationshipInput {
     pub character_a_id: String,
     /// Record id returned by create_character (e.g. "character:xyz789")
     pub character_b_id: String,
-    /// Trust delta for a scene-scoped update. Defaults to 0.
-    #[serde(default)]
-    pub trust_delta: i32,
-    /// Tension delta for a scene-scoped update. Defaults to 0.
-    #[serde(default)]
-    pub tension_delta: i32,
+    /// Trust delta for a scene-scoped update. Omit to leave the prior scene
+    /// delta for this scene unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_delta: Option<i32>,
+    /// Tension delta for a scene-scoped update. Omit to leave the prior scene
+    /// delta for this scene unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tension_delta: Option<i32>,
     /// Why the relationship changed. Required for every update.
     pub reason: String,
     /// Record id returned by save_scene_draft (e.g. "scene:abc123").

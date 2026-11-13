@@ -198,11 +198,21 @@ impl Repository {
             } else {
                 branch_id_owned.clone()
             };
+            let has_details =
+                input_owned.relationship_type.is_some() || input_owned.dynamics.is_some();
+            let has_delta =
+                input_owned.trust_delta.is_some() || input_owned.tension_delta.is_some();
             let relationship = if scene.is_some() {
-                if input_owned.relationship_type.is_some() || input_owned.dynamics.is_some() {
-                    tx.update_relationship_details(&effective_branch_id, &input_owned)?;
+                let details_row = if has_details || !has_delta {
+                    Some(tx.update_relationship_details(&effective_branch_id, &input_owned)?)
+                } else {
+                    None
+                };
+                if has_delta {
+                    tx.update_relationship(&effective_branch_id, &input_owned, &source_owned)?
+                } else {
+                    details_row.expect("details row fetched when no scene delta is supplied")
                 }
-                tx.update_relationship(&effective_branch_id, &input_owned, &source_owned)?
             } else {
                 tx.update_relationship_details(&effective_branch_id, &input_owned)?
             };
@@ -236,54 +246,58 @@ impl Repository {
                 // persisted orientation; canon relationship streams are
                 // directional, so mirror that orientation rather than the
                 // caller's argument order.
-                let claim = legacy_claim(
-                    &scene.project_id,
-                    &effective_branch_id,
-                    &revision_id,
-                    Some(&scene.id),
-                    &placement,
-                    ClaimEntity::Resolved {
-                        id: relationship.in_id.clone(),
-                    },
-                    ClaimAssertion::Relationship {
-                        operation: RelationshipOperation::Delta,
-                        other: ClaimEntity::Resolved {
-                            id: relationship.out_id.clone(),
+                let mut claims = vec![snapshot_claim];
+                if has_delta {
+                    claims.push(legacy_claim(
+                        &scene.project_id,
+                        &effective_branch_id,
+                        &revision_id,
+                        Some(&scene.id),
+                        &placement,
+                        ClaimEntity::Resolved {
+                            id: relationship.in_id.clone(),
                         },
-                        trust: input_owned.trust_delta,
-                        tension: input_owned.tension_delta,
-                    },
-                    Some(0),
-                    1,
-                );
+                        ClaimAssertion::Relationship {
+                            operation: RelationshipOperation::Delta,
+                            other: ClaimEntity::Resolved {
+                                id: relationship.out_id.clone(),
+                            },
+                            trust: input_owned.trust_delta.unwrap_or(0),
+                            tension: input_owned.tension_delta.unwrap_or(0),
+                        },
+                        Some(0),
+                        1,
+                    ));
+                }
                 let mirrored = tx.mirror_canon_claims(
                     &scene.project_id,
                     &effective_branch_id,
                     &revision_id,
                     Some(&scene.id),
-                    vec![snapshot_claim, claim],
+                    claims,
                 )?;
                 if mirrored.is_some() {
                     let pair_key = format!(
                         "{}|{}|{}",
                         relationship.branch_id, relationship.in_id, relationship.out_id
                     );
-                    let delta_key = format!(
-                        "{}|{}|{}|{}|{}",
-                        relationship.branch_id,
-                        relationship.in_id,
-                        relationship.out_id,
-                        scene.id,
-                        source_owned
-                    );
+                    let mut keys = vec![("relates_to".to_string(), pair_key)];
+                    if has_delta {
+                        let delta_key = format!(
+                            "{}|{}|{}|{}|{}",
+                            relationship.branch_id,
+                            relationship.in_id,
+                            relationship.out_id,
+                            scene.id,
+                            source_owned
+                        );
+                        keys.push(("relationship_scene_delta".to_string(), delta_key));
+                    }
                     mark_legacy_rows_mapped_in_conn(
                         &tx.tx,
                         &scene.project_id,
                         &effective_branch_id,
-                        &[
-                            ("relates_to".to_string(), pair_key),
-                            ("relationship_scene_delta".to_string(), delta_key),
-                        ],
+                        &keys,
                         timestamp_to_micros(chrono::Utc::now()),
                     )?;
                 }
