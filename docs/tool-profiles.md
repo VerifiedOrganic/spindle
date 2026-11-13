@@ -28,12 +28,12 @@ fail closed. Select a generated workflow or specialist profile with
 | revision | Branch/revision/history workflow | 35 | 26,864 | 6,716 | 76,463 | 19,116 |
 | worldbuilding | Worldbuilder + character creator | 52 | 54,983 | 13,746 | 103,237 | 25,810 |
 | planning | Plot architect | 40 | 37,260 | 9,315 | 81,223 | 20,306 |
-| new-book | New-book entry: planning sessions, human gates and handoff | 15 | 20,871 | 5,218 | 27,691 | 6,923 |
+| new-book | New-book entry: planning sessions, human gates and handoff | 15 | 22,165 | 5,542 | 28,985 | 7,247 |
 | research | Researcher | 16 | 8,118 | 2,030 | 21,075 | 5,269 |
 | style | Editor core + style reference | 42 | 37,184 | 9,296 | 101,028 | 25,257 |
 | release | Editor + bible librarian | 64 | 50,668 | 12,667 | 108,687 | 27,172 |
 | setup | New-book setup reference | 10 | 4,696 | 1,174 | 10,080 | 2,520 |
-| full | Every model-facing skill and reference unit | 177 | 177,847 | 44,462 | 380,002 | 95,001 |
+| full | Every model-facing skill and reference unit | 177 | 179,141 | 44,786 | 381,296 | 95,324 |
 
 Token counts are the same stable proxy used by the profile probe:
 `ceil(bytes / 4)`, not a host tokenizer measurement.
@@ -65,8 +65,8 @@ exposes every tool those units declare: the union of every generated workflow an
 specialist profile plus the `continuity-editor` and `canon-steward` units that no
 smaller profile enables. Use it when one session must expose every workflow at
 once, without switching profiles during the session. It is the
-largest catalog: 177 tools, 177,847 input bytes (about 44,462 proxy tokens) and
-380,002 full bytes (about 95,001 proxy tokens). Prefer the smallest profile that
+largest catalog: 177 tools, 179,141 input bytes (about 44,786 proxy tokens) and
+381,296 full bytes (about 95,324 proxy tokens). Prefer the smallest profile that
 covers the current work; unset still starts `workflow-write`, and `full` is
 opt-in. Operator-only commands stay excluded exactly as in every model profile.
 

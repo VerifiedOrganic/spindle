@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Planning responses stay displayable.** `planning_status` now returns only
+  `proposal_id`, `level`, `status` and `payload_hash` per proposal by default,
+  and omits superseded and rejected history. Pass `include_payloads=true` to
+  include operations and schedule, or name `proposal_ids` to fetch specific
+  proposals (including superseded ones) by id. `planning_advance` and
+  `planning_decide` return the same compact proposal form by default; pass
+  `include_payloads=true` when the full artifact is needed. Host-generation
+  prompts are bounded, and oversized parent artifacts are referenced by
+  proposal id and payload hash instead of being repeated in full, so
+  `planning_advance` no longer returns a 200k-character prompt. Response
+  schemas, tool snapshots and profile budgets are updated in the same change.
+
 ## 0.4.1 — 2026-11-13
 
 ### Added

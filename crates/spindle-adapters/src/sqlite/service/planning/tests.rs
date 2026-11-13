@@ -6992,3 +6992,387 @@ async fn phase_d_tightening_pov_and_pacing_policy_after_staging_revalidates_and_
         "delegated acceptance must not bypass tightened POV/pacing constraints"
     );
 }
+
+fn large_scene_manifest(
+    character_id: &str,
+    location_id: &str,
+    scene_count: usize,
+) -> serde_json::Value {
+    let scenes: Vec<serde_json::Value> = (1..=scene_count)
+        .map(|order| {
+            serde_json::json!({
+                "scene_order": order,
+                "summary": format!("Scene {order} summary {}", "x".repeat(1_500)),
+                "beat_structure": ["hook", "turn"],
+                "character_ids": [{"kind": "existing_record_id", "value": character_id}],
+                "location_id": {"kind": "existing_record_id", "value": location_id},
+                "content_rating": "general",
+                "purpose": format!("Scene {order} purpose {}", "y".repeat(1_500)),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "book_number": 1,
+        "chapter_number": 1,
+        "pov_character_id": {"kind": "existing_record_id", "value": character_id},
+        "synopsis": "A bounded plan for the near horizon.",
+        "scenes": scenes,
+    })
+}
+
+async fn large_chapter_fixture(
+    svc: &SqliteSpindleService,
+) -> (
+    PlanningSession,
+    PlanningProposal,
+    PlanningProposal,
+    String,
+    String,
+) {
+    use serde_json::json;
+    let (s, root) = accepted_root(svc).await;
+    let scope = s.scope.clone().unwrap();
+    let character = svc
+        .create_character(
+            serde_json::from_value(json!({
+                "project_id": scope.project_id,
+                "name": "Lead",
+                "summary": "The point-of-view lead.",
+                "role": "protagonist",
+                "realm": null,
+                "initial_state": null
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let location = svc
+        .create_location(
+            serde_json::from_value(json!({
+                "project_id": scope.project_id,
+                "name": "Main Place",
+                "kind": "building",
+                "realm": null,
+                "summary": "The near-horizon setting."
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let plan = large_scene_manifest(&character.character_id, &location.location_id, 12);
+    let chapter = bundle(
+        svc,
+        &s,
+        PlanningLevel::Chapter,
+        &[&root],
+        vec![planned("plan:chapter", "plan_chapter", plan)],
+    )
+    .await;
+    (
+        s,
+        root,
+        chapter,
+        character.character_id,
+        location.location_id,
+    )
+}
+
+#[tokio::test]
+async fn planning_status_defaults_to_compact_proposals_and_fetches_payloads_by_id() {
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, root, chapter, character_id, location_id) = large_chapter_fixture(&svc).await;
+
+    // A superseded proposal is history, not active work. It must not inflate
+    // the default response, but it stays fetchable by id.
+    svc.decide_planning(DecidePlanningInput {
+        session_id: s.id.clone(),
+        scope: s.scope.clone(),
+        decision: PlanningDecision::Supersede,
+        expected_hashes: BTreeMap::from([(chapter.id.clone(), chapter.payload_hash.clone())]),
+        actor: "author:test".into(),
+        note: "Replace the staged chapter plan with a narrower version.".into(),
+    })
+    .await
+    .unwrap();
+    let replacement = bundle(
+        &svc,
+        &s,
+        PlanningLevel::Chapter,
+        &[&root],
+        vec![planned(
+            "plan:replacement",
+            "plan_chapter",
+            large_scene_manifest(&character_id, &location_id, 6),
+        )],
+    )
+    .await;
+
+    let compact = svc
+        .planning_status(PlanningStatusInput {
+            session_id: Some(s.id.clone()),
+            project_id: None,
+            branch_id: None,
+            target_range: None,
+            include_readiness: Some(false),
+            include_payloads: None,
+            proposal_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        compact.proposals.len(),
+        2,
+        "active root and replacement only"
+    );
+    assert!(
+        compact
+            .proposals
+            .iter()
+            .all(|proposal| proposal.proposal_id != chapter.id),
+        "superseded proposals are omitted by default"
+    );
+    assert!(
+        compact
+            .proposals
+            .iter()
+            .any(|proposal| proposal.proposal_id == replacement.id)
+    );
+    for proposal in &compact.proposals {
+        let value = serde_json::to_value(proposal).unwrap();
+        let object = value.as_object().unwrap();
+        for required in ["proposal_id", "level", "status", "payload_hash"] {
+            assert!(
+                object.contains_key(required),
+                "compact summary must carry {required}: {value}"
+            );
+        }
+        for omitted in [
+            "rationale",
+            "operations",
+            "schedule",
+            "assumptions",
+            "author_questions",
+            "findings",
+            "created_at",
+        ] {
+            assert!(
+                !object.contains_key(omitted),
+                "compact summary must omit {omitted}: {value}"
+            );
+        }
+        if proposal.status == PlanningProposalStatus::Staged {
+            assert_eq!(
+                object.len(),
+                4,
+                "a staged proposal summary carries identity only: {value}"
+            );
+        }
+    }
+    let compact_size = serde_json::to_string(&compact).unwrap().len();
+    assert!(
+        compact_size < 8_000,
+        "compact status must stay displayable, got {compact_size} bytes"
+    );
+
+    let full = svc
+        .planning_status(PlanningStatusInput {
+            session_id: Some(s.id.clone()),
+            project_id: None,
+            branch_id: None,
+            target_range: None,
+            include_readiness: Some(false),
+            include_payloads: Some(true),
+            proposal_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let full_size = serde_json::to_string(&full).unwrap().len();
+    assert!(
+        full_size > compact_size + 20_000,
+        "include_payloads must return the operations: compact={compact_size}, full={full_size}"
+    );
+    assert!(
+        full.proposals
+            .iter()
+            .find(|proposal| proposal.proposal_id == replacement.id)
+            .is_some_and(|proposal| !proposal.operations.is_empty())
+    );
+
+    let fetched = svc
+        .planning_status(PlanningStatusInput {
+            session_id: Some(s.id.clone()),
+            project_id: None,
+            branch_id: None,
+            target_range: None,
+            include_readiness: Some(false),
+            include_payloads: None,
+            proposal_ids: vec![chapter.id.clone()],
+        })
+        .await
+        .unwrap();
+    assert_eq!(fetched.proposals.len(), 1);
+    assert_eq!(
+        fetched.proposals[0].status,
+        PlanningProposalStatus::Superseded
+    );
+    assert!(
+        !fetched.proposals[0].operations.is_empty(),
+        "proposal_ids must fetch a superseded payload by id"
+    );
+
+    let missing = svc
+        .planning_status(PlanningStatusInput {
+            session_id: Some(s.id.clone()),
+            project_id: None,
+            branch_id: None,
+            target_range: None,
+            include_readiness: Some(false),
+            include_payloads: None,
+            proposal_ids: vec!["planning_proposal:missing".into()],
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        missing
+            .to_string()
+            .contains("proposal_ids not in planning session")
+    );
+}
+
+#[tokio::test]
+async fn planning_advance_bounds_host_prompts_and_returns_compact_proposals_by_default() {
+    use serde_json::json;
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (s, _root, chapter, character_id, location_id) = large_chapter_fixture(&svc).await;
+    accept(&svc, &s, &chapter).await;
+
+    let generated = svc
+        .planning_advance_entry(PlanningAdvanceInput {
+            session_id: s.id.clone(),
+            project_id: None,
+            branch_id: None,
+            action: PlanningAdvanceAction::Generate,
+            level: Some(PlanningLevel::Scene),
+            parents: None,
+            target_range: None,
+            allow_review_backend: Some(false),
+            rating_ceiling: None,
+            budget: None,
+            host_artifact: None,
+            retry_key: Some("bounded-host-request".into()),
+            policy: None,
+            policy_actor: None,
+            policy_note: None,
+            mining_policy: None,
+            checkpoint_policy: None,
+            include_payloads: None,
+        })
+        .await
+        .unwrap();
+    let advance = generated.advance.expect("generation report");
+    assert_eq!(advance.outcome, PlanningSessionOutcome::NeedsRoute);
+    let host = advance.host_request.expect("host fallback request");
+    assert!(
+        host.user_prompt.chars().count() <= 52_000,
+        "host user_prompt must stay bounded, got {} chars",
+        host.user_prompt.chars().count()
+    );
+    assert!(
+        host.parent_proposals.contains_key(&chapter.id),
+        "bounded prompt must keep the parent identity and hash"
+    );
+
+    let compact = svc
+        .planning_advance_entry(PlanningAdvanceInput {
+            session_id: s.id.clone(),
+            project_id: None,
+            branch_id: None,
+            action: PlanningAdvanceAction::StageHostArtifact,
+            level: Some(PlanningLevel::Scene),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_artifact: Some(json!({
+                "schema_version": 1,
+                "level": "scene",
+                "rationale": "A staged scene replacement.",
+                "operations": [{
+                    "output_ref": "plan:staged",
+                    "operation": {
+                        "operation": "plan_chapter",
+                        "input": large_scene_manifest(&character_id, &location_id, 2)
+                    }
+                }]
+            })),
+            retry_key: Some("compact-staged-proposal".into()),
+            policy: None,
+            policy_actor: None,
+            policy_note: None,
+            mining_policy: None,
+            checkpoint_policy: None,
+            include_payloads: None,
+        })
+        .await
+        .unwrap();
+    let compact_proposal = compact
+        .advance
+        .as_ref()
+        .unwrap()
+        .proposal
+        .as_ref()
+        .expect("staged proposal")
+        .clone();
+    let compact_value = serde_json::to_value(&compact_proposal).unwrap();
+    assert!(
+        compact_value.get("operations").is_none(),
+        "default advance proposal is identity-only: {compact_value}"
+    );
+    let compact_size = serde_json::to_string(&compact).unwrap().len();
+    assert!(
+        compact_size < 12_000,
+        "compact advance response must stay displayable, got {compact_size} bytes"
+    );
+
+    let full = svc
+        .planning_advance_entry(PlanningAdvanceInput {
+            session_id: s.id.clone(),
+            project_id: None,
+            branch_id: None,
+            action: PlanningAdvanceAction::StageHostArtifact,
+            level: Some(PlanningLevel::Scene),
+            parents: None,
+            target_range: None,
+            allow_review_backend: None,
+            rating_ceiling: None,
+            budget: None,
+            host_artifact: Some(json!({
+                "schema_version": 1,
+                "level": "scene",
+                "rationale": "A second staged scene replacement.",
+                "operations": [{
+                    "output_ref": "plan:staged_full",
+                    "operation": {
+                        "operation": "plan_chapter",
+                        "input": large_scene_manifest(&character_id, &location_id, 2)
+                    }
+                }]
+            })),
+            retry_key: Some("full-staged-proposal".into()),
+            policy: None,
+            policy_actor: None,
+            policy_note: None,
+            mining_policy: None,
+            checkpoint_policy: None,
+            include_payloads: Some(true),
+        })
+        .await
+        .unwrap();
+    let full_proposal = full.advance.unwrap().proposal.expect("staged proposal");
+    assert!(
+        !full_proposal.operations.is_empty(),
+        "include_payloads must return staged operations"
+    );
+}

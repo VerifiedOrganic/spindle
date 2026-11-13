@@ -1439,6 +1439,12 @@ pub struct PlanningOperationSummary {
 }
 
 /// Review summary of one staged or decided proposal.
+///
+/// The default form is deliberately compact: identifier, level, status,
+/// decision metadata when present, and the hash required to decide it. Payload
+/// fields are populated only when the caller asks for them with
+/// `include_payloads` or `proposal_ids`, because a single chapter or scene
+/// artifact can exceed 200k characters.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningProposalSummary {
@@ -1451,21 +1457,22 @@ pub struct PlanningProposalSummary {
     /// Exact hash required to record a decision for this proposal.
     pub payload_hash: String,
     /// Creative rationale supplied with the artifact.
-    pub rationale: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
     /// Typed operations included in the proposal.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub operations: Vec<PlanningOperationSummary>,
     /// Promise, POV and intensity schedule supplied with the artifact.
-    #[serde(default)]
-    pub schedule: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<serde_json::Value>,
     /// Assumptions the plan relies on.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assumptions: Vec<String>,
     /// Questions the author still needs to answer.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub author_questions: Vec<PlanningAuthorQuestion>,
     /// Validation findings recorded at staging or decision time.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<PlanningFinding>,
     /// Actor who recorded the decision, when decided.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1474,7 +1481,8 @@ pub struct PlanningProposalSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision_note: Option<String>,
     /// Proposal creation time in microseconds since the Unix epoch.
-    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
 }
 
 /// Result of starting or resuming a planning session.
@@ -1665,6 +1673,11 @@ pub struct PlanningAdvanceInput {
     /// Checkpoint policy applied when checking authoring readiness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_policy: Option<AuthoringCheckpointPolicy>,
+    /// Include full proposal operations and schedule in the response.
+    /// Defaults to false; the compact form returns identifier, level, status
+    /// and payload hash only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_payloads: Option<bool>,
 }
 
 /// Host generation request returned when no planning route can run.
@@ -1833,6 +1846,16 @@ pub struct PlanningStatusInput {
     /// Whether to include planner checks and the authoring prepare report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_readiness: Option<bool>,
+    /// Include full operations and schedule for every returned proposal.
+    /// Defaults to false; the compact form returns identifier, level, status
+    /// and payload hash only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_payloads: Option<bool>,
+    /// Return these proposals only, including full payloads even when
+    /// `include_payloads` is false. Use this to fetch a superseded or rejected
+    /// proposal by id without loading every payload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proposal_ids: Vec<String>,
 }
 
 /// Compact planning status, staged proposals and reconnect guidance.
@@ -1848,7 +1871,8 @@ pub struct PlanningStatusOutput {
     /// Effective gate for the selected session's next level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<PlanningGate>,
-    /// Proposals staged or decided in the selected session.
+    /// Active staged or applied proposals in the selected session. Superseded
+    /// and rejected history is omitted unless named with `proposal_ids`.
     #[serde(default)]
     pub proposals: Vec<PlanningProposalSummary>,
     /// Planner findings currently visible for the selected session.
@@ -1929,6 +1953,11 @@ pub struct PlanningDecideInput {
     /// Checkpoint policy applied when preparing the authoring run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_policy: Option<AuthoringCheckpointPolicy>,
+    /// Include full proposal operations and schedule in the response.
+    /// Defaults to false; the compact form returns identifier, level, status
+    /// and payload hash only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_payloads: Option<bool>,
 }
 
 /// Result of a planning decision or authoring preparation.
