@@ -1913,10 +1913,11 @@ async fn backfill_all_18_stores_idempotency_progression_dedup_and_shadow_parity(
     svc.update_relationship(UpdateRelationshipInput {
         character_a_id: veyra_id.clone(),
         character_b_id: bram_id.clone(),
-        trust_delta: 10,
-        tension_delta: -5,
+        trust_delta: Some(10),
+        tension_delta: Some(-5),
         reason: "held the eastern parapet together".into(),
-        scene_id: scene2_id.clone(),
+        scene_id: Some(scene2_id.clone()),
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -3555,10 +3556,11 @@ async fn dual_write_relationship_replaces_prior_scene_delta_and_reverts() {
         svc.update_relationship(UpdateRelationshipInput {
             character_a_id: a.clone(),
             character_b_id: b.clone(),
-            trust_delta,
-            tension_delta: 0,
+            trust_delta: Some(trust_delta),
+            tension_delta: Some(0),
             reason: "scene revision".into(),
-            scene_id: scene_id.clone(),
+            scene_id: Some(scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -3591,6 +3593,173 @@ async fn dual_write_relationship_replaces_prior_scene_delta_and_reverts() {
         .find(|row| (row.in_id == a && row.out_id == b) || (row.in_id == b && row.out_id == a))
         .expect("legacy relationship");
     assert_eq!(legacy_pair.trust, 2);
+}
+
+#[tokio::test]
+async fn dual_write_relationship_details_edit_records_unscoped_snapshot() {
+    use spindle_core::models::{CreateRelationshipInput, UpdateRelationshipInput};
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, _scene_id, _) = project_with_scene(&svc, "Relationship Details Audit").await;
+    let a = create_character_named(&svc, &project.project_id, "Veyra").await;
+    let b = create_character_named(&svc, &project.project_id, "Kael").await;
+    svc.create_relationship(CreateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        relationship_type: "allly".to_string(),
+        initial_trust: 12,
+        initial_tension: 4,
+        dynamics: vec!["old".to_string()],
+    })
+    .await
+    .unwrap();
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    svc.set_canon_cutover_mode(&project.project_id, CanonCutoverModeV1::DualWrite, "start")
+        .await
+        .unwrap();
+
+    svc.update_relationship(UpdateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        reason: "correct label".into(),
+        relationship_type: Some("ally".into()),
+        dynamics: Some(vec!["shared watch".into()]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let branch = svc
+        .repository
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let state = svc
+        .canon_state_at(
+            &project.project_id,
+            &branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    let stored = svc
+        .repository
+        .get_relationship(&branch.id, &a, &b)
+        .await
+        .unwrap();
+    let entity = state
+        .entity(&stored.in_id)
+        .expect("relationship subject in canon state");
+    let attr = entity
+        .attributes
+        .iter()
+        .find(|(key, _)| key.starts_with("legacy.relates_to."))
+        .map(|(_, attr)| attr)
+        .expect("relationship snapshot attribute");
+    let Some(ClaimScalar::Text { value }) = &attr.scalar_value else {
+        panic!("relationship snapshot must be text");
+    };
+    let snapshot: serde_json::Value = serde_json::from_str(value).unwrap();
+    assert_eq!(snapshot["relationship_type"], "ally");
+    assert_eq!(snapshot["dynamics"], serde_json::json!(["shared watch"]));
+}
+
+#[tokio::test]
+async fn dual_write_relationship_scene_revision_mirrors_effective_omitted_deltas() {
+    use spindle_core::models::{CreateRelationshipInput, UpdateRelationshipInput};
+
+    let (_tmp, svc) = fresh_service_local().await;
+    let (project, scene_id, _) = project_with_scene(&svc, "Relationship Effective Deltas").await;
+    let a = create_character_named(&svc, &project.project_id, "Veyra").await;
+    let b = create_character_named(&svc, &project.project_id, "Kael").await;
+    svc.create_relationship(CreateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        relationship_type: "ally".to_string(),
+        initial_trust: 0,
+        initial_tension: 0,
+        dynamics: Vec::new(),
+    })
+    .await
+    .unwrap();
+    svc.backfill_project_canon(&project.project_id)
+        .await
+        .unwrap();
+    svc.set_canon_cutover_mode(&project.project_id, CanonCutoverModeV1::DualWrite, "start")
+        .await
+        .unwrap();
+
+    svc.update_relationship(UpdateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        trust_delta: Some(10),
+        tension_delta: Some(-5),
+        reason: "scene delta".into(),
+        scene_id: Some(scene_id.clone()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // A trust-only revision keeps the scene's -5 tension in canon.
+    svc.update_relationship(UpdateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        trust_delta: Some(4),
+        reason: "trust-only revision".into(),
+        scene_id: Some(scene_id.clone()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let branch = svc
+        .repository
+        .get_active_branch(&project.project_id)
+        .await
+        .unwrap();
+    let state = svc
+        .canon_state_at(
+            &project.project_id,
+            &branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    let relationship = state.relationship(&a, &b).expect("canon relationship");
+    assert_eq!(relationship.resolved_trust, Some(4));
+    assert_eq!(relationship.resolved_tension, Some(-5));
+
+    // A tension-only revision keeps the scene's +4 trust in canon.
+    svc.update_relationship(UpdateRelationshipInput {
+        character_a_id: a.clone(),
+        character_b_id: b.clone(),
+        tension_delta: Some(-2),
+        reason: "tension-only revision".into(),
+        scene_id: Some(scene_id),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let state = svc
+        .canon_state_at(
+            &project.project_id,
+            &branch.id,
+            CanonCursorV1::unbounded(),
+            CanonTier::Ratified,
+            None,
+        )
+        .await
+        .unwrap();
+    let relationship = state.relationship(&a, &b).expect("canon relationship");
+    assert_eq!(relationship.resolved_trust, Some(4));
+    assert_eq!(relationship.resolved_tension, Some(-2));
 }
 
 #[tokio::test]
@@ -3666,10 +3835,11 @@ async fn dual_write_relationship_replaces_backfilled_scene_delta_after_cutover()
     svc.update_relationship(UpdateRelationshipInput {
         character_a_id: a.clone(),
         character_b_id: b.clone(),
-        trust_delta: 2,
-        tension_delta: 0,
+        trust_delta: Some(2),
+        tension_delta: Some(0),
         reason: "pre-cutover".into(),
-        scene_id: scene_id.clone(),
+        scene_id: Some(scene_id.clone()),
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -3683,10 +3853,11 @@ async fn dual_write_relationship_replaces_backfilled_scene_delta_after_cutover()
         svc.update_relationship(UpdateRelationshipInput {
             character_a_id: a.clone(),
             character_b_id: b.clone(),
-            trust_delta,
-            tension_delta: 0,
+            trust_delta: Some(trust_delta),
+            tension_delta: Some(0),
             reason: "post-cutover revision".into(),
-            scene_id: scene_id.clone(),
+            scene_id: Some(scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -3800,10 +3971,11 @@ async fn dual_write_relationship_replaces_live_delta_across_reversed_pair_argume
     let update = |first: &str, second: &str, delta: i32| UpdateRelationshipInput {
         character_a_id: first.to_string(),
         character_b_id: second.to_string(),
-        trust_delta: delta,
-        tension_delta: 0,
+        trust_delta: Some(delta),
+        tension_delta: Some(0),
         reason: "reversed revision".into(),
-        scene_id: scene_id.clone(),
+        scene_id: Some(scene_id.clone()),
+        ..Default::default()
     };
     svc.update_relationship(update(&a, &b, 2)).await.unwrap();
     svc.update_relationship(update(&b, &a, 3)).await.unwrap();
@@ -3850,10 +4022,11 @@ async fn dual_write_relationship_replaces_backfilled_delta_across_reversed_pair_
     let update = |first: &str, second: &str, delta: i32| UpdateRelationshipInput {
         character_a_id: first.to_string(),
         character_b_id: second.to_string(),
-        trust_delta: delta,
-        tension_delta: 0,
+        trust_delta: Some(delta),
+        tension_delta: Some(0),
         reason: "reversed revision".into(),
-        scene_id: scene_id.clone(),
+        scene_id: Some(scene_id.clone()),
+        ..Default::default()
     };
     svc.update_relationship(update(&a, &b, 2)).await.unwrap();
     svc.backfill_project_canon(&project.project_id)

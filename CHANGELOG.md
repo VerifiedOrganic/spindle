@@ -59,6 +59,13 @@
   check. Jobs are in-memory, so a server restart drops the job and the next call
   starts fresh while reusing per-scene deep-tier cache rows. Checkpoint audit
   recording rejects an in-progress payload instead of blessing partial coverage.
+- Relationship labels and dynamics are editable outside a scene.
+  `update_relationship` now accepts optional `relationship_type` (alias
+  `label`) and `dynamics` with `scene_id` omitted, validates and normalizes the
+  edit, leaves trust/tension untouched, and records the updated relationship
+  snapshot in canon when dual-write is active. Scene-scoped `trust_delta` and
+  `tension_delta` are optional too: omitting one keeps that scene's prior delta,
+  and supplying one replaces only that delta.
 - Research search now splits multi-word queries into terms and matches them
   across source titles, note text, claim text, and tags, ranking results by the
   number of matching terms. Tag matching normalizes case, hyphens,

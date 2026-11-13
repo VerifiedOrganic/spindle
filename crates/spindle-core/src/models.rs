@@ -4246,17 +4246,33 @@ pub struct CommitCharacterStateOutput {
     pub state_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateRelationshipInput {
     /// Record id returned by create_character (e.g. "character:abc123")
     pub character_a_id: String,
     /// Record id returned by create_character (e.g. "character:xyz789")
     pub character_b_id: String,
-    pub trust_delta: i32,
-    pub tension_delta: i32,
+    /// Trust delta for a scene-scoped update. Omit to leave the prior scene
+    /// delta for this scene unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_delta: Option<i32>,
+    /// Tension delta for a scene-scoped update. Omit to leave the prior scene
+    /// delta for this scene unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tension_delta: Option<i32>,
+    /// Why the relationship changed. Required for every update.
     pub reason: String,
-    /// Record id returned by save_scene_draft (e.g. "scene:abc123")
-    pub scene_id: String,
+    /// Record id returned by save_scene_draft (e.g. "scene:abc123").
+    /// Omit for a canon-only label/dynamics correction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_id: Option<String>,
+    /// Corrected relationship type/label. `label` is accepted as an alias.
+    #[serde(default, alias = "label", skip_serializing_if = "Option::is_none")]
+    pub relationship_type: Option<String>,
+    /// Replacement dynamics list. Omit to keep the stored list; an empty list
+    /// clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamics: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -4264,6 +4280,8 @@ pub struct UpdateRelationshipOutput {
     pub relationship_id: String,
     pub trust: i32,
     pub tension: i32,
+    pub relationship_type: String,
+    pub dynamics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

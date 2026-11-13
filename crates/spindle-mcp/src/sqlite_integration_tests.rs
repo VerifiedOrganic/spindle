@@ -385,10 +385,11 @@ async fn mcp_priority_flow_full_chapter_with_branching_and_search() {
         .update_relationship(UpdateRelationshipInput {
             character_a_id: mara.character_id.clone(),
             character_b_id: aldric.character_id.clone(),
-            trust_delta: 10,
-            tension_delta: -5,
+            trust_delta: Some(10),
+            tension_delta: Some(-5),
             reason: "Aldric helped".into(),
-            scene_id: scene.scene_id.clone(),
+            scene_id: Some(scene.scene_id.clone()),
+            ..Default::default()
         })
         .await
         .unwrap();
