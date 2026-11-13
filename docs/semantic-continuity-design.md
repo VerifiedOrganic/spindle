@@ -51,12 +51,13 @@ runs the deterministic lanes first. `deep_check: true` adds the model tiers:
 
 A deep audit runs as a **detached job** so a client request timeout cannot throw
 away a finished result. The first call starts the job for the exact request
-scope plus a fingerprint of the scoped scene prose, waits briefly, and returns
+scope plus a fingerprint of the scoped scene prose and the non-prose records the audit reads, waits briefly, and returns
 either the finished audit or `status: "in_progress"` with a `job_id`, the deep
 checks finished so far (`checks_completed`), the checks still pending, and the
 findings banked so far. Calling again with the same project, scope, check
-selection, and unchanged prose joins the same job or collects its result; an
-edit, scope change, or check-selection change starts a separate audit. When the
+selection, and unchanged audit inputs joins the same job or collects its
+result; an edit to prose or an audit input, a scope change, or a
+check-selection change starts a separate audit. When the
 MCP client supplies a progress token, the server sends one
 `notifications/progress` per finished deep-tier check.
 

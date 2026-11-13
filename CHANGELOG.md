@@ -46,7 +46,7 @@
   `check_consistency` with `deep_check: true` now starts a detached job and
   returns `status: "in_progress"` with a `job_id`, the deep checks finished so
   far, and the findings banked so far. Calling again with the same project,
-  scope, check selection, and unchanged prose joins the job or collects its
+  scope, check selection, and unchanged audit inputs joins the job or collects its
   finished result; fast checks stay synchronous. When the client supplies a
   progress token, the server emits `notifications/progress` after each deep
   check. Jobs are in-memory, so a server restart drops the job and the next call

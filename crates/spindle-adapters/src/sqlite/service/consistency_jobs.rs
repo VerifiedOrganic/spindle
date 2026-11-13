@@ -4,8 +4,9 @@
 //! tens of minutes. Running it inline means an MCP client that gives up after
 //! its request timeout also throws away the finished audit: the server keeps
 //! computing, but there is no caller left to receive the result. The job
-//! registry below detaches the work from the request, lets a retry join the
-//! same run, and keeps the finished result collectable for a short window.
+//! registry below detaches the work from the request, lets a retry with the
+//! same audit inputs join the same run, and keeps the finished result
+//! collectable for a short window.
 //!
 //! Jobs are intentionally in-memory. A server restart drops every job; the
 //! next call starts a fresh run. Per-scene deep-tier cache rows survive the

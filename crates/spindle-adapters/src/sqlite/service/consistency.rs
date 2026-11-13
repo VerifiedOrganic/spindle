@@ -15,10 +15,10 @@ impl SqliteSpindleService {
     ///
     /// Fast (`deep_check = false`) audits run inline and always return
     /// `status: "complete"`. Deep audits run as a detached job: this call
-    /// starts or joins the job for this exact scope and manuscript fingerprint,
+    /// starts or joins the job for this exact scope and audit-input fingerprint,
     /// waits briefly, then returns either the finished audit or
     /// `status: "in_progress"` with the job id and the deep checks finished so
-    /// far. A retry with the same scope and fingerprint joins the same job or
+    /// far. A retry with the same scope and audit inputs joins the same job or
     /// collects its result. Jobs are in-memory: a server restart drops the job
     /// and the next call starts fresh; per-scene deep-tier cache rows survive,
     /// so already-analyzed scenes are not re-paid.
@@ -105,7 +105,9 @@ impl SqliteSpindleService {
                     }
                 }
                 ConsistencyJobState::Failed(message) => {
-                    self.clear_consistency_job(&job_key)?;
+                    // Only remove THIS job. A replacement may already have
+                    // taken the key after the failed task published its state.
+                    self.clear_consistency_job(&job_key, &job.job_id)?;
                     anyhow::bail!("deep consistency check failed: {message}");
                 }
                 ConsistencyJobState::Running => {}
@@ -157,6 +159,7 @@ impl SqliteSpindleService {
 
         let service = self.clone();
         let job_key_owned = job_key.to_string();
+        let job_id_owned = job_id.clone();
         let tracker = ConsistencyJobTracker::new(job_id, shared);
         tokio::spawn(async move {
             #[cfg(any(test, feature = "test-support"))]
@@ -166,6 +169,16 @@ impl SqliteSpindleService {
                 drop(permit);
             }
 
+            #[cfg(any(test, feature = "test-support"))]
+            let outcome = if service
+                .consistency_job_fail_next
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                Err(anyhow::anyhow!("injected deep consistency failure"))
+            } else {
+                service.run_consistency_checks(input, Some(&tracker)).await
+            };
+            #[cfg(not(any(test, feature = "test-support")))]
             let outcome = service.run_consistency_checks(input, Some(&tracker)).await;
             let terminal = match outcome {
                 Ok(mut output) => {
@@ -190,8 +203,8 @@ impl SqliteSpindleService {
             let _ = tx.send(terminal);
             // Leave the finished result for a retry to collect, then reap it so
             // the registry cannot grow without bound.
-            tokio::time::sleep(CONSISTENCY_JOB_RETENTION).await;
-            if let Err(error) = service.clear_consistency_job(&job_key_owned) {
+            tokio::time::sleep(service.consistency_job_retention).await;
+            if let Err(error) = service.clear_consistency_job(&job_key_owned, &job_id_owned) {
                 tracing::warn!(
                     error = %format!("{error:#}"),
                     "consistency job reaper could not clear its registry entry"
@@ -211,17 +224,24 @@ impl SqliteSpindleService {
             .cloned())
     }
 
-    pub(super) fn clear_consistency_job(&self, job_key: &str) -> Result<()> {
-        self.consistency_jobs
+    /// Remove a registry entry only when it still belongs to `job_id`. A
+    /// failed task's reaper must not evict a replacement that reused the key.
+    pub(super) fn clear_consistency_job(&self, job_key: &str, job_id: &str) -> Result<bool> {
+        let mut guard = self
+            .consistency_jobs
             .lock()
-            .map_err(|_| poisoned_lock("consistency job registry lock"))?
-            .remove(job_key);
-        Ok(())
+            .map_err(|_| poisoned_lock("consistency job registry lock"))?;
+        let matches = guard.get(job_key).is_some_and(|job| job.job_id == job_id);
+        if matches {
+            guard.remove(job_key);
+        }
+        Ok(matches)
     }
 
-    /// Key a job by the request scope plus a fingerprint of the scoped
-    /// manuscript. A retry over unchanged text joins the same job; an edit,
-    /// scope change, or check-selection change starts a separate audit.
+    /// Key a job by the request scope plus a fingerprint of the scoped prose
+    /// and the non-prose records the audit reads. A retry over unchanged audit
+    /// inputs joins the same job; an edit, scope change, or check-selection
+    /// change starts a separate audit.
     async fn consistency_job_key(
         &self,
         input: &spindle_core::models::CheckConsistencyInput,
@@ -251,11 +271,17 @@ impl SqliteSpindleService {
         subjects.dedup();
         let semantic_reports = serde_json::to_vec(&input.semantic_host_reports)?;
 
+        let dependency_fingerprint = self
+            .consistency_dependency_fingerprint(&input.project_id, &branch.id)
+            .await?;
+
         let mut hasher = Sha256::new();
-        hasher.update(b"spindle-deep-consistency-job-v1\n");
+        hasher.update(b"spindle-deep-consistency-job-v2\n");
         hasher.update(input.project_id.as_bytes());
         hasher.update(b"\n");
         hasher.update(branch.id.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(&dependency_fingerprint);
         hasher.update(b"\n");
         hasher.update(serde_json::to_vec(&(
             &input.scope,
@@ -278,6 +304,281 @@ impl SqliteSpindleService {
             format!("{}|{}|{:x}", input.project_id, branch.id, hasher.finalize()),
             scenes,
         ))
+    }
+
+    /// Fingerprint the non-prose records the audit reads. The job key already
+    /// covers the scoped prose; this covers plans, promises, rules, canon,
+    /// character state, and the other inputs a deep check can depend on, so a
+    /// non-prose edit starts a fresh audit instead of collecting a stale
+    /// result. Keep this list in sync with the repository reads in the check
+    /// suite.
+    async fn consistency_dependency_fingerprint(
+        &self,
+        project_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<u8>> {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"spindle-consistency-dependencies-v1\n");
+        macro_rules! hash_records {
+            ($label:literal, $records:expr) => {{
+                hasher.update($label.as_bytes());
+                hasher.update(b"\0");
+                hasher.update(serde_json::to_vec(&$records)?);
+                hasher.update(b"\n");
+            }};
+        }
+        // A few storage-only records do not derive Serialize; their Debug
+        // representation still covers every field for a change fingerprint.
+        macro_rules! hash_debug {
+            ($label:literal, $records:expr) => {{
+                hasher.update($label.as_bytes());
+                hasher.update(b"\0");
+                hasher.update(format!("{:?}", $records).as_bytes());
+                hasher.update(b"\n");
+            }};
+        }
+
+        hash_records!("project", self.repository.get_project(project_id).await?);
+        hash_records!("branch", self.repository.get_branch(branch_id).await?);
+        hash_debug!(
+            "project_calendar",
+            self.repository.get_project_calendar(project_id).await?
+        );
+        hash_records!(
+            "books",
+            self.repository.list_books_by_project(project_id).await?
+        );
+        hash_records!(
+            "chapter_summaries",
+            self.repository
+                .list_chapter_summaries_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "chapter_plans",
+            self.repository
+                .list_chapter_plans_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "scene_beat_annotations",
+            self.repository
+                .list_scene_beat_annotations_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "narrative_promises",
+            self.repository
+                .list_narrative_promises_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "pacing_configs",
+            self.repository
+                .list_pacing_configs_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "pacing_curves",
+            self.repository
+                .list_pacing_curves_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "pacing_trackers",
+            self.repository
+                .list_pacing_trackers_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "characters",
+            self.repository
+                .list_characters_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "character_states",
+            self.repository
+                .list_character_states_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "character_arcs",
+            self.repository
+                .list_character_arcs_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "voice_profiles",
+            self.repository
+                .list_voice_profiles_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "emotional_profiles",
+            self.repository
+                .list_all_character_emotional_profiles(project_id)
+                .await?
+        );
+        hash_records!(
+            "relationships",
+            self.repository
+                .list_relationships_by_branch(branch_id)
+                .await?
+        );
+        hash_records!(
+            "locations",
+            self.repository
+                .list_locations_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "factions",
+            self.repository
+                .list_factions_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "religions",
+            self.repository
+                .list_religions_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "economies",
+            self.repository
+                .list_economies_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "terms",
+            self.repository
+                .list_terms_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "world_rules",
+            self.repository
+                .list_world_rules_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "canonical_facts",
+            self.repository
+                .list_active_canonical_facts_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "knowledge_facts",
+            self.repository
+                .list_knowledge_facts_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "future_knowledge",
+            self.repository
+                .list_future_knowledge_by_project(project_id)
+                .await?
+        );
+        hash_debug!(
+            "quantity_schemes",
+            self.repository
+                .list_project_quantity_schemes(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "quantity_states",
+            self.repository
+                .list_quantity_states_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "timeline_events",
+            self.repository
+                .list_timeline_events_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "scene_clocks",
+            self.repository
+                .list_scene_clocks_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "temporal_interventions",
+            self.repository
+                .list_temporal_interventions_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "plot_lines",
+            self.repository
+                .list_plot_lines_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "conflicts",
+            self.repository
+                .list_conflicts_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "themes",
+            self.repository.list_themes_by_project(project_id).await?
+        );
+        hash_records!(
+            "motifs",
+            self.repository.list_motifs_by_project(project_id).await?
+        );
+        hash_records!(
+            "scene_source_links",
+            self.repository
+                .list_scene_source_links_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "research_sources",
+            self.repository
+                .list_research_sources_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "research_notes",
+            self.repository
+                .list_research_notes_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "research_claims",
+            self.repository
+                .list_research_claims_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "research_usages",
+            self.repository
+                .list_research_usages_by_project(project_id)
+                .await?
+        );
+        hash_records!(
+            "world_states",
+            self.repository
+                .list_world_states_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "system_overlays",
+            self.repository
+                .list_system_overlays_by_project_and_branch(project_id, branch_id)
+                .await?
+        );
+        hash_records!(
+            "style_directive",
+            self.style_directive_for(project_id, branch_id).await?
+        );
+        Ok(hasher.finalize().to_vec())
     }
 
     /// Build the honest partial response for a still-running job: findings

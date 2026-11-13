@@ -11,7 +11,8 @@ use crate::ai::ModelRouter;
 use crate::sqlite::{Repository, SqlitePool};
 use spindle_core::models::{
     CheckConsistencyInput, ConsistencyScopeInput, ConsistencyStatus, ContentRating,
-    CreateProjectInput, ReaderContract, SaveSceneDraftInput,
+    CreateProjectInput, PlanChapterInput, PlanChapterSceneInput, ReaderContract,
+    SaveSceneDraftInput,
 };
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -203,6 +204,93 @@ async fn fast_checks_and_deep_checks_without_deep_tiers_stay_synchronous() {
     assert!(
         output.job_id.is_none(),
         "no detached job exists when the request asks for no deep-tier check"
+    );
+}
+
+async fn plan_chapter_with_purpose(svc: &SqliteSpindleService, project_id: &str, purpose: &str) {
+    svc.plan_chapter(PlanChapterInput {
+        project_id: project_id.to_string(),
+        book_number: 1,
+        chapter_number: 1,
+        pov_character_id: None,
+        synopsis: "a quiet accounting".to_string(),
+        target_theme_ids: Vec::new(),
+        target_conflict_ids: Vec::new(),
+        target_plot_line_ids: Vec::new(),
+        scenes: vec![PlanChapterSceneInput {
+            scene_order: 1,
+            summary: "a quiet accounting".to_string(),
+            beat_structure: Vec::new(),
+            character_ids: Vec::new(),
+            location_id: None,
+            content_rating: None,
+            purpose: purpose.to_string(),
+            research_required: None,
+            research_tags: Vec::new(),
+            explicit_query: None,
+        }],
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn non_prose_audit_input_edit_starts_a_fresh_job() {
+    let (_tmp, mut svc, project_id) = service_with_scene("dependency-job").await;
+    svc.set_consistency_job_join_wait(Duration::from_secs(10));
+
+    plan_chapter_with_purpose(&svc, &project_id, "old purpose").await;
+
+    let mut input = deep_input(&project_id);
+    input.checks = vec!["scene_purpose_fulfillment".to_string()];
+    let first = svc.check_consistency(input.clone()).await.unwrap();
+    assert_eq!(first.status, ConsistencyStatus::Complete);
+    let old_job_id = first.job_id.expect("old job id");
+
+    // Change only the plan, not the prose. Repeating the same request must not
+    // collect the completed audit for the old purpose.
+    plan_chapter_with_purpose(&svc, &project_id, "new purpose").await;
+
+    let second = svc.check_consistency(input).await.unwrap();
+    assert_eq!(second.status, ConsistencyStatus::Complete);
+    assert_ne!(
+        second.job_id.as_deref(),
+        Some(old_job_id.as_str()),
+        "a non-prose audit-input edit must start a fresh job"
+    );
+}
+
+#[tokio::test]
+async fn old_failed_job_reaper_does_not_evict_a_replacement() {
+    let (_tmp, mut svc, project_id) = service_with_scene("reaper-job").await;
+    svc.set_consistency_job_join_wait(Duration::from_millis(50));
+    svc.set_consistency_job_retention(Duration::from_millis(50));
+    svc.fail_next_consistency_job();
+
+    let failed = svc.check_consistency(deep_input(&project_id)).await;
+    assert!(failed.is_err(), "injected job failure must surface");
+
+    // Let the replacement keep its result long enough to observe the old
+    // failed job's reaper firing.
+    svc.set_consistency_job_retention(Duration::from_secs(10));
+    let replacement = svc
+        .check_consistency(deep_input(&project_id))
+        .await
+        .unwrap();
+    assert_eq!(replacement.status, ConsistencyStatus::Complete);
+    let replacement_id = replacement.job_id.expect("replacement job id");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let collected = svc
+        .check_consistency(deep_input(&project_id))
+        .await
+        .unwrap();
+    assert_eq!(collected.status, ConsistencyStatus::Complete);
+    assert_eq!(
+        collected.job_id.as_deref(),
+        Some(replacement_id.as_str()),
+        "the old failed job's reaper must not evict its replacement"
     );
 }
 
