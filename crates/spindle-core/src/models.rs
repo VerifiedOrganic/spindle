@@ -6864,8 +6864,9 @@ pub struct RunDualPersonaReviewOutput {
     pub branch_id: String,
     pub rounds_completed: usize,
     /// Id of the persisted review for the CURRENT scene text. Empty while a
-    /// detached job is still running and has not banked its first round; the
-    /// id of a previous, now-stale review is never returned here.
+    /// detached job is still running and has not banked its first round; a
+    /// previous review's id is never returned as if it were current. When
+    /// `status` is `stale`, this is the id of that stale review.
     pub review_id: String,
     /// `current` when the review matches the scene text, `in_progress` while
     /// a detached job for that text is still running, or `stale` when the
