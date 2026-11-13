@@ -1,3 +1,6 @@
+use super::consistency_jobs::{
+    ConsistencyJob, ConsistencyJobState, ConsistencyJobTracker, ConsistencyProgressSink,
+};
 use super::*;
 use spindle_core::canon::{
     KnowledgeValidationFactV1, SceneValidationInputV1, SecretValidationCandidateV1,
@@ -8,8 +11,17 @@ use spindle_core::character_mentions::{CharacterMentionRecord, CharacterMentionR
 use spindle_core::models::PriceMention;
 
 impl SqliteSpindleService {
-    /// Run the consistency validator suite over a project. Mirrors
-    /// `services/mod.rs:4762..5736` in 705b835^.
+    /// Run the consistency validator suite over a project.
+    ///
+    /// Fast (`deep_check = false`) audits run inline and always return
+    /// `status: "complete"`. Deep audits run as a detached job: this call
+    /// starts or joins the job for this exact scope and manuscript fingerprint,
+    /// waits briefly, then returns either the finished audit or
+    /// `status: "in_progress"` with the job id and the deep checks finished so
+    /// far. A retry with the same scope and fingerprint joins the same job or
+    /// collects its result. Jobs are in-memory: a server restart drops the job
+    /// and the next call starts fresh; per-scene deep-tier cache rows survive,
+    /// so already-analyzed scenes are not re-paid.
     ///
     /// Phase-4 fan-out (`canonical_fact_prose_drift`,
     /// `world_rule_semantic_drift`, `voice_drift`, `retcon_reachability`)
@@ -22,6 +34,304 @@ impl SqliteSpindleService {
     pub async fn check_consistency(
         &self,
         input: spindle_core::models::CheckConsistencyInput,
+    ) -> Result<spindle_core::models::CheckConsistencyOutput> {
+        self.check_consistency_with_progress(input, None).await
+    }
+
+    /// Same as [`Self::check_consistency`], with an optional progress sink
+    /// used by the MCP layer to forward `notifications/progress` after each
+    /// deep-tier check.
+    pub async fn check_consistency_with_progress(
+        &self,
+        input: spindle_core::models::CheckConsistencyInput,
+        progress_sink: Option<ConsistencyProgressSink>,
+    ) -> Result<spindle_core::models::CheckConsistencyOutput> {
+        if !input.deep_check.unwrap_or(false) {
+            let mut output = self.run_consistency_checks(input, None).await?;
+            output.status = spindle_core::models::ConsistencyStatus::Complete;
+            return Ok(output);
+        }
+
+        let planned = planned_deep_stages(&requested_checks(&input.checks), input.semantic_mode);
+        if planned.is_empty() {
+            // `deep_check` with no deep-tier check requested has nothing to
+            // detach; keep the established synchronous response.
+            let mut output = self.run_consistency_checks(input, None).await?;
+            output.status = spindle_core::models::ConsistencyStatus::Complete;
+            return Ok(output);
+        }
+
+        let (job_key, scoped) = self.consistency_job_key(&input).await?;
+        let existing = self.lookup_consistency_job(&job_key)?;
+        let (job, started) = match existing {
+            Some(job) => (job, false),
+            None => {
+                self.spawn_consistency_job(&job_key, input.clone(), planned, progress_sink.clone())?
+            }
+        };
+        if !started && let Some(sink) = progress_sink {
+            job.add_sink(sink)?;
+        }
+
+        // A finished job stays collectable for a short retention window.
+        if let Some(output) = job.completed_output()? {
+            return Ok(output);
+        }
+
+        let mut state = job.state.clone();
+        let terminal: Option<ConsistencyJobState> = {
+            let settled = tokio::time::timeout(
+                self.consistency_job_join_wait,
+                state.wait_for(|state| !matches!(state, ConsistencyJobState::Running)),
+            )
+            .await;
+            match settled {
+                Ok(Ok(guard)) => Some(guard.clone()),
+                // Sender dropped without a terminal state (the job task was
+                // torn down, e.g. a panic). Surface it as a failure and clear
+                // the registry entry instead of joining a corpse forever.
+                Ok(Err(_)) => Some(ConsistencyJobState::Failed(
+                    "job task ended without a result".to_string(),
+                )),
+                Err(_) => None,
+            }
+        };
+
+        if let Some(terminal) = terminal {
+            match terminal {
+                ConsistencyJobState::Done => {
+                    if let Some(output) = job.completed_output()? {
+                        return Ok(output);
+                    }
+                }
+                ConsistencyJobState::Failed(message) => {
+                    self.clear_consistency_job(&job_key)?;
+                    anyhow::bail!("deep consistency check failed: {message}");
+                }
+                ConsistencyJobState::Running => {}
+            }
+        }
+
+        self.consistency_partial_output(&input, &job, &scoped)
+    }
+
+    /// Start a detached deep-check job. Returns the job and whether this call
+    /// created it; a racing caller gets the existing job and must register its
+    /// own progress sink.
+    fn spawn_consistency_job(
+        &self,
+        job_key: &str,
+        input: spindle_core::models::CheckConsistencyInput,
+        planned: Vec<String>,
+        progress_sink: Option<ConsistencyProgressSink>,
+    ) -> Result<(ConsistencyJob, bool)> {
+        let job_id = format!("consistency-{}", ulid::Ulid::new());
+        let (tx, rx) = tokio::sync::watch::channel(ConsistencyJobState::Running);
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(
+            super::consistency_jobs::ConsistencyJobShared {
+                checks_completed: Vec::new(),
+                checks_pending: planned,
+                issues: Vec::new(),
+                audit_coverage: Vec::new(),
+                result: None,
+                sinks: progress_sink.into_iter().collect(),
+            },
+        ));
+        let job = ConsistencyJob {
+            job_id: job_id.clone(),
+            state: rx,
+            shared: shared.clone(),
+        };
+        {
+            let mut guard = self
+                .consistency_jobs
+                .lock()
+                .map_err(|_| poisoned_lock("consistency job registry lock"))?;
+            // Re-check under the lock: another caller may have registered a job
+            // for this key between our lookup and here.
+            if let Some(existing) = guard.get(job_key) {
+                return Ok((existing.clone(), false));
+            }
+            guard.insert(job_key.to_string(), job.clone());
+        }
+
+        let service = self.clone();
+        let job_key_owned = job_key.to_string();
+        let tracker = ConsistencyJobTracker::new(job_id, shared);
+        tokio::spawn(async move {
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(gate) = service.consistency_job_gate.clone()
+                && let Ok(permit) = gate.acquire().await
+            {
+                drop(permit);
+            }
+
+            let outcome = service.run_consistency_checks(input, Some(&tracker)).await;
+            let terminal = match outcome {
+                Ok(mut output) => {
+                    output.status = spindle_core::models::ConsistencyStatus::Complete;
+                    output.job_id = Some(tracker.job_id().to_string());
+                    output.checks_completed = tracker.completed_checks();
+                    output.checks_pending.clear();
+                    tracker.complete(output);
+                    ConsistencyJobState::Done
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        job_id = %tracker.job_id(),
+                        error = %format!("{error:#}"),
+                        "deep consistency job failed"
+                    );
+                    tracker.fail();
+                    ConsistencyJobState::Failed(format!("{error:#}"))
+                }
+            };
+            // Best-effort: a dropped receiver just means nobody is waiting.
+            let _ = tx.send(terminal);
+            // Leave the finished result for a retry to collect, then reap it so
+            // the registry cannot grow without bound.
+            tokio::time::sleep(CONSISTENCY_JOB_RETENTION).await;
+            if let Err(error) = service.clear_consistency_job(&job_key_owned) {
+                tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "consistency job reaper could not clear its registry entry"
+                );
+            }
+        });
+
+        Ok((job, true))
+    }
+
+    pub(super) fn lookup_consistency_job(&self, job_key: &str) -> Result<Option<ConsistencyJob>> {
+        Ok(self
+            .consistency_jobs
+            .lock()
+            .map_err(|_| poisoned_lock("consistency job registry lock"))?
+            .get(job_key)
+            .cloned())
+    }
+
+    pub(super) fn clear_consistency_job(&self, job_key: &str) -> Result<()> {
+        self.consistency_jobs
+            .lock()
+            .map_err(|_| poisoned_lock("consistency job registry lock"))?
+            .remove(job_key);
+        Ok(())
+    }
+
+    /// Key a job by the request scope plus a fingerprint of the scoped
+    /// manuscript. A retry over unchanged text joins the same job; an edit,
+    /// scope change, or check-selection change starts a separate audit.
+    async fn consistency_job_key(
+        &self,
+        input: &spindle_core::models::CheckConsistencyInput,
+    ) -> Result<(String, Vec<crate::sqlite::records::Scene>)> {
+        use sha2::{Digest, Sha256};
+
+        let branch = self.repository.get_active_branch(&input.project_id).await?;
+        let scope = input
+            .scope
+            .to_scope()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let scenes = crate::format::scoped_scenes(
+            self.repository
+                .list_scenes_by_project_and_branch(&input.project_id, &branch.id)
+                .await?,
+            &scope,
+        );
+
+        let mut checks = input.checks.clone();
+        checks.sort();
+        checks.dedup();
+        let mut severities = input.severity_filter.clone();
+        severities.sort();
+        severities.dedup();
+        let mut subjects = input.subjects.clone();
+        subjects.sort();
+        subjects.dedup();
+        let semantic_reports = serde_json::to_vec(&input.semantic_host_reports)?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"spindle-deep-consistency-job-v1\n");
+        hasher.update(input.project_id.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(branch.id.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(serde_json::to_vec(&(
+            &input.scope,
+            &checks,
+            &severities,
+            input.deep_scan_offset,
+            &subjects,
+            input.semantic_mode,
+            &semantic_reports,
+            input.format,
+            input.budget_tokens,
+        ))?);
+        for scene in &scenes {
+            hasher.update(scene.id.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(scene_revision_fingerprint(scene).as_bytes());
+            hasher.update(b"\n");
+        }
+        Ok((
+            format!("{}|{}|{:x}", input.project_id, branch.id, hasher.finalize()),
+            scenes,
+        ))
+    }
+
+    /// Build the honest partial response for a still-running job: findings
+    /// banked so far, the deep checks already finished, and the checks still
+    /// pending. Markdown is omitted because a partial report must not read like
+    /// a finished one.
+    fn consistency_partial_output(
+        &self,
+        input: &spindle_core::models::CheckConsistencyInput,
+        job: &ConsistencyJob,
+        scenes: &[crate::sqlite::records::Scene],
+    ) -> Result<spindle_core::models::CheckConsistencyOutput> {
+        use spindle_core::models::{ConsistencyStatus, ConsistencySummary};
+
+        let snapshot = job.snapshot()?;
+        let mut issues = snapshot.issues;
+        if let Some(allowed) = requested_severities(&input.severity_filter)? {
+            issues.retain(|issue| allowed.contains(issue.severity.as_str()));
+        }
+        let summary = ConsistencySummary {
+            error_count: issues
+                .iter()
+                .filter(|issue| issue.severity == "error")
+                .count(),
+            warning_count: issues
+                .iter()
+                .filter(|issue| issue.severity == "warning")
+                .count(),
+            info_count: issues
+                .iter()
+                .filter(|issue| issue.severity == "info")
+                .count(),
+        };
+        Ok(spindle_core::models::CheckConsistencyOutput {
+            status: ConsistencyStatus::InProgress,
+            job_id: Some(job.job_id.clone()),
+            checks_completed: snapshot.checks_completed,
+            checks_pending: snapshot.checks_pending,
+            audit_coverage: snapshot.audit_coverage,
+            report_sections: build_consistency_report_sections(&issues, scenes),
+            issues,
+            summary,
+            markdown: None,
+            semantic_summary: None,
+            semantic_scene_summaries: Vec::new(),
+        })
+    }
+
+    /// The full consistency suite. When `tracker` is set, each deep-tier check
+    /// records its completion so a detached job can report progress.
+    async fn run_consistency_checks(
+        &self,
+        input: spindle_core::models::CheckConsistencyInput,
+        tracker: Option<&ConsistencyJobTracker>,
     ) -> Result<spindle_core::models::CheckConsistencyOutput> {
         use crate::format::{
             DEFAULT_CHECK_CONSISTENCY_BUDGET_TOKENS, chapter_keys_from_scenes, end_scope_index,
@@ -691,6 +1001,7 @@ impl SqliteSpindleService {
                         .await?,
                 );
                 audit_coverage.push(coverage);
+                record_deep_stage(tracker, "temporal_coherence.deep", &issues, &audit_coverage);
             }
         }
 
@@ -748,6 +1059,12 @@ impl SqliteSpindleService {
                     .await?,
             );
             audit_coverage.push(coverage);
+            record_deep_stage(
+                tracker,
+                "promise_payoff_detection",
+                &issues,
+                &audit_coverage,
+            );
         }
 
         // ── Scene-purpose fulfillment (P3.3, deep tier) ─────────────────
@@ -810,6 +1127,12 @@ impl SqliteSpindleService {
                     .await?,
             );
             audit_coverage.push(coverage);
+            record_deep_stage(
+                tracker,
+                "scene_purpose_fulfillment",
+                &issues,
+                &audit_coverage,
+            );
         }
 
         // ── Quantity drift: an unexplained multi-band jump ──────────────
@@ -1429,6 +1752,12 @@ impl SqliteSpindleService {
                     .await?;
                 issues.extend(semantic_issues);
                 audit_coverage.push(coverage);
+                record_deep_stage(
+                    tracker,
+                    "world_rule_compliance.deep",
+                    &issues,
+                    &audit_coverage,
+                );
             }
         }
 
@@ -2751,6 +3080,7 @@ impl SqliteSpindleService {
                         .await?,
                 );
                 audit_coverage.push(coverage);
+                record_deep_stage(tracker, "secret_leak.deep", &issues, &audit_coverage);
             }
         }
 
@@ -2987,6 +3317,7 @@ impl SqliteSpindleService {
             coverage.finish();
             audit_coverage.push(coverage);
             semantic_summary = Some(summary);
+            record_deep_stage(tracker, "semantic_continuity", &issues, &audit_coverage);
         }
 
         // Build per-validator scene groups from the final issue list so
@@ -3032,6 +3363,10 @@ impl SqliteSpindleService {
         };
 
         Ok(spindle_core::models::CheckConsistencyOutput {
+            status: spindle_core::models::ConsistencyStatus::Complete,
+            job_id: None,
+            checks_completed: Vec::new(),
+            checks_pending: Vec::new(),
             audit_coverage,
             issues,
             summary,
@@ -3040,6 +3375,47 @@ impl SqliteSpindleService {
             semantic_summary,
             semantic_scene_summaries,
         })
+    }
+}
+
+/// Deep-tier checks this request will run, in execution order. Fast checks are
+/// not listed: they are not the source of client silence.
+fn planned_deep_stages(
+    requested: &std::collections::BTreeSet<String>,
+    semantic_mode: Option<spindle_core::semantic_continuity::SemanticMode>,
+) -> Vec<String> {
+    let mut stages = Vec::new();
+    if should_run_check(requested, "temporal_coherence") {
+        stages.push("temporal_coherence.deep".to_string());
+    }
+    if should_run_check(requested, "promise_payoff_detection") {
+        stages.push("promise_payoff_detection".to_string());
+    }
+    if should_run_check(requested, "scene_purpose_fulfillment") {
+        stages.push("scene_purpose_fulfillment".to_string());
+    }
+    if should_run_check(requested, "world_rule_compliance") {
+        stages.push("world_rule_compliance.deep".to_string());
+    }
+    if should_run_check(requested, "secret_leak") {
+        stages.push("secret_leak.deep".to_string());
+    }
+    if semantic_mode.is_some_and(|mode| !mode.is_off()) {
+        stages.push("semantic_continuity".to_string());
+    }
+    stages
+}
+
+/// Record one deep-tier completion on the detached job, if this run is
+/// detached. Inline fast runs pass `None` and pay nothing.
+fn record_deep_stage(
+    tracker: Option<&ConsistencyJobTracker>,
+    stage: &str,
+    issues: &[spindle_core::models::ConsistencyIssue],
+    audit_coverage: &[spindle_core::models::AuditCoverage],
+) {
+    if let Some(tracker) = tracker {
+        tracker.stage_complete(stage, issues, audit_coverage);
     }
 }
 
@@ -3469,6 +3845,9 @@ fn parse_elapsed_number(words: &[&str]) -> Option<f64> {
     }
     saw_number.then_some(total + current)
 }
+
+#[cfg(test)]
+mod job_tests;
 
 #[cfg(test)]
 mod elapsed_phrase_tests {

@@ -1,4 +1,5 @@
 use super::*;
+use spindle_adapters::sqlite::service::ConsistencyProgressSink;
 
 pub(super) fn log_tool_call_timing(name: &str, lock_wait_ms: u64, total_ms: u64, is_error: bool) {
     let slow_threshold_ms = std::env::var("SPINDLE_SLOW_TOOL_MS")
@@ -30,13 +31,35 @@ impl ToolRouter {
             .await
     }
 
+    /// No-progress entry point kept for the test-only `call_tool` helper and
+    /// internal callers. The server uses the progress-aware variant.
+    #[allow(dead_code)]
     pub async fn call_tool_with_internal_token(
         &self,
         name: &str,
         arguments: Option<&rmcp::model::JsonObject>,
         internal_token: Option<&str>,
     ) -> anyhow::Result<CallToolResult> {
-        Box::pin(self.call_tool_with_internal_token_inner(name, arguments, internal_token)).await
+        self.call_tool_with_internal_token_and_progress(name, arguments, internal_token, None)
+            .await
+    }
+
+    /// Call a tool with an optional progress sink. Only `check_consistency`
+    /// consumes it today; other tools ignore it.
+    pub async fn call_tool_with_internal_token_and_progress(
+        &self,
+        name: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
+        internal_token: Option<&str>,
+        progress: Option<ConsistencyProgressSink>,
+    ) -> anyhow::Result<CallToolResult> {
+        Box::pin(self.call_tool_with_internal_token_inner(
+            name,
+            arguments,
+            internal_token,
+            progress,
+        ))
+        .await
     }
 
     pub(super) async fn call_tool_with_internal_token_inner(
@@ -44,6 +67,7 @@ impl ToolRouter {
         name: &str,
         arguments: Option<&rmcp::model::JsonObject>,
         internal_token: Option<&str>,
+        progress: Option<ConsistencyProgressSink>,
     ) -> anyhow::Result<CallToolResult> {
         let call_started = Instant::now();
         // Operator-only tools stay hidden from model transports. A server-issued
@@ -517,10 +541,17 @@ impl ToolRouter {
                 self.invoke(arguments, |input| self.service.set_chapter_outline(input))
                     .await
             }
-            "check_consistency" => {
-                self.invoke(arguments, |input| self.service.check_consistency(input))
+            "check_consistency" => match parse_arguments::<CheckConsistencyInput>(arguments) {
+                Ok(input) => match self
+                    .service
+                    .check_consistency_with_progress(input, progress)
                     .await
-            }
+                {
+                    Ok(output) => structured_result(&output),
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            },
             "prepare_semantic_continuity" => {
                 self.invoke(arguments, |input| {
                     self.service.prepare_semantic_continuity(input)
