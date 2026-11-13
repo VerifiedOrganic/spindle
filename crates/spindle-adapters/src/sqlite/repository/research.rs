@@ -601,6 +601,7 @@ impl Repository {
                     title: String,
                     url: Option<String>,
                     author: Option<String>,
+                    publisher: Option<String>,
                     reliability: String,
                     tags: Vec<String>,
                     summary: Option<String>,
@@ -611,16 +612,18 @@ impl Repository {
                     let title: String = row.get(1)?;
                     let url: Option<String> = row.get(2)?;
                     let author: Option<String> = row.get(3)?;
-                    let reliability: String = row.get(4)?;
-                    let tags_json: String = row.get(5)?;
+                    let publisher: Option<String> = row.get(4)?;
+                    let reliability: String = row.get(5)?;
+                    let tags_json: String = row.get(6)?;
                     let tags_parsed: Vec<String> =
                         serde_json::from_str(&tags_json).unwrap_or_default();
-                    let summary: Option<String> = row.get(6)?;
+                    let summary: Option<String> = row.get(7)?;
                     Ok(MinimalSource {
                         id,
                         title,
                         url,
                         author,
+                        publisher,
                         reliability,
                         tags: tags_parsed,
                         summary,
@@ -629,7 +632,7 @@ impl Repository {
 
                 if let Some(branch_id) = &branch_id {
                     let mut sources_stmt = conn.prepare_cached(
-                        "SELECT id, title, url, author, reliability, tags, summary \
+                        "SELECT id, title, url, author, publisher, reliability, tags, summary \
                          FROM research_source WHERE project_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL) AND archived_at IS NULL"
                     )?;
                     let mut sources_rows =
@@ -640,7 +643,7 @@ impl Repository {
                     }
                 } else {
                     let mut sources_stmt = conn.prepare_cached(
-                        "SELECT id, title, url, author, reliability, tags, summary FROM research_source WHERE project_id = ?1 AND archived_at IS NULL"
+                        "SELECT id, title, url, author, publisher, reliability, tags, summary FROM research_source WHERE project_id = ?1 AND archived_at IS NULL"
                     )?;
                     let mut sources_rows = sources_stmt.query([&project_id])?;
                     while let Some(row) = sources_rows.next()? {
@@ -750,7 +753,12 @@ impl Repository {
                     }
                     let score = research_match_score(
                         &terms,
-                        &[src.title.as_str(), src.summary.as_deref().unwrap_or("")],
+                        &[
+                            src.title.as_str(),
+                            src.summary.as_deref().unwrap_or(""),
+                            src.author.as_deref().unwrap_or(""),
+                            src.publisher.as_deref().unwrap_or(""),
+                        ],
                         &src.tags,
                     );
                     if !terms.is_empty() && score == 0 {

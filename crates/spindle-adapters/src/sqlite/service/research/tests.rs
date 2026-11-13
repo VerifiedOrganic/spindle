@@ -1068,8 +1068,8 @@ async fn research_search_matches_multi_word_queries_across_fields_and_tags() {
             source_type: "book".to_string(),
             url: None,
             file_path: None,
-            author: None,
-            publisher: None,
+            author: Some("R. Hale".to_string()),
+            publisher: Some("North Press".to_string()),
             published_date: None,
             accessed_at: None,
             reliability: "secondary".to_string(),
@@ -1216,4 +1216,19 @@ async fn research_search_matches_multi_word_queries_across_fields_and_tags() {
     let filtered = search("barrels", vec!["Supply_Lines".to_string()]).await;
     assert_eq!(filtered.results.len(), 1);
     assert_eq!(filtered.results[0].id, supply_note);
+
+    let author_query = search("Hale", Vec::new()).await;
+    assert!(
+        author_query.results.iter().any(|item| item.id == source_id),
+        "source author metadata remains searchable"
+    );
+
+    let publisher_query = search("North Press", Vec::new()).await;
+    assert!(
+        publisher_query
+            .results
+            .iter()
+            .any(|item| item.id == source_id),
+        "source publisher metadata remains searchable"
+    );
 }
