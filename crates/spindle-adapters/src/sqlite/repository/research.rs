@@ -575,12 +575,20 @@ impl Repository {
         location: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<spindle_core::models::ResearchSearchResultItem>> {
+        use spindle_core::research_match::{
+            research_match_score, research_tag_filters_match, research_terms,
+        };
+
         let project_id = project_id.to_string();
-        let query = fts_safe_query(query);
+        let terms = research_terms(query);
         let branch_id = branch_id.map(|s| s.to_string());
         let tags = tags.to_vec();
-        let time_period = time_period.map(|s| s.trim().to_string());
-        let location = location.map(|s| s.trim().to_string());
+        let time_period = time_period
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty());
+        let location = location
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty());
         let limit = limit.unwrap_or(20);
 
         self.inner
@@ -593,6 +601,7 @@ impl Repository {
                     title: String,
                     url: Option<String>,
                     author: Option<String>,
+                    publisher: Option<String>,
                     reliability: String,
                     tags: Vec<String>,
                     summary: Option<String>,
@@ -603,15 +612,18 @@ impl Repository {
                     let title: String = row.get(1)?;
                     let url: Option<String> = row.get(2)?;
                     let author: Option<String> = row.get(3)?;
-                    let reliability: String = row.get(4)?;
-                    let tags_json: String = row.get(5)?;
-                    let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-                    let summary: Option<String> = row.get(6)?;
+                    let publisher: Option<String> = row.get(4)?;
+                    let reliability: String = row.get(5)?;
+                    let tags_json: String = row.get(6)?;
+                    let tags_parsed: Vec<String> =
+                        serde_json::from_str(&tags_json).unwrap_or_default();
+                    let summary: Option<String> = row.get(7)?;
                     Ok(MinimalSource {
                         id,
                         title,
                         url,
                         author,
+                        publisher,
                         reliability,
                         tags: tags_parsed,
                         summary,
@@ -620,17 +632,18 @@ impl Repository {
 
                 if let Some(branch_id) = &branch_id {
                     let mut sources_stmt = conn.prepare_cached(
-                        "SELECT id, title, url, author, reliability, tags, summary \
+                        "SELECT id, title, url, author, publisher, reliability, tags, summary \
                          FROM research_source WHERE project_id = ?1 AND (branch_id = ?2 OR branch_id IS NULL) AND archived_at IS NULL"
                     )?;
-                    let mut sources_rows = sources_stmt.query(rusqlite::params![&project_id, branch_id])?;
+                    let mut sources_rows =
+                        sources_stmt.query(rusqlite::params![&project_id, branch_id])?;
                     while let Some(row) = sources_rows.next()? {
                         let source = load_source(row)?;
                         sources_map.insert(source.id.clone(), source);
                     }
                 } else {
                     let mut sources_stmt = conn.prepare_cached(
-                        "SELECT id, title, url, author, reliability, tags, summary FROM research_source WHERE project_id = ?1 AND archived_at IS NULL"
+                        "SELECT id, title, url, author, publisher, reliability, tags, summary FROM research_source WHERE project_id = ?1 AND archived_at IS NULL"
                     )?;
                     let mut sources_rows = sources_stmt.query([&project_id])?;
                     while let Some(row) = sources_rows.next()? {
@@ -639,40 +652,6 @@ impl Repository {
                     }
                 }
 
-                let mut matched_sources = Vec::new();
-                if let Some(query) = &query {
-                    if let Some(branch_id) = &branch_id {
-                        let mut stmt = conn.prepare_cached(
-                            "SELECT s.id FROM research_source s JOIN fts_research_source f ON s.id = f.source_id \
-                             WHERE fts_research_source MATCH ?1 AND s.project_id = ?2 AND (s.branch_id = ?3 OR s.branch_id IS NULL)"
-                        )?;
-                        let mut rows = stmt.query(rusqlite::params![query, &project_id, branch_id])?;
-                        while let Some(row) = rows.next()? {
-                            let id: String = row.get(0)?;
-                            if let Some(src) = sources_map.get(&id) {
-                                matched_sources.push(src);
-                            }
-                        }
-                    } else {
-                        let mut stmt = conn.prepare_cached(
-                            "SELECT s.id FROM research_source s JOIN fts_research_source f ON s.id = f.source_id \
-                             WHERE fts_research_source MATCH ?1 AND s.project_id = ?2"
-                        )?;
-                        let mut rows = stmt.query(rusqlite::params![query, &project_id])?;
-                        while let Some(row) = rows.next()? {
-                            let id: String = row.get(0)?;
-                            if let Some(src) = sources_map.get(&id) {
-                                matched_sources.push(src);
-                            }
-                        }
-                    }
-                } else {
-                    for src in sources_map.values() {
-                        matched_sources.push(src);
-                    }
-                }
-
-                let mut matched_notes = Vec::new();
                 struct MinimalNote {
                     id: String,
                     source_id: Option<String>,
@@ -681,47 +660,9 @@ impl Repository {
                     locator: Option<String>,
                     tags: Vec<String>,
                 }
-                if let Some(query) = &query {
-                    if let Some(branch_id) = &branch_id {
-                        let mut stmt = conn.prepare_cached(
-                            "SELECT n.id, n.source_id, n.note, n.quote, n.locator, n.tags \
-                             FROM research_note n JOIN fts_research_note f ON n.id = f.note_id \
-                             WHERE fts_research_note MATCH ?1 AND n.project_id = ?2 AND (n.branch_id = ?3 OR n.branch_id IS NULL) AND n.archived_at IS NULL"
-                        )?;
-                        let mut rows = stmt.query(rusqlite::params![query, &project_id, branch_id])?;
-                        while let Some(row) = rows.next()? {
-                            let tags_json: String = row.get(5)?;
-                            let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-                            matched_notes.push(MinimalNote {
-                                id: row.get(0)?,
-                                source_id: row.get(1)?,
-                                note: row.get(2)?,
-                                quote: row.get(3)?,
-                                locator: row.get(4)?,
-                                tags: tags_parsed,
-                            });
-                        }
-                    } else {
-                        let mut stmt = conn.prepare_cached(
-                            "SELECT n.id, n.source_id, n.note, n.quote, n.locator, n.tags \
-                             FROM research_note n JOIN fts_research_note f ON n.id = f.note_id \
-                             WHERE fts_research_note MATCH ?1 AND n.project_id = ?2 AND n.archived_at IS NULL"
-                        )?;
-                        let mut rows = stmt.query(rusqlite::params![query, &project_id])?;
-                        while let Some(row) = rows.next()? {
-                            let tags_json: String = row.get(5)?;
-                            let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-                            matched_notes.push(MinimalNote {
-                                id: row.get(0)?,
-                                source_id: row.get(1)?,
-                                note: row.get(2)?,
-                                quote: row.get(3)?,
-                                locator: row.get(4)?,
-                                tags: tags_parsed,
-                            });
-                        }
-                    }
-                } else {
+
+                let mut notes = Vec::new();
+                {
                     let (sql, has_branch) = if branch_id.is_some() {
                         (
                             "SELECT id, source_id, note, quote, locator, tags FROM research_note \
@@ -742,8 +683,9 @@ impl Repository {
                     };
                     while let Some(row) = rows.next()? {
                         let tags_json: String = row.get(5)?;
-                        let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-                        matched_notes.push(MinimalNote {
+                        let tags_parsed: Vec<String> =
+                            serde_json::from_str(&tags_json).unwrap_or_default();
+                        notes.push(MinimalNote {
                             id: row.get(0)?,
                             source_id: row.get(1)?,
                             note: row.get(2)?,
@@ -754,7 +696,6 @@ impl Repository {
                     }
                 }
 
-                let mut matched_claims = Vec::new();
                 struct MinimalClaim {
                     id: String,
                     source_id: Option<String>,
@@ -765,51 +706,9 @@ impl Repository {
                     confidence: String,
                     tags: Vec<String>,
                 }
-                if let Some(query) = &query {
-                    if let Some(branch_id) = &branch_id {
-                        let mut stmt = conn.prepare_cached(
-                            "SELECT c.id, c.source_id, c.claim, c.topic, c.time_period, c.location, c.confidence, c.tags \
-                             FROM research_claim c JOIN fts_research_claim f ON c.id = f.claim_id \
-                             WHERE fts_research_claim MATCH ?1 AND c.project_id = ?2 AND (c.branch_id = ?3 OR c.branch_id IS NULL) AND c.archived_at IS NULL"
-                        )?;
-                        let mut rows = stmt.query(rusqlite::params![query, &project_id, branch_id])?;
-                        while let Some(row) = rows.next()? {
-                            let tags_json: String = row.get(7)?;
-                            let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-                            matched_claims.push(MinimalClaim {
-                                id: row.get(0)?,
-                                source_id: row.get(1)?,
-                                claim: row.get(2)?,
-                                topic: row.get(3)?,
-                                time_period: row.get(4)?,
-                                location: row.get(5)?,
-                                confidence: row.get(6)?,
-                                tags: tags_parsed,
-                            });
-                        }
-                    } else {
-                        let mut stmt = conn.prepare_cached(
-                            "SELECT c.id, c.source_id, c.claim, c.topic, c.time_period, c.location, c.confidence, c.tags \
-                             FROM research_claim c JOIN fts_research_claim f ON c.id = f.claim_id \
-                             WHERE fts_research_claim MATCH ?1 AND c.project_id = ?2 AND c.archived_at IS NULL"
-                        )?;
-                        let mut rows = stmt.query(rusqlite::params![query, &project_id])?;
-                        while let Some(row) = rows.next()? {
-                            let tags_json: String = row.get(7)?;
-                            let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-                            matched_claims.push(MinimalClaim {
-                                id: row.get(0)?,
-                                source_id: row.get(1)?,
-                                claim: row.get(2)?,
-                                topic: row.get(3)?,
-                                time_period: row.get(4)?,
-                                location: row.get(5)?,
-                                confidence: row.get(6)?,
-                                tags: tags_parsed,
-                            });
-                        }
-                    }
-                } else {
+
+                let mut claims = Vec::new();
+                {
                     let (sql, has_branch) = if branch_id.is_some() {
                         (
                             "SELECT id, source_id, claim, topic, time_period, location, confidence, tags \
@@ -831,8 +730,9 @@ impl Repository {
                     };
                     while let Some(row) = rows.next()? {
                         let tags_json: String = row.get(7)?;
-                        let tags_parsed: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-                        matched_claims.push(MinimalClaim {
+                        let tags_parsed: Vec<String> =
+                            serde_json::from_str(&tags_json).unwrap_or_default();
+                        claims.push(MinimalClaim {
                             id: row.get(0)?,
                             source_id: row.get(1)?,
                             claim: row.get(2)?,
@@ -847,38 +747,60 @@ impl Repository {
 
                 let mut results = Vec::new();
 
-                let matches_tags = |item_tags: &[String]| -> bool {
-                    if tags.is_empty() {
-                        return true;
-                    }
-                    tags.iter().all(|t| item_tags.iter().any(|it| it.eq_ignore_ascii_case(t)))
-                };
-
-                for src in matched_sources {
-                    if !matches_tags(&src.tags) {
+                for src in sources_map.values() {
+                    if !research_tag_filters_match(&tags, &src.tags) {
                         continue;
                     }
-                    results.push(spindle_core::models::ResearchSearchResultItem {
-                        item_type: "source".to_string(),
-                        id: src.id.clone(),
-                        title_or_summary: src.title.clone(),
-                        preview: src.summary.clone().unwrap_or_default(),
-                        tags: src.tags.clone(),
-                        source_title: Some(src.title.clone()),
-                        source_url: src.url.clone(),
-                        source_author: src.author.clone(),
-                        locator: None,
-                        confidence_or_reliability: Some(src.reliability.clone()),
-                    });
+                    let score = research_match_score(
+                        &terms,
+                        &[
+                            src.title.as_str(),
+                            src.summary.as_deref().unwrap_or(""),
+                            src.author.as_deref().unwrap_or(""),
+                            src.publisher.as_deref().unwrap_or(""),
+                        ],
+                        &src.tags,
+                    );
+                    if !terms.is_empty() && score == 0 {
+                        continue;
+                    }
+                    results.push((
+                        score,
+                        spindle_core::models::ResearchSearchResultItem {
+                            item_type: "source".to_string(),
+                            id: src.id.clone(),
+                            title_or_summary: src.title.clone(),
+                            preview: src.summary.clone().unwrap_or_default(),
+                            tags: src.tags.clone(),
+                            source_title: Some(src.title.clone()),
+                            source_url: src.url.clone(),
+                            source_author: src.author.clone(),
+                            locator: None,
+                            confidence_or_reliability: Some(src.reliability.clone()),
+                        },
+                    ));
                 }
 
-                for note in matched_notes {
-                    if !matches_tags(&note.tags) {
+                for note in notes {
+                    if !research_tag_filters_match(&tags, &note.tags) {
                         continue;
                     }
+                    let score = research_match_score(
+                        &terms,
+                        &[note.note.as_str(), note.quote.as_deref().unwrap_or("")],
+                        &note.tags,
+                    );
+                    if !terms.is_empty() && score == 0 {
+                        continue;
+                    }
+
                     let (src_title, src_url, src_author) = if let Some(sid) = &note.source_id {
                         if let Some(src) = sources_map.get(sid) {
-                            (Some(src.title.clone()), src.url.clone(), src.author.clone())
+                            (
+                                Some(src.title.clone()),
+                                src.url.clone(),
+                                src.author.clone(),
+                            )
                         } else {
                             (None, None, None)
                         }
@@ -893,46 +815,68 @@ impl Repository {
                         note_text.clone()
                     };
 
-                    results.push(spindle_core::models::ResearchSearchResultItem {
-                        item_type: "note".to_string(),
-                        id: note.id,
-                        title_or_summary: if note.note.len() > 60 { format!("{}...", &note.note[..57]) } else { note.note.clone() },
-                        preview,
-                        tags: note.tags,
-                        source_title: src_title,
-                        source_url: src_url,
-                        source_author: src_author,
-                        locator: note.locator,
-                        confidence_or_reliability: None,
-                    });
+                    results.push((
+                        score,
+                        spindle_core::models::ResearchSearchResultItem {
+                            item_type: "note".to_string(),
+                            id: note.id,
+                            title_or_summary: if note.note.len() > 60 {
+                                format!("{}...", &note.note[..57])
+                            } else {
+                                note.note.clone()
+                            },
+                            preview,
+                            tags: note.tags,
+                            source_title: src_title,
+                            source_url: src_url,
+                            source_author: src_author,
+                            locator: note.locator,
+                            confidence_or_reliability: None,
+                        },
+                    ));
                 }
 
-                for claim in matched_claims {
-                    if !matches_tags(&claim.tags) {
+                for claim in claims {
+                    if !research_tag_filters_match(&tags, &claim.tags) {
                         continue;
                     }
                     if let Some(tp) = &time_period {
-                        if let Some(ctp) = &claim.time_period {
-                            if !ctp.to_lowercase().contains(&tp.to_lowercase()) {
-                                continue;
-                            }
-                        } else {
+                        let Some(ctp) = claim.time_period.as_ref() else {
+                            continue;
+                        };
+                        if !ctp.to_lowercase().contains(tp.as_str()) {
                             continue;
                         }
                     }
                     if let Some(loc) = &location {
-                        if let Some(cloc) = &claim.location {
-                            if !cloc.to_lowercase().contains(&loc.to_lowercase()) {
-                                continue;
-                            }
-                        } else {
+                        let Some(cloc) = claim.location.as_ref() else {
+                            continue;
+                        };
+                        if !cloc.to_lowercase().contains(loc.as_str()) {
                             continue;
                         }
                     }
 
+                    let score = research_match_score(
+                        &terms,
+                        &[
+                            claim.claim.as_str(),
+                            claim.topic.as_deref().unwrap_or(""),
+                            claim.location.as_deref().unwrap_or(""),
+                        ],
+                        &claim.tags,
+                    );
+                    if !terms.is_empty() && score == 0 {
+                        continue;
+                    }
+
                     let (src_title, src_url, src_author) = if let Some(sid) = &claim.source_id {
                         if let Some(src) = sources_map.get(sid) {
-                            (Some(src.title.clone()), src.url.clone(), src.author.clone())
+                            (
+                                Some(src.title.clone()),
+                                src.url.clone(),
+                                src.author.clone(),
+                            )
                         } else {
                             (None, None, None)
                         }
@@ -940,26 +884,31 @@ impl Repository {
                         (None, None, None)
                     };
 
-                    results.push(spindle_core::models::ResearchSearchResultItem {
-                        item_type: "claim".to_string(),
-                        id: claim.id,
-                        title_or_summary: claim.claim.clone(),
-                        preview: format!("Factual Claim: {}\nTopic: {}\nConfidence: {}",
-                            claim.claim,
-                            claim.topic.clone().unwrap_or_else(|| "N/A".to_string()),
-                            claim.confidence
-                        ),
-                        tags: claim.tags,
-                        source_title: src_title,
-                        source_url: src_url,
-                        source_author: src_author,
-                        locator: None,
-                        confidence_or_reliability: Some(claim.confidence),
-                    });
+                    results.push((
+                        score,
+                        spindle_core::models::ResearchSearchResultItem {
+                            item_type: "claim".to_string(),
+                            id: claim.id,
+                            title_or_summary: claim.claim.clone(),
+                            preview: format!(
+                                "Factual Claim: {}\nTopic: {}\nConfidence: {}",
+                                claim.claim,
+                                claim.topic.clone().unwrap_or_else(|| "N/A".to_string()),
+                                claim.confidence
+                            ),
+                            tags: claim.tags,
+                            source_title: src_title,
+                            source_url: src_url,
+                            source_author: src_author,
+                            locator: None,
+                            confidence_or_reliability: Some(claim.confidence),
+                        },
+                    ));
                 }
 
+                results.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
                 results.truncate(limit);
-                Ok(results)
+                Ok(results.into_iter().map(|(_, item)| item).collect())
             })
             .await
     }

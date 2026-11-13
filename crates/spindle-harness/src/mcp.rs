@@ -202,41 +202,7 @@ impl McpHarnessClient {
                     let research_pack_empty =
                         pack.sources.is_empty() && pack.notes.is_empty() && pack.claims.is_empty();
 
-                    let mut research_tags_matched = true;
-                    if !research_tags.is_empty() {
-                        let mut found_tag = false;
-                        for t in &research_tags {
-                            let t_lower = t.to_lowercase();
-                            for s in &pack.sources {
-                                if s.tags.iter().any(|st| st.to_lowercase() == t_lower) {
-                                    found_tag = true;
-                                    break;
-                                }
-                            }
-                            if found_tag {
-                                break;
-                            }
-                            for n in &pack.notes {
-                                if n.tags.iter().any(|nt| nt.to_lowercase() == t_lower) {
-                                    found_tag = true;
-                                    break;
-                                }
-                            }
-                            if found_tag {
-                                break;
-                            }
-                            for c in &pack.claims {
-                                if c.tags.iter().any(|ct| ct.to_lowercase() == t_lower) {
-                                    found_tag = true;
-                                    break;
-                                }
-                            }
-                            if found_tag {
-                                break;
-                            }
-                        }
-                        research_tags_matched = found_tag;
-                    }
+                    let research_tags_matched = research_pack_tags_match(&research_tags, &pack);
 
                     planned_scenes.push(PlannedSceneSnapshot {
                         scene_order: scene.scene_order,
@@ -626,11 +592,39 @@ struct ChapterSummaryRowResource {
     chapter_number: i32,
 }
 
+/// True when the pack contains a tag related to any scene research tag.
+///
+/// Scene research tags are free text and may be multi-word. Matching uses the
+/// same term normalization as research search, so `supply lines` clears a
+/// pack containing `supply-lines`, and a multi-word tag clears when any of its
+/// terms appears in the pack.
+fn research_pack_tags_match(
+    research_tags: &[String],
+    pack: &spindle_core::models::ResearchPackForSceneOutput,
+) -> bool {
+    if research_tags.is_empty() {
+        return true;
+    }
+    let available: Vec<String> = pack
+        .sources
+        .iter()
+        .flat_map(|source| source.tags.iter().cloned())
+        .chain(pack.notes.iter().flat_map(|note| note.tags.iter().cloned()))
+        .chain(
+            pack.claims
+                .iter()
+                .flat_map(|claim| claim.tags.iter().cloned()),
+        )
+        .collect();
+    spindle_core::research_match::research_tags_overlap(research_tags, &available)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use spindle_core::models::{
-        AgentConfigStatus, AgentHealthSummary, AgentRoutingRuleSummary, AgentSummary,
+        AgentConfigStatus, AgentHealthSummary, AgentRoutingRuleSummary, AgentSummary, ResearchNote,
+        ResearchPackForSceneOutput,
     };
 
     fn route(name: &str, model: &str, rating: Option<&str>) -> ModelRouteSummary {
@@ -811,5 +805,61 @@ mod tests {
         assert_eq!(binding.agent_id, "grok-local");
         assert_eq!(binding.route_name, "draft");
         assert_eq!(binding.rating, None);
+    }
+
+    fn research_note_with_tags(tags: &[&str]) -> ResearchNote {
+        ResearchNote {
+            id: format!("research_note:{}", tags.join("-")),
+            project_id: "project:test".to_string(),
+            source_id: None,
+            branch_id: None,
+            note: "A captured note.".to_string(),
+            quote: None,
+            locator: None,
+            tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn pack_with_note_tags(tags: &[&[&str]]) -> ResearchPackForSceneOutput {
+        ResearchPackForSceneOutput {
+            sources: Vec::new(),
+            notes: tags
+                .iter()
+                .map(|note_tags| research_note_with_tags(note_tags))
+                .collect(),
+            claims: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn research_gate_clears_when_multi_word_scene_tags_partially_match_pack_tags() {
+        let research_tags = vec![
+            "army camp".to_string(),
+            "winter quarters".to_string(),
+            "camp guards".to_string(),
+            "supply lines".to_string(),
+        ];
+        let pack = pack_with_note_tags(&[&["supply-lines"], &["camp"], &["army"]]);
+
+        assert!(research_pack_tags_match(&research_tags, &pack));
+    }
+
+    #[test]
+    fn research_gate_stays_blocked_without_related_pack_tags() {
+        let pack = pack_with_note_tags(&[&["camp"], &["army"]]);
+
+        assert!(!research_pack_tags_match(
+            &["winter quarters".to_string()],
+            &pack
+        ));
+    }
+
+    #[test]
+    fn research_gate_without_research_tags_never_blocks() {
+        let pack = pack_with_note_tags(&[]);
+
+        assert!(research_pack_tags_match(&[], &pack));
     }
 }
