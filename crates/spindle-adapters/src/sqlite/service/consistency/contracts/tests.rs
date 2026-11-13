@@ -8066,6 +8066,50 @@ mod claim_validation_lanes {
                 "a rule that forbids resurrection must not exempt a dead character: {issues:?}"
             );
         }
+
+        #[tokio::test]
+        async fn negated_immortality_world_rule_does_not_exempt_dead_acting() {
+            let (_tmp, svc) = fresh_service().await;
+            let (project_id, character_id) = project_and_character(&svc, "Ada Ward").await;
+            svc.create_world_rule(CreateWorldRuleInput {
+                project_id: project_id.clone(),
+                rule_name: "No immortality".into(),
+                rule_type: "constraint".into(),
+                description: "No one is immortal; death is permanent.".into(),
+                scan_pattern: None,
+                relevance_tags: vec!["death".into()],
+                established_in: None,
+            })
+            .await
+            .unwrap();
+            let death_scene = save_scene(
+                &svc,
+                &project_id,
+                1,
+                "Ada Ward closed the atlas and went still.",
+            )
+            .await;
+            commit_status(
+                &svc,
+                &character_id,
+                &death_scene,
+                &["dead at the crossing: killed by a rival"],
+            )
+            .await;
+            save_scene(
+                &svc,
+                &project_id,
+                2,
+                "Ada Ward woke somewhere new and crossed the yard.",
+            )
+            .await;
+
+            let issues = run_checks(&svc, &project_id, "retcon_reachability").await;
+            assert!(
+                dead_issue(&issues, "Ada Ward").is_some(),
+                "a negated immortality rule must not exempt a dead character: {issues:?}"
+            );
+        }
     }
 }
 

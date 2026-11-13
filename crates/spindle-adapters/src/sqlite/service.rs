@@ -2627,6 +2627,9 @@ fn declares_respawn_in_rule_text(text: &str) -> bool {
         if !(token.starts_with("immortal") || *token == "undying") {
             return false;
         }
+        if respawn_marker_is_negated(&tokens, index) {
+            return false;
+        }
         let start = index.saturating_sub(4);
         let end = (index + 5).min(tokens.len());
         tokens[start..end].iter().any(death_word)

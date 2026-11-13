@@ -3669,6 +3669,12 @@ fn respawn_declarations_require_positive_death_context() {
     assert!(!declares_respawn_in_rule_text(
         "the immortal emperor rules forever; no one can kill him"
     ));
+    assert!(!declares_respawn_in_rule_text(
+        "No one is immortal; death is permanent"
+    ));
+    assert!(!declares_respawn_in_rule_text(
+        "No one is undying; death is permanent"
+    ));
     assert!(!declares_respawn_in_rule_text("no resurrection"));
 }
 
