@@ -388,11 +388,11 @@ impl ToolRouter {
 
     pub fn list_tools(&self) -> Vec<Tool> {
         let all = all_tool_schemas();
-        let visible = |tools: &[Tool]| -> Vec<Tool> {
+        let visible = |tools: &[CatalogTool]| -> Vec<Tool> {
             tools
                 .iter()
                 .filter(|tool| !is_operator_only(tool.name.as_ref()))
-                .cloned()
+                .map(|tool| tool.tool.clone())
                 .collect()
         };
         let Some(profile) = self.current_profile() else {

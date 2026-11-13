@@ -510,3 +510,329 @@ async fn tool_schemas_relax_session_default_project_and_branch_fields() {
             .any(|entry| entry.as_str() == Some("project_id"))
     );
 }
+
+// ── Catalog-wide published-schema / deserializer contract ───────────────────
+
+fn resolve_schema<'a>(schema: &'a Value, root: &'a Value) -> &'a Value {
+    let mut current = schema;
+    for _ in 0..16 {
+        let Some(reference) = current.get("$ref").and_then(Value::as_str) else {
+            break;
+        };
+        let Some(pointer) = reference.strip_prefix('#') else {
+            break;
+        };
+        let Some(next) = root.pointer(pointer) else {
+            break;
+        };
+        current = next;
+    }
+    current
+}
+
+fn is_null_schema(schema: &Value) -> bool {
+    match schema {
+        Value::Object(map) => {
+            map.get("type").and_then(Value::as_str) == Some("null")
+                || map.get("const") == Some(&Value::Null)
+                || map
+                    .get("enum")
+                    .and_then(Value::as_array)
+                    .is_some_and(|values| values.iter().all(Value::is_null))
+                || map.is_empty()
+        }
+        _ => false,
+    }
+}
+
+fn schema_score(schema: &Value) -> i32 {
+    let Value::Object(map) = schema else {
+        return -1000;
+    };
+    if map.is_empty() {
+        return -1000;
+    }
+    let mut score = 0;
+    if map.contains_key("type") {
+        score += 10;
+    }
+    if map.contains_key("properties") {
+        score += 20;
+    }
+    if map.contains_key("enum") {
+        score += 10;
+    }
+    if map.contains_key("const") {
+        score += 10;
+    }
+    if map.contains_key("items") {
+        score += 5;
+    }
+    score
+}
+
+fn schema_type(object: &serde_json::Map<String, Value>) -> Option<&str> {
+    match object.get("type") {
+        Some(Value::String(kind)) => Some(kind),
+        Some(Value::Array(kinds)) => kinds
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|kind| *kind != "null"),
+        _ => None,
+    }
+}
+
+fn property_allows_null(schema: &Value, root: &Value) -> bool {
+    let schema = resolve_schema(schema, root);
+    let Some(object) = schema.as_object() else {
+        return true;
+    };
+    if object.get("nullable").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    match object.get("type") {
+        Some(Value::String(kind)) => kind == "null",
+        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind.as_str() == Some("null")),
+        _ => object.contains_key("anyOf") || object.contains_key("oneOf") || object.is_empty(),
+    }
+}
+
+fn string_example(object: &serde_json::Map<String, Value>) -> String {
+    let min_length = object
+        .get("minLength")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1) as usize;
+    "x".repeat(min_length)
+}
+
+fn integer_example(object: &serde_json::Map<String, Value>) -> i64 {
+    let minimum = object.get("minimum").and_then(Value::as_i64).unwrap_or(0);
+    let exclusive = object
+        .get("exclusiveMinimum")
+        .and_then(Value::as_i64)
+        .map(|value| value + 1)
+        .unwrap_or(minimum);
+    exclusive.max(0)
+}
+
+fn number_example(object: &serde_json::Map<String, Value>) -> f64 {
+    let minimum = object.get("minimum").and_then(Value::as_f64).unwrap_or(0.0);
+    let exclusive = object
+        .get("exclusiveMinimum")
+        .and_then(Value::as_f64)
+        .map(|value| value + 1.0)
+        .unwrap_or(minimum);
+    exclusive.max(0.0)
+}
+
+/// Build one minimal JSON value that satisfies the schema. Every declared
+/// property is populated, including optional ones, so the result exercises the
+/// whole published contract instead of only the required spine.
+fn example_value(schema: &Value, root: &Value, depth: usize) -> Value {
+    if depth > 24 {
+        return Value::Null;
+    }
+    let schema = resolve_schema(schema, root);
+    let Some(object) = schema.as_object() else {
+        return Value::Null;
+    };
+
+    if let Some(all_of) = object.get("allOf").and_then(Value::as_array) {
+        let mut merged = serde_json::Map::new();
+        for subschema in all_of {
+            if let Value::Object(map) = example_value(subschema, root, depth + 1) {
+                merged.extend(map);
+            }
+        }
+        if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+            for (name, property) in properties {
+                merged
+                    .entry(name.clone())
+                    .or_insert_with(|| example_value(property, root, depth + 1));
+            }
+        }
+        return Value::Object(merged);
+    }
+
+    if let Some(values) = object.get("enum").and_then(Value::as_array)
+        && let Some(value) = values.iter().find(|value| !value.is_null())
+    {
+        return value.clone();
+    }
+    if let Some(value) = object.get("const") {
+        return value.clone();
+    }
+
+    for keyword in ["oneOf", "anyOf"] {
+        if let Some(branches) = object.get(keyword).and_then(Value::as_array) {
+            let branch = branches
+                .iter()
+                .filter(|branch| !is_null_schema(branch))
+                .max_by_key(|branch| schema_score(branch));
+            return branch
+                .map(|branch| example_value(branch, root, depth + 1))
+                .unwrap_or(Value::Null);
+        }
+    }
+
+    let kind = schema_type(object).or_else(|| {
+        if object.contains_key("properties") || object.contains_key("additionalProperties") {
+            Some("object")
+        } else if object.contains_key("items") {
+            Some("array")
+        } else {
+            None
+        }
+    });
+
+    match kind {
+        Some("object") => {
+            let mut map = serde_json::Map::new();
+            if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+                for (name, property) in properties {
+                    let value = example_value(property, root, depth + 1);
+                    if !value.is_null() || property_allows_null(property, root) {
+                        map.insert(name.clone(), value);
+                    }
+                }
+            }
+            Value::Object(map)
+        }
+        Some("array") => {
+            let item = object.get("items").unwrap_or(&Value::Null);
+            Value::Array(vec![example_value(item, root, depth + 1)])
+        }
+        Some("string") => Value::String(string_example(object)),
+        Some("integer") => Value::Number(Number::from(integer_example(object))),
+        Some("number") => Number::from_f64(number_example(object))
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        Some("boolean") => Value::Bool(false),
+        Some("null") => Value::Null,
+        _ => Value::Object(serde_json::Map::new()),
+    }
+}
+
+fn published_input_schema(tool: &CatalogTool) -> Value {
+    Value::Object((*tool.input_schema).clone())
+}
+
+/// REGRESSION PIN for Spindle 0.4.1: every tool's published input schema must
+/// produce an example the server's own deserializer accepts, and the canonical
+/// schemars example must validate against that published schema. This catches
+/// sanitizer transforms that erase a contract (for example collapsing a string
+/// enum to `{"type":"object"}`) anywhere in the catalog.
+#[test]
+fn every_tool_input_contract_matches_its_deserializer() {
+    let mut failures = Vec::new();
+    for tool in all_tool_schemas() {
+        let published = published_input_schema(tool);
+        let published_example = example_value(&published, &published, 0);
+        if let Err(error) = (tool.parse_input)(published_example.clone()) {
+            failures.push(format!(
+                "{}: published-schema example was rejected by the deserializer: {error}\nexample: {published_example}\nschema: {published}",
+                tool.name
+            ));
+            continue;
+        }
+
+        let canonical = (tool.canonical_input_schema)();
+        let canonical_example = example_value(&canonical, &canonical, 0);
+        if let Err(error) = (tool.parse_input)(canonical_example.clone()) {
+            failures.push(format!(
+                "{}: canonical schemars example was rejected by the deserializer: {error}\nexample: {canonical_example}\nschema: {canonical}",
+                tool.name
+            ));
+            continue;
+        }
+
+        let validator = jsonschema::validator_for(&published).unwrap_or_else(|error| {
+            panic!(
+                "{}: published input schema is not valid JSON Schema: {error}",
+                tool.name
+            )
+        });
+        if let Err(error) = validator.validate(&canonical_example) {
+            failures.push(format!(
+                "{}: canonical server example does not validate against the published schema: {error}\nexample: {canonical_example}\nschema: {published}",
+                tool.name
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} tool input contract mismatch(es):\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
+#[test]
+fn planning_action_schemas_publish_string_enums() {
+    for (tool_name, expected) in [
+        (
+            "planning_advance",
+            &[
+                "generate",
+                "stage_host_artifact",
+                "repair_last_proposal",
+                "recompute_readiness",
+                "set_policy",
+            ][..],
+        ),
+        (
+            "planning_decide",
+            &["decide", "revise", "prepare_authoring_run"][..],
+        ),
+    ] {
+        let tool = all_tool_schemas()
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} is registered"));
+        let action = &tool.input_schema["properties"]["action"];
+        assert_eq!(
+            action["type"],
+            Value::String("string".to_string()),
+            "{tool_name} action must be a string enum: {action}"
+        );
+        let values: Vec<_> = action["enum"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{tool_name} action must publish an enum: {action}"))
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(
+            values.as_slice(),
+            expected,
+            "{tool_name} action enum changed"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn planning_tools_accept_inputs_built_from_the_published_schema() {
+    let router = router().await;
+    for tool_name in ["planning_advance", "planning_decide"] {
+        let tool = all_tool_schemas()
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .unwrap();
+        let schema = published_input_schema(tool);
+        let input = example_value(&schema, &schema, 0);
+        assert!(
+            input.get("action").and_then(Value::as_str).is_some(),
+            "{tool_name}: published example must include a string action: {input}"
+        );
+        let result = router
+            .call_tool(tool_name, input.as_object())
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{tool_name}: {result:?}");
+        let rendered = serde_json::to_string(&result).unwrap();
+        assert!(
+            !rendered.contains("invalid type") && !rendered.contains("unknown variant"),
+            "{tool_name}: published-schema input failed deserialization: {rendered}"
+        );
+    }
+}

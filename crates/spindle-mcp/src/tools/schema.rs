@@ -19,17 +19,56 @@ pub(super) fn relax_session_default_fields(tool_name: &str, value: &mut Value) {
     }
 }
 
-pub(super) fn tool<I, O>(name: &'static str, description: &'static str) -> Tool
+/// A registered tool plus the typed parser for its input. Keeping the parser
+/// beside the schema lets catalog-wide tests prove the published contract and
+/// the server deserializer agree for every tool, not just the ones with a
+/// hand-written fixture.
+#[derive(Clone, Debug)]
+pub(super) struct CatalogTool {
+    pub tool: Tool,
+    // Read by the catalog-wide contract tests; kept out of the production
+    // warning surface because normal serving only needs `tool`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub parse_input: fn(Value) -> anyhow::Result<()>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub canonical_input_schema: fn() -> Value,
+}
+
+impl std::ops::Deref for CatalogTool {
+    type Target = Tool;
+
+    fn deref(&self) -> &Tool {
+        &self.tool
+    }
+}
+
+fn canonical_input_schema<I>() -> Value
 where
-    I: schemars::JsonSchema + 'static,
-    O: schemars::JsonSchema + 'static,
+    I: schemars::JsonSchema,
 {
     let settings = SchemaSettings::openapi3().with(|s| {
         s.inline_subschemas = true;
     });
     let generator = settings.into_generator();
     let schema = generator.into_root_schema_for::<I>();
-    let mut value = serde_json::to_value(&schema).expect("schema to json");
+    serde_json::to_value(&schema).expect("schema to json")
+}
+
+fn parse_input_value<I>(value: Value) -> anyhow::Result<()>
+where
+    I: DeserializeOwned,
+{
+    serde_json::from_value::<I>(value)
+        .map(|_| ())
+        .map_err(Into::into)
+}
+
+pub(super) fn tool<I, O>(name: &'static str, description: &'static str) -> CatalogTool
+where
+    I: DeserializeOwned + schemars::JsonSchema + 'static,
+    O: schemars::JsonSchema + 'static,
+{
+    let mut value = canonical_input_schema::<I>();
     relax_session_default_fields(name, &mut value);
     sanitize_for_gemini(&mut value);
     // Scrub schemars' non-standard numeric `format` annotations so strict
@@ -44,7 +83,11 @@ where
         .unwrap_or_else(|| panic!("expected object schema for tool input"));
 
     let tool = Tool::new(name, description, object).with_output_schema::<O>();
-    scrub_output_schema_formats(tool)
+    CatalogTool {
+        tool: scrub_output_schema_formats(tool),
+        parse_input: parse_input_value::<I>,
+        canonical_input_schema: canonical_input_schema::<I>,
+    }
 }
 
 /// Apply [`strip_nonstandard_formats`] to a tool's already-generated output
@@ -150,6 +193,54 @@ pub(super) fn is_nonstandard_numeric_format(s: &str) -> bool {
     rest.chars().all(|c| c.is_ascii_digit())
 }
 
+/// True when a union branch only admits JSON null. An empty schema is also
+/// treated as the nullable arm: schemars emits `{}` for the null side of some
+/// `Option<T>` shapes, and keeping it would make the whole union permissive.
+fn is_null_branch(branch: &Value) -> bool {
+    match branch {
+        Value::Object(map) => {
+            map.get("type").and_then(Value::as_str) == Some("null")
+                || map.get("const") == Some(&Value::Null)
+                || map
+                    .get("enum")
+                    .and_then(Value::as_array)
+                    .is_some_and(|values| values.iter().all(Value::is_null))
+                || map.is_empty()
+        }
+        _ => false,
+    }
+}
+
+/// Merge a single non-null union branch into the surrounding schema without
+/// overwriting annotations that belong to the field itself (description,
+/// default, title).
+fn merge_schema_branch(map: &mut serde_json::Map<String, Value>, branch: &Value) {
+    let Some(object) = branch.as_object() else {
+        return;
+    };
+    for (key, value) in object {
+        map.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+}
+
+/// Return the sole string value of a single-value string enum or `const`
+/// branch. schemars renders fieldless enums with variant documentation as
+/// `oneOf` of these branches, so flattening them restores a normal string enum.
+fn string_enum_value(branch: &Value) -> Option<&str> {
+    let object = branch.as_object()?;
+    if let Some(value) = object.get("const").and_then(Value::as_str) {
+        return Some(value);
+    }
+    if object.get("type").and_then(Value::as_str) != Some("string") {
+        return None;
+    }
+    let values = object.get("enum")?.as_array()?;
+    if values.len() == 1 {
+        return values[0].as_str();
+    }
+    None
+}
+
 /// Post-process a JSON Schema value to be compatible with Gemini's strict subset.
 /// Removes `$defs`, resolves remaining `anyOf`/`oneOf` nullable patterns,
 /// strips unsupported keywords, and converts array `type` to single string.
@@ -185,21 +276,10 @@ pub(super) fn sanitize_for_gemini(value: &mut Value) {
             if let Some(any_of) = map.remove("anyOf")
                 && let Some(branches) = any_of.as_array()
             {
-                let non_null: Vec<_> = branches
-                    .iter()
-                    .filter(|b| {
-                        b.get("type").and_then(Value::as_str) != Some("null")
-                            && b.get("const") != Some(&Value::Null)
-                            && !b.as_object().is_some_and(|o| o.is_empty())
-                    })
-                    .collect();
+                let non_null: Vec<_> = branches.iter().filter(|b| !is_null_branch(b)).collect();
                 if non_null.len() == 1 {
                     // Merge the single non-null branch into this schema
-                    if let Some(obj) = non_null[0].as_object() {
-                        for (k, v) in obj {
-                            map.entry(k.clone()).or_insert_with(|| v.clone());
-                        }
-                    }
+                    merge_schema_branch(map, non_null[0]);
                 } else if !non_null.is_empty() {
                     // Multiple real branches — keep as anyOf (best effort)
                     map.insert(
@@ -209,27 +289,34 @@ pub(super) fn sanitize_for_gemini(value: &mut Value) {
                 }
             }
 
-            // Flatten oneOf similarly
+            // Flatten oneOf. Two shapes matter:
+            //  - a fieldless enum with per-variant docs becomes oneOf of
+            //    single-value string enums; publish it as one string enum so
+            //    the schema and serde agree.
+            //  - a tagged union becomes oneOf of object branches; keep the
+            //    branch structure as anyOf instead of erasing it to `object`.
             if let Some(one_of) = map.remove("oneOf")
                 && let Some(branches) = one_of.as_array()
             {
-                let non_null: Vec<_> = branches
-                    .iter()
-                    .filter(|b| {
-                        b.get("type").and_then(Value::as_str) != Some("null")
-                            && b.get("const") != Some(&Value::Null)
-                    })
-                    .collect();
+                let non_null: Vec<_> = branches.iter().filter(|b| !is_null_branch(b)).collect();
                 if non_null.len() == 1 {
-                    if let Some(obj) = non_null[0].as_object() {
-                        for (k, v) in obj {
-                            map.entry(k.clone()).or_insert_with(|| v.clone());
-                        }
-                    }
+                    merge_schema_branch(map, non_null[0]);
                 } else if !non_null.is_empty() {
-                    // Convert tagged enum oneOf to a plain object schema
-                    // (Gemini can't handle oneOf, so we just accept any object)
-                    map.insert("type".to_string(), Value::String("object".to_string()));
+                    let string_values: Option<Vec<Value>> = non_null
+                        .iter()
+                        .map(|branch| {
+                            string_enum_value(branch).map(|value| Value::String(value.to_string()))
+                        })
+                        .collect();
+                    if let Some(values) = string_values {
+                        map.insert("type".to_string(), Value::String("string".to_string()));
+                        map.insert("enum".to_string(), Value::Array(values));
+                    } else {
+                        map.insert(
+                            "anyOf".to_string(),
+                            Value::Array(non_null.into_iter().cloned().collect()),
+                        );
+                    }
                 }
             }
 

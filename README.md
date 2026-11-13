@@ -25,8 +25,8 @@ SPINDLE_TOOL_PROFILE=full spindle-mcp
 `full` exposes 177 model-facing tools: every tool declared by a model-facing
 skill or reference unit, including the union of every generated profile plus the
 continuity and canon units no smaller profile enables. It costs
-substantially more context: 174,521 input bytes (about 43,631 proxy tokens) and
-376,676 full bytes (about 94,169 proxy tokens) per connection.
+substantially more context: 177,847 input bytes (about 44,462 proxy tokens) and
+380,002 full bytes (about 95,001 proxy tokens) per connection.
 
 To switch a running server without reconnecting, call `use_profile` with
 `{"profile":"full"}`. It returns the new tool list and the server emits

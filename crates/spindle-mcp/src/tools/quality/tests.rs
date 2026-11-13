@@ -199,6 +199,7 @@ async fn tool_schema_lint() {
                 .iter()
                 .find(|original| original.name == tool.name)
                 .unwrap()
+                .tool
                 .clone();
             let expected = project_tool_discovery(router.tool_profile.as_deref(), original);
             assert_eq!(

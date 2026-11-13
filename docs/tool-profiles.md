@@ -22,18 +22,18 @@ fail closed. Select a generated workflow or specialist profile with
 
 | Profile | Enabled work | Tools | Input bytes | Input tokens | Full bytes | Full tokens |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| workflow-write | Scene-writer core + craft/packet/research refs + setup | 46 | 63,324 | 15,831 | 133,508 | 33,377 |
-| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 78 | 95,766 | 23,942 | 207,774 | 51,944 |
-| workflow-import | Manuscript importer and source sync | 21 | 12,822 | 3,206 | 31,753 | 7,939 |
-| revision | Branch/revision/history workflow | 35 | 26,923 | 6,731 | 76,522 | 19,131 |
-| worldbuilding | Worldbuilder + character creator | 52 | 53,976 | 13,494 | 102,230 | 25,558 |
+| workflow-write | Scene-writer core + craft/packet/research refs + setup | 46 | 63,414 | 15,854 | 133,598 | 33,400 |
+| workflow-authoring | Scene-writer (all refs) + authoring-supervisor + setup | 78 | 96,711 | 24,178 | 208,719 | 52,180 |
+| workflow-import | Manuscript importer and source sync | 21 | 15,052 | 3,763 | 33,983 | 8,496 |
+| revision | Branch/revision/history workflow | 35 | 26,864 | 6,716 | 76,463 | 19,116 |
+| worldbuilding | Worldbuilder + character creator | 52 | 54,983 | 13,746 | 103,237 | 25,810 |
 | planning | Plot architect | 40 | 37,260 | 9,315 | 81,223 | 20,306 |
-| new-book | New-book entry: planning sessions, human gates and handoff | 15 | 20,720 | 5,180 | 27,540 | 6,885 |
+| new-book | New-book entry: planning sessions, human gates and handoff | 15 | 20,871 | 5,218 | 27,691 | 6,923 |
 | research | Researcher | 16 | 8,118 | 2,030 | 21,075 | 5,269 |
-| style | Editor core + style reference | 42 | 36,917 | 9,230 | 100,761 | 25,191 |
-| release | Editor + bible librarian | 64 | 50,401 | 12,601 | 108,420 | 27,105 |
+| style | Editor core + style reference | 42 | 37,184 | 9,296 | 101,028 | 25,257 |
+| release | Editor + bible librarian | 64 | 50,668 | 12,667 | 108,687 | 27,172 |
 | setup | New-book setup reference | 10 | 4,696 | 1,174 | 10,080 | 2,520 |
-| full | Every model-facing skill and reference unit | 177 | 174,521 | 43,631 | 376,676 | 94,169 |
+| full | Every model-facing skill and reference unit | 177 | 177,847 | 44,462 | 380,002 | 95,001 |
 
 Token counts are the same stable proxy used by the profile probe:
 `ceil(bytes / 4)`, not a host tokenizer measurement.
@@ -65,8 +65,8 @@ exposes every tool those units declare: the union of every generated workflow an
 specialist profile plus the `continuity-editor` and `canon-steward` units that no
 smaller profile enables. Use it when one session must expose every workflow at
 once, without switching profiles during the session. It is the
-largest catalog: 177 tools, 174,521 input bytes (about 43,631 proxy tokens) and
-376,676 full bytes (about 94,169 proxy tokens). Prefer the smallest profile that
+largest catalog: 177 tools, 177,847 input bytes (about 44,462 proxy tokens) and
+380,002 full bytes (about 95,001 proxy tokens). Prefer the smallest profile that
 covers the current work; unset still starts `workflow-write`, and `full` is
 opt-in. Operator-only commands stay excluded exactly as in every model profile.
 
