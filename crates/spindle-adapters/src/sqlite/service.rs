@@ -284,6 +284,9 @@ const DEEP_CHECK_CONCURRENCY: usize = 4;
 struct DeepTierOutput {
     output: String,
     local_stub: bool,
+    /// The model hit its token cap; the output is incomplete and must not be
+    /// parsed as a verdict or cached.
+    truncated: bool,
 }
 
 /// SQLite-backed Spindle service layer. Cheap to clone — the inner

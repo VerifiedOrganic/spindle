@@ -3664,8 +3664,8 @@ impl SqliteSpindleService {
                 // Coverage is protected from prose-budget trimming, like hard findings.
                 report.push_str("\n## Audit coverage\n");
                 for coverage in &audit_coverage {
-                    report.push_str(&format!("- {}: {} eligible; {} model-reviewed; {} heuristic-only; {} not model-reviewed. Next offset: {:?}.\n",
-                        coverage.check_type, coverage.eligible, coverage.evaluated_ids.len(), coverage.heuristic_ids.len(), coverage.not_evaluated_ids.len(), coverage.next_offset));
+                    report.push_str(&format!("- {}: {} eligible; {} model-reviewed; {} heuristic-only; {} inconclusive; {} not model-reviewed. Next offset: {:?}.\n",
+                        coverage.check_type, coverage.eligible, coverage.evaluated_ids.len(), coverage.heuristic_ids.len(), coverage.inconclusive_ids.len(), coverage.not_evaluated_ids.len(), coverage.next_offset));
                 }
             }
             Some(report)
