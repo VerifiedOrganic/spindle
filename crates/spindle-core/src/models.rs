@@ -4001,7 +4001,7 @@ pub struct SaveSceneDraftInput {
 pub struct SaveSceneDraftOutput {
     pub scene_id: String,
     pub status: String,
-    /// Origin recorded for the saved prose, e.g. `client` or `agent:venice`.
+    /// Origin recorded for the saved prose, e.g. `client` or `agent:<agent-id>`.
     pub draft_origin: String,
     #[serde(default)]
     pub pacing_warnings: Vec<String>,
