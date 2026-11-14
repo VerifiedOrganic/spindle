@@ -4,12 +4,12 @@
     "default": {
       "tools": 46,
       "input_bytes": 64534,
-      "full_bytes": 137308
+      "full_bytes": 137312
     },
     "full": {
       "tools": 177,
       "input_bytes": 180624,
-      "full_bytes": 385717
+      "full_bytes": 385725
     },
     "new-book": {
       "tools": 15,
@@ -49,7 +49,7 @@
     "workflow-authoring": {
       "tools": 78,
       "input_bytes": 97831,
-      "full_bytes": 212777
+      "full_bytes": 212785
     },
     "workflow-import": {
       "tools": 21,
@@ -59,7 +59,7 @@
     "workflow-write": {
       "tools": 46,
       "input_bytes": 64534,
-      "full_bytes": 137308
+      "full_bytes": 137312
     },
     "worldbuilding": {
       "tools": 52,

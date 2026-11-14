@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 — 2026-11-13
 
 ### Added
 
@@ -98,6 +98,33 @@
   `supply lines` are equivalent. The authoring research gate uses the same
   matching, so a scene no longer stays blocked when its multi-word research
   tags overlap existing note tags.
+
+### Upgrade notes
+
+- No new database migrations since 0.4.1. Back up `.spindle/` before upgrading,
+  as usual.
+- `reasoning_effort` and `extra_body` are optional. Set them on an HTTP agent
+  for an agent-wide default, or on a `[[routing]]` entry to override that route:
+
+  ```toml
+  [[agents]]
+  id = "shared-http"
+  name = "Shared HTTP model"
+  provider = "openai-compatible"
+  endpoint = "https://provider.example/v1"
+  model = "your-model"
+  reasoning_effort = "high"
+  extra_body = { top_k = 40 }
+
+  [[routing]]
+  route = "review"
+  agent = "shared-http"
+  reasoning_effort = "low"
+  ```
+
+  Route `extra_body` values merge over agent values key by key. Reserved
+  request fields (`model`, `messages`, `max_tokens`, `stream`,
+  `reasoning_effort`) cannot be set through `extra_body`.
 
 ## 0.4.1 — 2026-11-13
 
